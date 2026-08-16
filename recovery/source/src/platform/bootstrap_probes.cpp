@@ -461,9 +461,12 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                     client.bottom > 0 && game_x >= 0 &&
                     game_x < kMapViewportWidth && game_y >= 0 &&
                     game_y < kMapViewportHeight) {
+                  const PresentationViewport viewport =
+                      presentation_viewport(client.right, client.bottom);
                   const LPARAM click = MAKELPARAM(
-                      game_x * client.right / kMapViewportWidth,
-                      game_y * client.bottom / kMapViewportHeight);
+                      viewport.x + game_x * viewport.width / kMapViewportWidth,
+                      viewport.y + game_y * viewport.height /
+                                       kMapViewportHeight);
                   SendMessageA(window, WM_RBUTTONDOWN, MK_RBUTTON, click);
                   selected = find_unit_by_id(status, worker_id);
                   if (status.last_issued_order == 7U) {
@@ -726,8 +729,12 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         if (GetClientRect(window, &client) && client.right > 0 &&
             client.bottom > 0 && game_x >= 0 && game_y >= 0 &&
             game_x < kMapViewportWidth && game_y < kMapViewportHeight) {
-          const int client_x = game_x * client.right / kMapViewportWidth;
-          const int client_y = game_y * client.bottom / kMapViewportHeight;
+          const PresentationViewport viewport =
+              presentation_viewport(client.right, client.bottom);
+          const int client_x =
+              viewport.x + game_x * viewport.width / kMapViewportWidth;
+          const int client_y =
+              viewport.y + game_y * viewport.height / kMapViewportHeight;
           const LPARAM click = MAKELPARAM(client_x, client_y);
           SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, click);
           SendMessageA(window, WM_LBUTTONUP, 0, click);
@@ -756,10 +763,15 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
     const bool probe_client_ready = GetClientRect(window, &probe_client) &&
                                     probe_client.right > 0 &&
                                     probe_client.bottom > 0;
+    const PresentationViewport probe_viewport = presentation_viewport(
+        probe_client.right, probe_client.bottom);
     const auto client_point = [&](const int game_x,
                                   const int game_y) -> LPARAM {
-      return MAKELPARAM(game_x * probe_client.right / kMapViewportWidth,
-                        game_y * probe_client.bottom / kMapViewportHeight);
+      return MAKELPARAM(
+          probe_viewport.x +
+              game_x * probe_viewport.width / kMapViewportWidth,
+          probe_viewport.y +
+              game_y * probe_viewport.height / kMapViewportHeight);
     };
     const auto click_command = [&](const std::uint16_t position) -> bool {
       if (!probe_client_ready || position == 0 ||
@@ -3392,8 +3404,40 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           melee_start_verified && supply[0] == 8U &&
           supply[1] == starcraft::lang::retail_melee_base_supply_internal;
     }
-    const bool rendered =
-        status.assets_ready && render_opengl(window, window_state);
+    bool presentation_verified = true;
+    if (opengl_probe) {
+      RECT requested{0, 0, 1280, 600};
+      presentation_verified =
+          AdjustWindowRect(&requested, WS_OVERLAPPEDWINDOW, FALSE) != FALSE &&
+          SetWindowPos(window, nullptr, 0, 0,
+                       requested.right - requested.left,
+                       requested.bottom - requested.top,
+                       SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+      RECT wide_client{};
+      if (presentation_verified) {
+        presentation_verified = GetClientRect(window, &wide_client) != FALSE;
+      }
+      const PresentationViewport wide = presentation_viewport(
+          wide_client.right, wide_client.bottom);
+      int center_x{};
+      int center_y{};
+      int bar_x{};
+      int bar_y{};
+      const bool center_maps = client_to_game(
+          window,
+          MAKELPARAM(wide.x + wide.width / 2,
+                     wide.y + wide.height / 2),
+          center_x, center_y);
+      const bool bar_maps = client_to_game(
+          window, MAKELPARAM((std::max)(0, wide.x / 2), wide.height / 2),
+          bar_x, bar_y);
+      presentation_verified =
+          presentation_verified && wide.height == 600 && wide.width == 960 &&
+          wide.x == 160 && center_maps && center_x == 320 &&
+          center_y == 200 && !bar_maps;
+    }
+    const bool rendered = presentation_verified && status.assets_ready &&
+                          render_opengl(window, window_state);
     const bool captured =
         capture_path == nullptr ||
         (rendered && capture_opengl_bmp(window, window_state, capture_path));
@@ -3437,7 +3481,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
     if (race_building_cards_probe && !race_building_cards_verified) {
       return 300 + race_building_cards_probe_stage;
     }
-    return rendered && captured && selection_verified &&
+    return rendered && captured && presentation_verified && selection_verified &&
                    command_panel_verified && production_verified &&
                    movement_verified && pathfinding_verified &&
                    portrait_verified && worker_actions_verified &&

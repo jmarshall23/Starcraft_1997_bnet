@@ -1,5 +1,6 @@
 #include "../platform/bootstrap_runtime.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -18,7 +19,12 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   }
   while (glGetError() != GL_NO_ERROR) {
   }
-  glViewport(0, 0, client.right, client.bottom);
+  const PresentationViewport viewport =
+      presentation_viewport(client.right, client.bottom);
+  if (viewport.width <= 0 || viewport.height <= 0) {
+    return false;
+  }
+  glViewport(viewport.x, viewport.y, viewport.width, viewport.height);
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
   glOrtho(0.0, kMapViewportWidth, kMapViewportHeight, 0.0, -1.0, 1.0);
@@ -56,10 +62,18 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   }
   glFlush();
   std::array<std::array<GLint, 2>, 4> sample_points{{
-      {{client.right / 4, client.bottom / 4}},
-      {{3 * client.right / 4, client.bottom / 4}},
-      {{client.right / 4, 3 * client.bottom / 4}},
-      {{3 * client.right / 4, 3 * client.bottom / 4}},
+      {{(std::clamp)(viewport.x + viewport.width / 4, 0,
+                     static_cast<int>(client.right) - 1),
+        viewport.height / 4}},
+      {{(std::clamp)(viewport.x + 3 * viewport.width / 4, 0,
+                     static_cast<int>(client.right) - 1),
+        viewport.height / 4}},
+      {{(std::clamp)(viewport.x + viewport.width / 4, 0,
+                     static_cast<int>(client.right) - 1),
+        3 * viewport.height / 4}},
+      {{(std::clamp)(viewport.x + 3 * viewport.width / 4, 0,
+                     static_cast<int>(client.right) - 1),
+        3 * viewport.height / 4}},
   }};
   bool has_colored_pixel{};
   glReadBuffer(GL_BACK);

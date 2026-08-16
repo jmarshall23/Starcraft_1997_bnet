@@ -60,8 +60,16 @@ bool client_to_game(const HWND window, const LPARAM lparam, int &game_x,
   }
   const int client_x = static_cast<short>(LOWORD(lparam));
   const int client_y = static_cast<short>(HIWORD(lparam));
-  game_x = client_x * kMapViewportWidth / client.right;
-  game_y = client_y * kMapViewportHeight / client.bottom;
+  const PresentationViewport viewport =
+      presentation_viewport(client.right, client.bottom);
+  if (viewport.width <= 0 || viewport.height <= 0 ||
+      client_x < viewport.x || client_x >= viewport.x + viewport.width ||
+      client_y < viewport.y || client_y >= viewport.y + viewport.height) {
+    return false;
+  }
+  game_x = (client_x - viewport.x) * kMapViewportWidth / viewport.width;
+  game_y =
+      (client_y - viewport.y) * kMapViewportHeight / viewport.height;
   return game_x >= 0 && game_y >= 0 && game_x < kMapViewportWidth &&
          game_y < kMapViewportHeight;
 }
@@ -259,6 +267,9 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
         }
         apply_glue_action(window, state,
                           glue_mouse_move(state->glue, glue_x, glue_y));
+      } else {
+        apply_glue_action(window, state,
+                          glue_mouse_move(state->glue, -1, -1));
       }
       return 0;
     }
@@ -297,6 +308,9 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
         state->selection_current_y = game_y;
         InvalidateRect(window, nullptr, FALSE);
       }
+    } else if (state != nullptr && game_dialog_active(*state)) {
+      apply_game_dialog_action(
+          window, state, game_dialog_mouse_move(*state, -1, -1));
     }
     return 0;
   }

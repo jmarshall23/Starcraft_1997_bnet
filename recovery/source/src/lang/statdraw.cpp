@@ -21,15 +21,10 @@ void draw_status_text_gl(const RecoveryWindowState &state,
   if (printable.size() > maximum_characters) {
     printable.resize(maximum_characters);
   }
-  glDisable(GL_TEXTURE_2D);
-  glColor4ub(red, green, blue, 255);
-  glRasterPos2f(static_cast<float>(control.left),
-                static_cast<float>(control.top) * hud_vertical_scale() + 9.0F);
-  glListBase(state.font_display_lists - 32U);
-  glCallLists(static_cast<GLsizei>(printable.size()), GL_UNSIGNED_BYTE,
-              printable.data());
-  glColor4ub(255, 255, 255, 255);
-  glEnable(GL_TEXTURE_2D);
+  draw_game_text_gl(state, printable, static_cast<float>(control.left),
+                    static_cast<float>(control.top) * hud_vertical_scale() +
+                        9.0F,
+                    red, green, blue, false);
 }
 
 void draw_system_message_gl(const RecoveryWindowState &state,

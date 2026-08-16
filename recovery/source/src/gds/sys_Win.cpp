@@ -1,9 +1,26 @@
 #include "../platform/bootstrap_runtime.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
 namespace starcraft::recovery {
+
+PresentationViewport presentation_viewport(const int client_width,
+                                           const int client_height) noexcept {
+  if (client_width <= 0 || client_height <= 0) {
+    return {};
+  }
+  // The recovered renderer's complete logical surface is 640x400. Preserve
+  // that ratio, consume the full client height, and center the resulting
+  // presentation horizontally. A narrow client intentionally crops equal
+  // amounts from both sides rather than distorting the game surface.
+  const int width = static_cast<int>(
+      (static_cast<long long>(client_height) * kMapViewportWidth +
+       kMapViewportHeight / 2) /
+      kMapViewportHeight);
+  return {(client_width - width) / 2, 0, width, client_height};
+}
 
 bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   state.device_context = GetDC(window);
@@ -54,8 +71,21 @@ bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
     return false;
   }
   const HGDIOBJ previous = SelectObject(state.device_context, font);
-  const bool font_ready = wglUseFontBitmapsA(state.device_context, 32, 96,
-                                             state.font_display_lists) != FALSE;
+  std::array<GLYPHMETRICSFLOAT, 96> font_metrics{};
+  const bool font_ready =
+      wglUseFontOutlinesA(state.device_context, 32, 96,
+                          state.font_display_lists, 0.0F, 0.0F,
+                          WGL_FONT_POLYGONS, font_metrics.data()) != FALSE;
+  for (std::size_t index = 0; index < font_metrics.size(); ++index) {
+    state.font_advances[index] = font_metrics[index].gmfCellIncX;
+  }
+  float font_height{};
+  for (const GLYPHMETRICSFLOAT &metric : font_metrics) {
+    font_height = (std::max)(font_height, metric.gmfBlackBoxY);
+  }
+  if (font_height > 0.0F) {
+    state.font_outline_scale = 10.0F / font_height;
+  }
   SelectObject(state.device_context, previous);
   DeleteObject(font);
   state.glue_font_display_lists = glGenLists(96);
@@ -71,9 +101,22 @@ bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
     return false;
   }
   const HGDIOBJ previous_glue = SelectObject(state.device_context, glue_font);
+  std::array<GLYPHMETRICSFLOAT, 96> glue_font_metrics{};
   const bool glue_font_ready =
-      wglUseFontBitmapsA(state.device_context, 32, 96,
-                         state.glue_font_display_lists) != FALSE;
+      wglUseFontOutlinesA(state.device_context, 32, 96,
+                          state.glue_font_display_lists, 0.0F, 0.0F,
+                          WGL_FONT_POLYGONS,
+                          glue_font_metrics.data()) != FALSE;
+  for (std::size_t index = 0; index < glue_font_metrics.size(); ++index) {
+    state.glue_font_advances[index] = glue_font_metrics[index].gmfCellIncX;
+  }
+  float glue_font_height{};
+  for (const GLYPHMETRICSFLOAT &metric : glue_font_metrics) {
+    glue_font_height = (std::max)(glue_font_height, metric.gmfBlackBoxY);
+  }
+  if (glue_font_height > 0.0F) {
+    state.glue_font_outline_scale = 20.0F / glue_font_height;
+  }
   SelectObject(state.device_context, previous_glue);
   DeleteObject(glue_font);
   return glue_font_ready;

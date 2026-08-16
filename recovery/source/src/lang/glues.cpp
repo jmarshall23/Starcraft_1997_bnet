@@ -235,8 +235,15 @@ bool client_to_glue(const HWND window, const LPARAM lparam, int &glue_x,
   }
   const int client_x = static_cast<short>(LOWORD(lparam));
   const int client_y = static_cast<short>(HIWORD(lparam));
-  glue_x = client_x * kGlueWidth / client.right;
-  glue_y = client_y * kGlueHeight / client.bottom;
+  const PresentationViewport viewport =
+      presentation_viewport(client.right, client.bottom);
+  if (viewport.width <= 0 || viewport.height <= 0 ||
+      client_x < viewport.x || client_x >= viewport.x + viewport.width ||
+      client_y < viewport.y || client_y >= viewport.y + viewport.height) {
+    return false;
+  }
+  glue_x = (client_x - viewport.x) * kGlueWidth / viewport.width;
+  glue_y = (client_y - viewport.y) * kGlueHeight / viewport.height;
   return glue_x >= 0 && glue_y >= 0 && glue_x < kGlueWidth &&
          glue_y < kGlueHeight;
 }
@@ -393,16 +400,43 @@ void draw_glue_text_gl(const RecoveryWindowState &state,
                        const float y, const std::uint8_t red,
                        const std::uint8_t green, const std::uint8_t blue,
                        const bool large) noexcept {
+  draw_game_text_gl(state, text, x, y * hud_vertical_scale(), red, green,
+                    blue, large);
+}
+
+void draw_game_text_gl(const RecoveryWindowState &state,
+                       const std::string_view text, const float x,
+                       const float y, const std::uint8_t red,
+                       const std::uint8_t green, const std::uint8_t blue,
+                       const bool large) noexcept {
   const GLuint lists = large ? state.glue_font_display_lists
                              : state.font_display_lists;
   if (lists == 0U || text.empty()) {
     return;
   }
+  std::string printable;
+  try {
+    printable.reserve(text.size());
+    for (const unsigned char character : text) {
+      printable.push_back(character >= 32U && character < 128U
+                              ? static_cast<char>(character)
+                              : '?');
+    }
+  } catch (...) {
+    return;
+  }
   glDisable(GL_TEXTURE_2D);
   glColor4ub(red, green, blue, 255U);
-  glRasterPos2f(x, y * hud_vertical_scale());
+  glMatrixMode(GL_MODELVIEW);
+  glPushMatrix();
+  glTranslatef(x, y, 0.0F);
+  const float scale = large ? state.glue_font_outline_scale
+                            : state.font_outline_scale;
+  glScalef(scale, -scale, 1.0F);
   glListBase(lists - 32U);
-  glCallLists(static_cast<GLsizei>(text.size()), GL_UNSIGNED_BYTE, text.data());
+  glCallLists(static_cast<GLsizei>(printable.size()), GL_UNSIGNED_BYTE,
+              printable.data());
+  glPopMatrix();
   glColor4ub(255U, 255U, 255U, 255U);
   glEnable(GL_TEXTURE_2D);
 }
@@ -414,9 +448,20 @@ void draw_glue_centered_text_gl(const RecoveryWindowState &state,
                                 const std::uint8_t green,
                                 const std::uint8_t blue,
                                 const bool large) noexcept {
-  const float character_width = large ? 11.0F : 6.0F;
+  const auto &advances =
+      large ? state.glue_font_advances : state.font_advances;
+  const float scale = large ? state.glue_font_outline_scale
+                            : state.font_outline_scale;
+  float text_width{};
+  for (const unsigned char character : text) {
+    const std::size_t index =
+        character >= 32U && character < 128U
+            ? character - 32U
+            : static_cast<std::size_t>('?' - 32);
+    text_width += advances[index] * scale;
+  }
   const float x = (static_cast<float>(control.left + control.right) -
-                   character_width * static_cast<float>(text.size())) /
+                   text_width) /
                   2.0F;
   const float y =
       (static_cast<float>(control.top + control.bottom) +

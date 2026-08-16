@@ -36,6 +36,13 @@ inline constexpr std::uint16_t kMapViewportHeight = 400;
 inline constexpr std::uint32_t kSimulationTickMilliseconds = 42;
 inline constexpr GLenum kGlBgra = 0x80E1;
 
+struct PresentationViewport {
+  int x{};
+  int y{};
+  int width{};
+  int height{};
+};
+
 struct SpritePreviewFrame {
   std::uint8_t x_offset{};
   std::uint8_t y_offset{};
@@ -665,6 +672,10 @@ struct RecoveryWindowState {
   std::uint16_t pressed_command_position{};
   GLuint font_display_lists{};
   GLuint glue_font_display_lists{};
+  std::array<float, 96> font_advances{};
+  std::array<float, 96> glue_font_advances{};
+  float font_outline_scale{10.0F};
+  float glue_font_outline_scale{20.0F};
   ALCdevice *audio_device{};
   ALCcontext *audio_context{};
   ALuint audio_source{};
@@ -708,6 +719,8 @@ decode_preview_frames(const std::vector<std::uint8_t> &group,
                                     bool transparent_zero,
                                     SpritePreviewFrame &frame);
 [[nodiscard]] bool initialize_glue_assets(GlueRuntime &glue) noexcept;
+[[nodiscard]] PresentationViewport presentation_viewport(
+    int client_width, int client_height) noexcept;
 [[nodiscard]] bool parse_glue_layout(
     const std::vector<std::uint8_t> &layout,
     std::vector<GlueControl> &controls) noexcept;
@@ -731,6 +744,12 @@ void configure_lobby_slots(GlueRuntime &glue) noexcept;
                                       std::uint32_t now) noexcept;
 void draw_glue_text_gl(const RecoveryWindowState &state, std::string_view text,
                        float x, float y, std::uint8_t red = 220U,
+                       std::uint8_t green = 220U,
+                       std::uint8_t blue = 220U,
+                       bool large = false) noexcept;
+void draw_game_text_gl(const RecoveryWindowState &state,
+                       std::string_view text, float x, float y,
+                       std::uint8_t red = 220U,
                        std::uint8_t green = 220U,
                        std::uint8_t blue = 220U,
                        bool large = false) noexcept;
