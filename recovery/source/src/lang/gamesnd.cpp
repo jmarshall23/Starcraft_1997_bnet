@@ -1,0 +1,226 @@
+#include "../platform/bootstrap_runtime.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace starcraft::recovery {
+
+bool play_pending_game_sound(RecoveryWindowState &state) noexcept {
+  if (state.status == nullptr || state.status->pending_game_sound == 0xFFFFU) {
+    return false;
+  }
+  const std::uint16_t sound_id = state.status->pending_game_sound;
+  state.status->pending_game_sound = 0xFFFFU;
+  const auto sound = std::find_if(state.status->archived_sounds.begin(),
+                                  state.status->archived_sounds.end(),
+                                  [sound_id](const ArchivedSoundAsset &asset) {
+                                    return asset.sound_id == sound_id;
+                                  });
+  if (sound == state.status->archived_sounds.end()) {
+    return false;
+  }
+  const std::size_t index =
+      static_cast<std::size_t>(sound - state.status->archived_sounds.begin());
+  if (!state.audio_ready || index >= state.archived_sound_buffers.size() ||
+      state.audio_context == nullptr ||
+      !alcMakeContextCurrent(state.audio_context)) {
+    return false;
+  }
+  while (alGetError() != AL_NO_ERROR) {
+  }
+  alSourceStop(state.audio_source);
+  alSourcei(state.audio_source, AL_BUFFER,
+            static_cast<ALint>(state.archived_sound_buffers[index]));
+  alSourcePlay(state.audio_source);
+  if (alGetError() != AL_NO_ERROR) {
+    return false;
+  }
+  state.status->last_game_sound = sound_id;
+  ++state.audio_play_count;
+  return true;
+}
+
+std::uint16_t choose_unit_sound(BootstrapStatus &status,
+                                const std::uint16_t first,
+                                const std::uint16_t last) noexcept {
+  if (first == 0U || last < first) {
+    return 0U;
+  }
+  if (first == last) {
+    status.last_game_sound = first;
+    return first;
+  }
+  const std::uint32_t span = static_cast<std::uint32_t>(last - first) + 1U;
+  std::uint16_t chosen = static_cast<std::uint16_t>(
+      first + (++status.sound_choice_counter % span));
+  if (chosen == status.last_game_sound && ++chosen > last) {
+    chosen = first;
+  }
+  status.last_game_sound = chosen;
+  return chosen;
+}
+
+bool queue_unit_response(BootstrapStatus &status,
+                         const ScenarioUnitPreview &unit,
+                         const bool order_acknowledgement) noexcept {
+  if (!unit.alive || unit.owner != 0 ||
+      unit.unit_type >= status.unit_sound_ranges.size()) {
+    return false;
+  }
+  const UnitSoundRanges &ranges = status.unit_sound_ranges[unit.unit_type];
+  std::uint16_t first = ranges.what_first;
+  std::uint16_t last = ranges.what_last;
+  if (order_acknowledgement) {
+    first = ranges.yes_first;
+    last = ranges.yes_last;
+  } else if (status.last_voice_unit_id == unit.unit_id) {
+    status.voice_repeat_count = static_cast<std::uint8_t>((
+        std::min)(255U, static_cast<unsigned>(status.voice_repeat_count) + 1U));
+    // gamesnd.cpp::sub_455860 enters the sequential annoyed range after the
+    // fourth repeated selection response, then wraps back to What sounds.
+    if (status.voice_repeat_count >= 4U && ranges.annoyed_first != 0U &&
+        ranges.annoyed_last >= ranges.annoyed_first) {
+      first = ranges.annoyed_first;
+      last = ranges.annoyed_last;
+      const std::uint32_t span = static_cast<std::uint32_t>(last - first) + 1U;
+      first = last = static_cast<std::uint16_t>(
+          first + (status.voice_repeat_count - 4U) % span);
+    }
+  } else {
+    status.last_voice_unit_id = unit.unit_id;
+    status.voice_repeat_count = 0U;
+  }
+  const std::uint16_t chosen = choose_unit_sound(status, first, last);
+  if (chosen == 0U) {
+    return false;
+  }
+  status.pending_game_sound = chosen;
+  return true;
+}
+
+bool extract_unit_sound_ranges(const starcraft::data::CoreDataSet &data,
+                               BootstrapStatus &status) noexcept {
+  // units.dat descriptor fields 26..32 are the exact arrays used by
+  // gamesnd.cpp::sub_455790, sub_455860, and sub_455640. The 106-entry
+  // arrays apply only to unit IDs 0..105; What sounds cover all 228 types.
+  const starcraft::data::DatField *const ready = data.units().field(26);
+  const starcraft::data::DatField *const what_first = data.units().field(27);
+  const starcraft::data::DatField *const what_last = data.units().field(28);
+  const starcraft::data::DatField *const annoyed_first = data.units().field(29);
+  const starcraft::data::DatField *const annoyed_last = data.units().field(30);
+  const starcraft::data::DatField *const yes_first = data.units().field(31);
+  const starcraft::data::DatField *const yes_last = data.units().field(32);
+  if (ready == nullptr || what_first == nullptr || what_last == nullptr ||
+      annoyed_first == nullptr || annoyed_last == nullptr ||
+      yes_first == nullptr || yes_last == nullptr) {
+    return false;
+  }
+  for (std::size_t type = 0; type < status.unit_sound_ranges.size(); ++type) {
+    UnitSoundRanges &ranges = status.unit_sound_ranges[type];
+    if (!what_first->value(type, ranges.what_first) ||
+        !what_last->value(type, ranges.what_last)) {
+      return false;
+    }
+    if (type < 106U && (!ready->value(type, ranges.ready) ||
+                        !annoyed_first->value(type, ranges.annoyed_first) ||
+                        !annoyed_last->value(type, ranges.annoyed_last) ||
+                        !yes_first->value(type, ranges.yes_first) ||
+                        !yes_last->value(type, ranges.yes_last))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool cache_unit_sound_assets(
+    starcraft::runtime::StormModule &storm,
+    const std::vector<std::uint8_t> &sfx_data,
+    const std::vector<std::uint8_t> &sfx_table,
+    const std::array<bool, starcraft::lang::kUnitTypeCount> &wanted_types,
+    BootstrapStatus &status) noexcept {
+  constexpr std::size_t sound_count = 944U;
+  if (sfx_data.size() != 8496U) {
+    return false;
+  }
+  const starcraft::data::StringTableView paths{sfx_table.data(),
+                                               sfx_table.size()};
+  if (!paths.valid()) {
+    return false;
+  }
+  const auto cache_sound = [&](const std::uint16_t sound_id) -> bool {
+    if (sound_id == 0U) {
+      return true;
+    }
+    if (sound_id >= sound_count) {
+      return false;
+    }
+    if (std::any_of(status.archived_sounds.begin(),
+                    status.archived_sounds.end(),
+                    [sound_id](const ArchivedSoundAsset &asset) {
+                      return asset.sound_id == sound_id;
+                    })) {
+      return true;
+    }
+    const std::uint32_t path_id = read_u32(sfx_data, sound_id * 4U);
+    if (path_id == 0U || path_id > UINT16_MAX) {
+      return false;
+    }
+    const std::string_view relative =
+        paths.one_based(static_cast<std::uint16_t>(path_id));
+    if (relative.empty()) {
+      return false;
+    }
+    ArchivedSoundAsset asset{};
+    asset.sound_id = sound_id;
+    asset.path = R"(sound\)";
+    asset.path.append(relative.data(), relative.size());
+    if (!storm.load_file(asset.path.c_str(), asset.wave) ||
+        asset.wave.empty()) {
+      return false;
+    }
+    status.archived_sounds.push_back(std::move(asset));
+    return true;
+  };
+  const auto cache_range = [&cache_sound,
+                            sound_count](const std::uint16_t first,
+                                         const std::uint16_t last) -> bool {
+    if (first == 0U && last == 0U) {
+      return true;
+    }
+    if (first == 0U || last < first || last >= sound_count) {
+      return false;
+    }
+    for (std::uint32_t sound = first; sound <= last; ++sound) {
+      if (!cache_sound(static_cast<std::uint16_t>(sound))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  try {
+    for (std::size_t type = 0; type < wanted_types.size(); ++type) {
+      if (!wanted_types[type]) {
+        continue;
+      }
+      const UnitSoundRanges &ranges = status.unit_sound_ranges[type];
+      if (!cache_range(ranges.what_first, ranges.what_last) ||
+          !cache_range(ranges.annoyed_first, ranges.annoyed_last) ||
+          !cache_range(ranges.yes_first, ranges.yes_last)) {
+        return false;
+      }
+    }
+    // The SCV's explicit weapon-8 event creates the cutter projectile. Its
+    // image-498 IScript plays one of SFX 23..27 (EDrRep00..04), the exact
+    // working sound range used for harvesting and repair.
+    return cache_range(23U, 27U) && !status.archived_sounds.empty();
+  } catch (...) {
+    status.archived_sounds.clear();
+    return false;
+  }
+}
+
+} // namespace starcraft::recovery

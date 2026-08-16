@@ -95,7 +95,35 @@ if(MSVC)
 endif()
 
 add_executable(StarCraftRecovery WIN32
+  src/platform/bootstrap_probes.cpp
   src/platform/bootstrap_win32.cpp
+  src/gds/image.cpp
+  src/gds/capture.cpp
+  src/gds/sys_Win.cpp
+  src/gds/vidblit.cpp
+  src/lang/CImage.cpp
+  src/lang/CUnitBuildRuntime.cpp
+  src/lang/CUnitInitRuntime.cpp
+  src/lang/CUnitUpdate.cpp
+  src/lang/CUnitZergRuntime.cpp
+  src/lang/cellscrl.cpp
+  src/lang/filedist.cpp
+  src/lang/event_Win.cpp
+  src/lang/gamedata.cpp
+  src/lang/gamesnd.cpp
+  src/lang/map_load.cpp
+  src/lang/minimap.cpp
+  src/lang/placebox.cpp
+  src/lang/select.cpp
+  src/lang/snd.cpp
+  src/lang/statcmd.cpp
+  src/lang/statdata.cpp
+  src/lang/statdraw.cpp
+  src/lang/statport.cpp
+  src/lang/statres.cpp
+  src/lang/statwire.cpp
+  src/lang/target.cpp
+  src/staredit/mapcomn/creep_runtime.cpp
 )
 target_link_libraries(
   StarCraftRecovery
