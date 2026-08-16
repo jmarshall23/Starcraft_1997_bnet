@@ -5,6 +5,7 @@
 #include "starcraft/lang/cunit_build.hpp"
 #include "starcraft/lang/cunit_harvest.hpp"
 #include "starcraft/lang/cunit_path_collide.hpp"
+#include "starcraft/lang/cunit_protoss.hpp"
 #include "starcraft/lang/cunit_terran.hpp"
 #include "starcraft/lang/cunit_zerg.hpp"
 #include "starcraft/lang/flingy.hpp"
@@ -18,6 +19,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace starcraft::recovery {
@@ -26,6 +29,13 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                          RecoveryWindowState &window_state,
                          BootstrapStatus &status, bool &handled) {
   handled = false;
+  const bool game_flow_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-game-flow") != nullptr;
+  const bool glue_probe =
+      command_line != nullptr &&
+      (std::strstr(command_line, "--probe-glue") != nullptr ||
+       game_flow_probe);
   const bool opengl_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-opengl") != nullptr;
@@ -35,6 +45,15 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
   const bool command_panel_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-command-panel") != nullptr;
+  const bool worker_build_cards_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-worker-build-cards") != nullptr;
+  const bool race_construction_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-race-construction") != nullptr;
+  const bool race_building_cards_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-race-building-cards") != nullptr;
   const bool status_panel_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-status-panel") != nullptr;
@@ -71,6 +90,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
   const bool movement_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-movement") != nullptr;
+  const bool drone_movement_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-drone-movement") != nullptr;
   const bool pathfinding_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-pathfinding") != nullptr;
@@ -127,8 +149,28 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       capture_argument == nullptr
           ? nullptr
           : capture_argument + sizeof(capture_option) - 1U;
+  constexpr char lobby_capture_option[] = "--capture-glue-lobby=";
+  const char *const lobby_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, lobby_capture_option);
+  const char *const lobby_capture_path =
+      lobby_capture_argument == nullptr
+          ? nullptr
+          : lobby_capture_argument + sizeof(lobby_capture_option) - 1U;
+  constexpr char game_capture_option[] = "--capture-glue-game=";
+  const char *const game_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, game_capture_option);
+  const char *const game_capture_path =
+      game_capture_argument == nullptr
+          ? nullptr
+          : game_capture_argument + sizeof(game_capture_option) - 1U;
 
-  if (opengl_probe || selection_probe || command_panel_probe ||
+  if (glue_probe || opengl_probe || selection_probe || command_panel_probe ||
+      worker_build_cards_probe ||
+      race_construction_probe || race_building_cards_probe ||
       production_probe || all_production_probe || harvest_queue_probe ||
       geyser_probe || building_working_probe || resource_feedback_probe ||
       resource_strip_probe || unit_audio_probe || music_probe ||
@@ -139,8 +181,531 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       creep_probe || melee_start_probe || unit_avoidance_probe ||
       minimap_probe || camera_probe || status_panel_probe ||
       multi_status_probe || construction_status_probe ||
-      capture_path != nullptr) {
+      capture_path != nullptr || lobby_capture_path != nullptr ||
+      game_capture_path != nullptr) {
     handled = true;
+    if (glue_probe) {
+      const auto has_control = [](const std::vector<GlueControl> &controls,
+                                  const std::int16_t identifier,
+                                  const char *const text) {
+        return std::any_of(
+            controls.begin(), controls.end(),
+            [identifier, text](const GlueControl &control) {
+              return control.identifier == identifier &&
+                     control.text == text;
+            });
+      };
+      const bool layouts_valid =
+          window_state.glue.assets_ready &&
+          has_control(window_state.glue.main_controls, 2, "Exit") &&
+          has_control(window_state.glue.main_controls, 3, "Single Player") &&
+          has_control(window_state.glue.main_controls, 4, "Multiplayer") &&
+          has_control(window_state.glue.main_controls, 5,
+                      "Campaign Editor") &&
+          has_control(window_state.glue.connection_controls, -1,
+                      "Select Connection") &&
+          has_control(window_state.glue.connection_controls, 9, "Ok") &&
+          has_control(window_state.glue.connection_controls, 10, "Cancel") &&
+          has_control(window_state.glue.lobby_controls, 6, "Ok") &&
+          has_control(window_state.glue.lobby_controls, 7, "Cancel") &&
+          !window_state.glue.maps.empty();
+      const bool title_rendered =
+          layouts_valid && render_opengl(window, window_state);
+      const GlueAction title_action =
+          glue_key_down(window_state.glue, VK_RETURN, GetTickCount());
+      const bool main_rendered =
+          title_action == GlueAction::redraw &&
+          window_state.glue.screen == GlueScreen::main_menu &&
+          render_opengl(window, window_state);
+      const bool main_captured =
+          capture_path == nullptr ||
+          (main_rendered &&
+           capture_opengl_bmp(window, window_state, capture_path));
+      const GlueAction multiplayer_action = activate_main_menu_control(
+          window_state.glue, 4, GetTickCount());
+      const bool connection_rendered =
+          multiplayer_action == GlueAction::redraw &&
+          window_state.glue.screen == GlueScreen::connection &&
+          render_opengl(window, window_state);
+      const GlueAction skirmish_action = activate_connection_control(
+          window_state.glue, 9, 0, 0, GetTickCount());
+      constexpr char map_index_option[] = "--probe-map-index=";
+      const char *const map_index_argument =
+          command_line == nullptr
+              ? nullptr
+              : std::strstr(command_line, map_index_option);
+      const std::size_t requested_map =
+          map_index_argument == nullptr
+              ? 0U
+              : static_cast<std::size_t>(std::strtoul(
+                    map_index_argument + sizeof(map_index_option) - 1U,
+                    nullptr, 10));
+      if (requested_map >= window_state.glue.maps.size()) {
+        DestroyWindow(window);
+        return 13;
+      }
+      window_state.glue.selected_map = requested_map;
+      const std::string selected_map_path =
+          window_state.glue.maps[window_state.glue.selected_map].path;
+      const bool map_rendered =
+          skirmish_action == GlueAction::redraw &&
+          window_state.glue.screen == GlueScreen::map_selection &&
+          render_opengl(window, window_state);
+      const GlueAction map_action = activate_map_selection_control(
+          window_state.glue, 6, 0, 0, GetTickCount());
+      constexpr char local_race_option[] = "--probe-local-race=";
+      const char *const local_race_argument =
+          command_line == nullptr
+              ? nullptr
+              : std::strstr(command_line, local_race_option);
+      const std::uint8_t requested_race =
+          local_race_argument == nullptr
+              ? window_state.glue.lobby_slots[0].race
+              : static_cast<std::uint8_t>(std::strtoul(
+                    local_race_argument + sizeof(local_race_option) - 1U,
+                    nullptr, 10));
+      if (requested_race >= 3U) {
+        DestroyWindow(window);
+        return 14;
+      }
+      window_state.glue.lobby_slots[0].race = requested_race;
+      const bool lobby_rendered = map_action == GlueAction::redraw &&
+                                  window_state.glue.screen == GlueScreen::lobby &&
+                                  render_opengl(window, window_state);
+      const bool lobby_captured =
+          lobby_capture_path == nullptr ||
+          (lobby_rendered && capture_opengl_bmp(
+                                 window, window_state, lobby_capture_path));
+      const std::uint32_t ready_now = GetTickCount();
+      const GlueAction lobby_action = activate_lobby_control(
+          window_state.glue, 6, 0, 0, ready_now);
+      const bool ready_rendered = lobby_action == GlueAction::redraw &&
+                                  window_state.glue.screen == GlueScreen::ready &&
+                                  render_opengl(window, window_state);
+      const GlueAction ready_action =
+          advance_glue(window_state.glue, ready_now + 3001U);
+      const bool flow_valid = ready_action == GlueAction::start_game &&
+                              start_selected_glue_map(window_state) &&
+                              window_state.glue.screen == GlueScreen::gameplay &&
+                              status.assets_ready &&
+                              status.map_name == selected_map_path &&
+                              status.local_race == requested_race;
+      bool glue_worker_card_verified = !worker_build_cards_probe;
+      if (flow_valid && worker_build_cards_probe) {
+        starcraft::lang::MeleeUnitTypes local_types{};
+        const bool types_ready =
+            starcraft::lang::melee_unit_types(requested_race, local_types);
+        std::size_t matching_workers{};
+        std::size_t matching_bases{};
+        std::size_t mismatched_start_units{};
+        for (const ScenarioUnitPreview &unit : status.units) {
+          if (!unit.alive || unit.owner != 0U ||
+              !starcraft::lang::is_melee_starting_unit_type(unit.unit_type)) {
+            continue;
+          }
+          matching_workers += unit.unit_type == local_types.worker ? 1U : 0U;
+          matching_bases += unit.unit_type == local_types.base ? 1U : 0U;
+          mismatched_start_units +=
+              unit.unit_type != local_types.worker &&
+                      unit.unit_type != local_types.base
+                  ? 1U
+                  : 0U;
+        }
+        const auto worker =
+            types_ready
+                ? std::find_if(status.units.begin(), status.units.end(),
+                               [&](const ScenarioUnitPreview &unit) {
+                                 return unit.alive && unit.owner == 0U &&
+                                        unit.unit_type == local_types.worker;
+                               })
+                : status.units.end();
+        const auto base =
+            types_ready
+                ? std::find_if(status.units.begin(), status.units.end(),
+                               [&](const ScenarioUnitPreview &unit) {
+                                 return unit.alive && unit.owner == 0U &&
+                                        unit.unit_type == local_types.base;
+                               })
+                : status.units.end();
+        if (worker != status.units.end() && base != status.units.end()) {
+          clear_selection(status);
+          worker->selected = true;
+          const CommandCardView card = command_card_for(status);
+          const std::uint16_t expected_icon =
+              requested_race == 0U ? 257U
+              : requested_race == 1U ? 234U
+                                     : 272U;
+          const std::uint16_t expected_argument =
+              requested_race == 0U ? 236U
+              : requested_race == 1U ? 237U
+                                     : 238U;
+          const bool worker_card_matches = std::any_of(
+              card.buttons, card.buttons + card.count,
+              [=](const CommandButtonVisual &button) {
+                return button.position == 7U &&
+                       button.icon == expected_icon &&
+                       button.argument == expected_argument &&
+                       button.action ==
+                           CommandButtonVisual::Action::open_card;
+              });
+
+          clear_selection(status);
+          base->selected = true;
+          constexpr std::array<std::string_view, 3> expected_base_names{{
+              "Zerg Hatchery",
+              "Terran Command Center",
+              "Protoss Nexus",
+          }};
+          const std::string base_name = printable_status_text(status_text(
+              status, static_cast<std::uint16_t>(local_types.base + 1U)));
+          const UnitPortraitAsset *const portrait = selected_portrait(status);
+          const CommandCardView base_card = command_card_for(status);
+          const bool terran_scv_card =
+              base_card.count != 0U &&
+              std::any_of(base_card.buttons,
+                          base_card.buttons + base_card.count,
+                          [](const CommandButtonVisual &button) {
+                            return button.action ==
+                                       CommandButtonVisual::Action::train_unit &&
+                                   button.argument == 7U;
+                          });
+          glue_worker_card_verified =
+              worker_card_matches && matching_workers == 4U &&
+              matching_bases == 1U && mismatched_start_units == 0U &&
+              base_name == expected_base_names[requested_race] &&
+              local_types.base < status.wireframe_frames.size() &&
+              !status.wireframe_frames[local_types.base].bgra.empty() &&
+              portrait != nullptr && portrait->unit_type == local_types.base &&
+              (requested_race == 1U ? terran_scv_card : !terran_scv_card);
+        }
+      }
+      bool glue_drone_movement_verified = !drone_movement_probe;
+      int glue_drone_movement_stage{};
+      if (flow_valid && drone_movement_probe) {
+        const auto worker = std::find_if(
+            status.units.begin(), status.units.end(),
+            [](const ScenarioUnitPreview &unit) {
+              return unit.alive && unit.owner == 0U &&
+                     unit.unit_type == starcraft::lang::zerg_drone_type;
+            });
+        if (worker != status.units.end()) {
+          glue_drone_movement_stage = 1;
+          const std::uint32_t worker_id = worker->unit_id;
+          const std::uint16_t initial_x = worker->x;
+          const std::uint16_t initial_y = worker->y;
+          if (worker->movement_top_speed != 0U &&
+              worker->movement_acceleration != 0U &&
+              worker->movement_turn_speed != 0U) {
+            glue_drone_movement_stage = 2;
+            std::vector<starcraft::lang::PathObstacle> obstacles;
+            starcraft::lang::PathPoint target{};
+            const bool obstacles_ready =
+                collect_building_obstacles(status, &*worker, obstacles);
+            constexpr std::array<std::array<int, 2>, 8> offsets{{
+                {{128, 0}}, {{-128, 0}}, {{0, 128}}, {{0, -128}},
+                {{96, 96}}, {{-96, 96}}, {{96, -96}}, {{-96, -96}},
+            }};
+            for (const auto &offset : offsets) {
+              const int candidate_x = static_cast<int>(worker->x) + offset[0];
+              const int candidate_y = static_cast<int>(worker->y) + offset[1];
+              std::vector<starcraft::lang::PathPoint> path;
+              const bool target_hits_unit = std::any_of(
+                  status.units.begin(), status.units.end(),
+                  [&](const ScenarioUnitPreview &unit) {
+                    if (!unit.alive || unit.unit_id == worker_id) {
+                      return false;
+                    }
+                    const int half_width =
+                        static_cast<int>(unit.selection_width) / 2;
+                    const int half_height =
+                        static_cast<int>(unit.selection_height) / 2;
+                    return candidate_x >= static_cast<int>(unit.x) - half_width &&
+                           candidate_x <= static_cast<int>(unit.x) + half_width &&
+                           candidate_y >= static_cast<int>(unit.y) - half_height &&
+                           candidate_y <= static_cast<int>(unit.y) + half_height;
+                  });
+              if (!obstacles_ready ||
+                  target_hits_unit ||
+                  !creation_position_passable(status, *worker, candidate_x,
+                                              candidate_y) ||
+                  !starcraft::lang::find_unit_path(
+                      status.pathing_map, worker->x, worker->y, candidate_x,
+                      candidate_y, worker->selection_width,
+                      worker->selection_height, obstacles, path) ||
+                  path.empty()) {
+                continue;
+              }
+              target = {static_cast<std::uint16_t>(candidate_x),
+                        static_cast<std::uint16_t>(candidate_y)};
+              break;
+            }
+            if (target.x != 0U || target.y != 0U) {
+              glue_drone_movement_stage = 3;
+              clear_selection(status);
+              ScenarioUnitPreview *selected = find_unit_by_id(status, worker_id);
+              if (selected != nullptr) {
+                selected->selected = true;
+                status.placement_active = false;
+                status.active_command_card = 0U;
+                cancel_command_target(status);
+                status.last_issued_order = 0xFFU;
+                (void)set_camera_position(
+                    status,
+                    (static_cast<int>(initial_x) + target.x) / 2 -
+                        kMapViewportWidth / 2,
+                    (static_cast<int>(initial_y) + target.y) / 2 - 160);
+                RECT client{};
+                const int game_x = static_cast<int>(target.x) - status.camera_x;
+                const int game_y = static_cast<int>(target.y) - status.camera_y;
+                if (GetClientRect(window, &client) && client.right > 0 &&
+                    client.bottom > 0 && game_x >= 0 &&
+                    game_x < kMapViewportWidth && game_y >= 0 &&
+                    game_y < kMapViewportHeight) {
+                  const LPARAM click = MAKELPARAM(
+                      game_x * client.right / kMapViewportWidth,
+                      game_y * client.bottom / kMapViewportHeight);
+                  SendMessageA(window, WM_RBUTTONDOWN, MK_RBUTTON, click);
+                  selected = find_unit_by_id(status, worker_id);
+                  if (status.last_issued_order == 7U) {
+                    glue_drone_movement_stage = 4;
+                  }
+                  if (selected != nullptr && selected->moving &&
+                      selected->active_order == ActiveUnitOrder::move) {
+                    glue_drone_movement_stage = 5;
+                    for (int tick = 0; tick < 64; ++tick) {
+                      SendMessageA(window, WM_TIMER, 1, 0);
+                    }
+                    selected = find_unit_by_id(status, worker_id);
+                    if (selected != nullptr) {
+                      const int distance =
+                          std::abs(static_cast<int>(selected->x) - initial_x) +
+                          std::abs(static_cast<int>(selected->y) - initial_y);
+                      glue_drone_movement_verified = distance >= 8;
+                      glue_drone_movement_stage =
+                          glue_drone_movement_verified
+                              ? 6
+                              : glue_drone_movement_stage;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      const bool selected_game_rendered =
+          flow_valid && glue_worker_card_verified &&
+          glue_drone_movement_verified &&
+          render_opengl(window, window_state);
+      bool game_flow_verified = !game_flow_probe;
+      int game_flow_stage{};
+      if (flow_valid && game_flow_probe &&
+          window_state.game_dialog.assets_ready &&
+          window_state.game_dialog.match_active) {
+        const auto activate = [&](const std::int16_t identifier) {
+          const auto &dialog = window_state.game_dialog;
+          const auto &controls =
+              dialog.screen == GameDialogScreen::score
+                  ? dialog.score_controls
+                  : dialog.layouts[static_cast<std::size_t>(dialog.screen)];
+          const auto control = std::find_if(
+              controls.begin(), controls.end(),
+              [identifier](const GlueControl &value) {
+                return value.identifier == identifier;
+              });
+          if (control == controls.end()) {
+            return GameDialogAction::none;
+          }
+          const int x = (control->left + control->right) / 2;
+          const int y = static_cast<int>(
+              ((control->top + control->bottom) / 2) * hud_vertical_scale());
+          (void)game_dialog_left_down(window_state, x, y);
+          return game_dialog_left_up(window_state, x, y, GetTickCount());
+        };
+
+        bool hud_button_verified{};
+        const auto menu_button = std::find_if(
+            window_state.game_dialog.hud_menu_controls.begin(),
+            window_state.game_dialog.hud_menu_controls.end(),
+            [](const GlueControl &control) {
+              return control.identifier == 1 && control.text == "MENU";
+            });
+        if (menu_button != window_state.game_dialog.hud_menu_controls.end()) {
+          const int menu_x = (menu_button->left + menu_button->right) / 2;
+          const int menu_y = static_cast<int>(
+              ((menu_button->top + menu_button->bottom) / 2) *
+              hud_vertical_scale());
+          if (hud_menu_button_at(window_state, menu_x, menu_y)) {
+            open_game_menu(window_state);
+            hud_button_verified =
+                window_state.game_dialog.screen ==
+                GameDialogScreen::game_menu;
+            (void)game_dialog_key_down(window_state, VK_F10, GetTickCount());
+          }
+        }
+        (void)game_dialog_key_down(window_state, VK_F10, GetTickCount());
+        if (hud_button_verified &&
+            window_state.game_dialog.screen == GameDialogScreen::game_menu &&
+            render_opengl(window, window_state)) {
+          game_flow_stage = 1;
+          (void)activate(3);
+          if (window_state.game_dialog.screen == GameDialogScreen::options) {
+            (void)activate(1);
+            if (window_state.game_dialog.screen ==
+                GameDialogScreen::sound_options) {
+              (void)activate(-3);
+              (void)activate(-3);
+              (void)activate(4);
+              (void)activate(2);
+              if (window_state.game_dialog.screen == GameDialogScreen::tips) {
+                const std::size_t old_tip = window_state.game_dialog.tip_index;
+                (void)activate(1);
+                if (window_state.game_dialog.tip_index != old_tip) {
+                  game_flow_stage = 2;
+                  (void)activate(-2);
+                  (void)activate(-3);
+                  (void)activate(5);
+                  if (window_state.game_dialog.screen ==
+                      GameDialogScreen::objectives) {
+                    (void)activate(-3);
+                    (void)activate(6);
+                    (void)activate(2);
+                    if (window_state.game_dialog.screen ==
+                        GameDialogScreen::confirm_quit_menu) {
+                      game_flow_stage = 3;
+                      (void)activate(-3);
+                      (void)activate(-3);
+                      (void)activate(-3);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (game_flow_stage == 3 &&
+            window_state.game_dialog.screen == GameDialogScreen::none) {
+          for (ScenarioUnitPreview &unit : status.units) {
+            if (unit.owner > 0U && unit.owner < 8U && unit.is_building) {
+              unit.destroyed_by_owner = 0U;
+              unit.alive = false;
+            }
+          }
+          evaluate_melee_outcome(window_state);
+          if (window_state.game_dialog.screen == GameDialogScreen::victory &&
+              render_opengl(window, window_state)) {
+            game_flow_stage = 4;
+            (void)activate(-2);
+            if (window_state.game_dialog.screen == GameDialogScreen::score) {
+              game_flow_stage = 5;
+            }
+            if (game_flow_stage == 5 &&
+                !window_state.game_dialog.score_rows.empty()) {
+              const auto local_score = std::find_if(
+                  window_state.game_dialog.score_rows.begin(),
+                  window_state.game_dialog.score_rows.end(),
+                  [](const MatchScoreRow &row) {
+                    return row.player == 0U && row.razed != 0U;
+                  });
+              if (local_score != window_state.game_dialog.score_rows.end()) {
+                game_flow_stage = 6;
+              }
+            }
+            if (game_flow_stage == 6 && render_opengl(window, window_state)) {
+              game_flow_stage = 7;
+              for (std::int16_t category = 3; category <= 6; ++category) {
+                (void)activate(category);
+              }
+              const bool categories_valid =
+                  window_state.game_dialog.score_category ==
+                      ScoreCategory::resources &&
+                  render_opengl(window, window_state);
+              window_state.game_dialog.screen = GameDialogScreen::none;
+              if (categories_valid && start_selected_glue_map(window_state)) {
+                for (ScenarioUnitPreview &unit : status.units) {
+                  if (unit.owner == 0U && unit.is_building) {
+                    unit.destroyed_by_owner = 1U;
+                    unit.alive = false;
+                  }
+                }
+                evaluate_melee_outcome(window_state);
+                if (window_state.game_dialog.screen ==
+                        GameDialogScreen::defeat &&
+                    render_opengl(window, window_state)) {
+                  game_flow_stage = 8;
+                  (void)activate(-2);
+                  const bool defeat_scores_valid = std::any_of(
+                      window_state.game_dialog.score_rows.begin(),
+                      window_state.game_dialog.score_rows.end(),
+                      [](const MatchScoreRow &row) {
+                        return row.player == 0U &&
+                               row.structures_lost != 0U;
+                      });
+                  const GameDialogAction finished =
+                      defeat_scores_valid ? activate(7)
+                                          : GameDialogAction::none;
+                  game_flow_verified =
+                      window_state.game_dialog.screen ==
+                          GameDialogScreen::score &&
+                      finished == GameDialogAction::return_to_menu;
+                  game_flow_stage = game_flow_verified ? 9 : game_flow_stage;
+                }
+              }
+            }
+          }
+        }
+      }
+      const bool selected_game_captured =
+          game_capture_path == nullptr ||
+          (selected_game_rendered &&
+           capture_opengl_bmp(window, window_state, game_capture_path));
+      if (!flow_valid && lobby_capture_path != nullptr) {
+        (void)render_opengl(window, window_state);
+        (void)capture_opengl_bmp(window, window_state, lobby_capture_path);
+      }
+      int glue_failure_code = 12;
+      if (!flow_valid) {
+        if (window_state.glue.message.find("console PCX") !=
+            std::string::npos) {
+          glue_failure_code = 20;
+        } else if (window_state.glue.message.find("wireframe") !=
+                   std::string::npos) {
+          glue_failure_code = 21;
+        } else if (window_state.glue.message.find("status panel asset") !=
+                   std::string::npos) {
+          glue_failure_code = 22;
+        } else if (window_state.glue.message.find("advisor sound") !=
+                   std::string::npos) {
+          glue_failure_code = 23;
+        } else if (window_state.glue.message.find("response sound") !=
+                   std::string::npos) {
+          glue_failure_code = 24;
+        } else if (window_state.glue.message.find("music track") !=
+                   std::string::npos) {
+          glue_failure_code = 25;
+        } else if (window_state.glue.message.find("command panel") !=
+                   std::string::npos) {
+          glue_failure_code = 26;
+        } else if (window_state.glue.message.find("unit color table") !=
+                   std::string::npos) {
+          glue_failure_code = 27;
+        }
+      } else if (!glue_drone_movement_verified) {
+        glue_failure_code = 30 + glue_drone_movement_stage;
+      } else if (!game_flow_verified) {
+        glue_failure_code = 50 + game_flow_stage;
+      }
+      DestroyWindow(window);
+      return title_rendered && main_rendered && main_captured &&
+                     connection_rendered && map_rendered && lobby_rendered &&
+                     lobby_captured && ready_rendered &&
+                     selected_game_rendered && selected_game_captured &&
+                      glue_worker_card_verified &&
+                      glue_drone_movement_verified && game_flow_verified
+                 ? 0
+                 : glue_failure_code;
+    }
+    window_state.glue.screen = GlueScreen::gameplay;
     bool selection_verified = true;
     if (selection_probe) {
       selection_verified = false;
@@ -209,6 +774,454 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       SendMessageA(window, WM_LBUTTONUP, 0, click);
       return true;
     };
+
+    bool worker_build_cards_verified = true;
+    int worker_build_cards_probe_stage{};
+    if (worker_build_cards_probe) {
+      worker_build_cards_verified = status.assets_ready;
+      const auto card_has = [](const CommandCardView card,
+                               const std::uint16_t position,
+                               const std::uint16_t icon,
+                               const std::uint16_t argument,
+                               const CommandButtonVisual::Action action) {
+        return std::any_of(
+            card.buttons, card.buttons + card.count,
+            [=](const CommandButtonVisual &button) {
+              return button.position == position && button.icon == icon &&
+                     button.argument == argument && button.action == action;
+            });
+      };
+      ScenarioUnitPreview worker{};
+      worker.unit_id = status.next_unit_id++;
+      worker.owner = 0U;
+      worker.selected = true;
+      worker_build_cards_verified =
+          worker_build_cards_verified &&
+          configure_preview_type(status, worker,
+                                 starcraft::lang::zerg_drone_type);
+      worker_build_cards_probe_stage = worker_build_cards_verified ? 1 : 0;
+      if (worker_build_cards_verified) {
+        clear_selection(status);
+        status.units.push_back(worker);
+        status.units.back().selected = true;
+        status.active_command_card = 0U;
+        const CommandCardView drone = command_card_for(status);
+        worker_build_cards_verified =
+            drone.count == 7U &&
+            card_has(drone, 7U, 257U, 236U,
+                     CommandButtonVisual::Action::open_card) &&
+            card_has(drone, 8U, 258U, 239U,
+                     CommandButtonVisual::Action::open_card);
+        activate_command_button(status, 7U);
+        const CommandCardView zerg_basic = command_card_for(status);
+        worker_build_cards_verified =
+            worker_build_cards_verified && status.active_command_card == 236U &&
+            zerg_basic.count == 7U &&
+            card_has(zerg_basic, 1U, 131U, 131U,
+                     CommandButtonVisual::Action::begin_building_placement) &&
+            card_has(zerg_basic, 3U, 149U, 149U,
+                     CommandButtonVisual::Action::begin_building_placement);
+        status.active_command_card = 239U;
+        const CommandCardView zerg_advanced = command_card_for(status);
+        worker_build_cards_verified =
+            worker_build_cards_verified && zerg_advanced.count == 6U &&
+            card_has(zerg_advanced, 5U, 136U, 136U,
+                     CommandButtonVisual::Action::begin_building_placement);
+        worker_build_cards_probe_stage =
+            worker_build_cards_verified ? 2 : worker_build_cards_probe_stage;
+
+        ScenarioUnitPreview &same_worker = status.units.back();
+        worker_build_cards_verified =
+            worker_build_cards_verified &&
+            configure_preview_type(status, same_worker,
+                                   starcraft::lang::protoss_probe_type);
+        status.active_command_card = 0U;
+        const CommandCardView probe = command_card_for(status);
+        worker_build_cards_verified =
+            worker_build_cards_verified && probe.count == 7U &&
+            card_has(probe, 7U, 272U, 238U,
+                     CommandButtonVisual::Action::open_card) &&
+            card_has(probe, 8U, 273U, 241U,
+                     CommandButtonVisual::Action::open_card);
+        status.active_command_card = 238U;
+        const CommandCardView protoss_basic = command_card_for(status);
+        worker_build_cards_verified =
+            worker_build_cards_verified && protoss_basic.count == 9U &&
+            card_has(protoss_basic, 1U, 154U, 154U,
+                     CommandButtonVisual::Action::begin_building_placement) &&
+            card_has(protoss_basic, 3U, 157U, 157U,
+                     CommandButtonVisual::Action::begin_building_placement);
+        status.active_command_card = 241U;
+        const CommandCardView protoss_advanced = command_card_for(status);
+        worker_build_cards_verified =
+            worker_build_cards_verified && protoss_advanced.count == 9U &&
+            card_has(protoss_advanced, 8U, 170U, 170U,
+                     CommandButtonVisual::Action::begin_building_placement);
+        worker_build_cards_probe_stage =
+            worker_build_cards_verified ? 3 : worker_build_cards_probe_stage;
+        status.units.pop_back();
+      }
+    }
+
+    bool race_building_cards_verified = true;
+    int race_building_cards_probe_stage{};
+    if (race_building_cards_probe) {
+      struct ExpectedBuildingCard {
+        std::uint16_t unit_type;
+        std::size_t count;
+        std::uint16_t sentinel_position;
+        std::uint16_t sentinel_icon;
+        std::uint16_t sentinel_argument;
+        CommandButtonVisual::Action sentinel_action;
+      };
+      constexpr std::array<ExpectedBuildingCard, 15> zerg_cards{{
+          {131U, 2U, 7U, 132U, 132U,
+           CommandButtonVisual::Action::morph_building},
+          {132U, 5U, 7U, 133U, 133U,
+           CommandButtonVisual::Action::morph_building},
+          {133U, 4U, 6U, 295U, 26U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {134U, 1U, 1U, 134U, 134U,
+           CommandButtonVisual::Action::place_nydus_exit},
+          {135U, 2U, 2U, 268U, 30U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {136U, 4U, 4U, 294U, 32U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {137U, 3U, 4U, 44U, 13U,
+           CommandButtonVisual::Action::research_technology},
+          {138U, 5U, 5U, 311U, 12U,
+           CommandButtonVisual::Action::research_technology},
+          {139U, 3U, 4U, 296U, 3U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {140U, 1U, 1U, 269U, 20U,
+           CommandButtonVisual::Action::research_technology},
+          {141U, 3U, 7U, 137U, 137U,
+           CommandButtonVisual::Action::morph_building},
+          {142U, 2U, 2U, 264U, 28U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {143U, 2U, 8U, 146U, 146U,
+           CommandButtonVisual::Action::morph_building},
+          {144U, 2U, 3U, 230U, 0U,
+           CommandButtonVisual::Action::begin_attack_target},
+          {146U, 2U, 3U, 230U, 0U,
+           CommandButtonVisual::Action::begin_attack_target},
+      }};
+      constexpr std::array<ExpectedBuildingCard, 13> protoss_cards{{
+          {154U, 2U, 1U, 64U, 64U,
+           CommandButtonVisual::Action::train_unit},
+          {155U, 4U, 3U, 84U, 84U,
+           CommandButtonVisual::Action::train_unit},
+          {159U, 2U, 2U, 315U, 38U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {160U, 4U, 3U, 67U, 67U,
+           CommandButtonVisual::Action::train_unit},
+          {162U, 2U, 3U, 230U, 0U,
+           CommandButtonVisual::Action::begin_attack_target},
+          {163U, 1U, 4U, 306U, 34U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {164U, 3U, 4U, 281U, 33U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {165U, 5U, 6U, 274U, 21U,
+           CommandButtonVisual::Action::research_technology},
+          {166U, 3U, 5U, 308U, 15U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {167U, 4U, 3U, 71U, 71U,
+           CommandButtonVisual::Action::train_unit},
+          {169U, 3U, 3U, 319U, 43U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {170U, 4U, 4U, 320U, 44U,
+           CommandButtonVisual::Action::upgrade_technology},
+          {171U, 3U, 3U, 314U, 37U,
+           CommandButtonVisual::Action::upgrade_technology},
+      }};
+      const auto verify_cards = [&](const auto &expected,
+                                    const std::size_t expected_total) {
+        std::size_t total{};
+        for (const ExpectedBuildingCard &entry : expected) {
+          ScenarioUnitPreview building{};
+          building.unit_id = status.next_unit_id++;
+          building.unit_type = entry.unit_type;
+          building.owner = 0U;
+          building.selected = true;
+          building.is_building = true;
+          building.construction_complete = true;
+          clear_selection(status);
+          status.units.push_back(building);
+          status.units.back().selected = true;
+          status.active_command_card = 0U;
+          const CommandCardView card = command_card_for(status);
+          const bool sentinel =
+              card.count != 0U &&
+              std::any_of(card.buttons, card.buttons + card.count,
+                          [&](const CommandButtonVisual &button) {
+                            return button.position == entry.sentinel_position &&
+                                   button.icon == entry.sentinel_icon &&
+                                   button.argument == entry.sentinel_argument &&
+                                   button.action == entry.sentinel_action;
+                          });
+          total += card.count;
+          status.units.pop_back();
+          if (card.count != entry.count || !sentinel) {
+            return false;
+          }
+        }
+        return total == expected_total;
+      };
+      race_building_cards_verified =
+          verify_cards(zerg_cards, 41U) &&
+          verify_cards(protoss_cards, 40U);
+      race_building_cards_probe_stage =
+          race_building_cards_verified ? 1 : 0;
+      if (race_building_cards_verified) {
+        constexpr std::array<std::uint16_t, 4> retail_empty_cards{{
+            149U, 156U, 157U, 172U,
+        }};
+        for (const std::uint16_t unit_type : retail_empty_cards) {
+          ScenarioUnitPreview building{};
+          building.unit_id = status.next_unit_id++;
+          building.unit_type = unit_type;
+          building.owner = 0U;
+          building.selected = true;
+          building.is_building = true;
+          building.construction_complete = true;
+          clear_selection(status);
+          status.units.push_back(building);
+          status.units.back().selected = true;
+          status.active_command_card = 0U;
+          race_building_cards_verified =
+              race_building_cards_verified &&
+              command_card_for(status).count == 0U;
+          status.units.pop_back();
+        }
+        race_building_cards_probe_stage =
+            race_building_cards_verified ? 2 : 1;
+      }
+      if (race_building_cards_verified) {
+        status.player_minerals = 100000U;
+        status.player_gas = 100000U;
+        status.researched_technologies[11U] = false;
+        ScenarioUnitPreview hatchery{};
+        hatchery.unit_id = status.next_unit_id++;
+        hatchery.owner = 0U;
+        race_building_cards_verified =
+            configure_preview_type(status, hatchery, 131U);
+        if (race_building_cards_verified) {
+          clear_selection(status);
+          hatchery.selected = true;
+          const std::uint32_t hatchery_id = hatchery.unit_id;
+          status.units.push_back(hatchery);
+          const std::uint32_t minerals_before = status.player_minerals;
+          const std::uint32_t gas_before = status.player_gas;
+          const starcraft::data::TechnologyResearchTraits burrowing =
+              status.technology_traits[11U];
+          race_building_cards_verified = click_command(1U);
+          ScenarioUnitPreview *researching =
+              find_unit_by_id(status, hatchery_id);
+          race_building_cards_verified =
+              researching != nullptr && researching->active_technology == 11U &&
+              researching->technology_ticks_remaining != 0U &&
+              status.player_minerals ==
+                  minerals_before - burrowing.mineral_cost &&
+              status.player_gas == gas_before - burrowing.gas_cost &&
+              command_card_for(status).count == 1U &&
+              command_card_for(status).buttons[0].action ==
+                  CommandButtonVisual::Action::cancel_research;
+          const std::uint16_t ticks =
+              researching == nullptr ? 0U
+                                     : researching->technology_ticks_remaining;
+          for (std::uint32_t tick = 0;
+               race_building_cards_verified && tick <= ticks; ++tick) {
+            (void)advance_technology_research(status);
+          }
+          researching = find_unit_by_id(status, hatchery_id);
+          race_building_cards_verified =
+              race_building_cards_verified && researching != nullptr &&
+              researching->active_technology == 28U &&
+              status.researched_technologies[11U] &&
+              command_card_for(status).count == 1U &&
+              command_card_for(status).buttons[0].action ==
+                  CommandButtonVisual::Action::morph_building;
+          status.units.pop_back();
+        }
+        race_building_cards_probe_stage =
+            race_building_cards_verified ? 3 : 2;
+      }
+      if (race_building_cards_verified) {
+        ScenarioUnitPreview hatchery{};
+        hatchery.unit_id = status.next_unit_id++;
+        hatchery.owner = 0U;
+        race_building_cards_verified =
+            configure_preview_type(status, hatchery, 131U);
+        if (race_building_cards_verified) {
+          clear_selection(status);
+          hatchery.selected = true;
+          const std::uint32_t hatchery_id = hatchery.unit_id;
+          status.units.push_back(hatchery);
+          race_building_cards_verified = click_command(7U);
+          ScenarioUnitPreview *morphing = find_unit_by_id(status, hatchery_id);
+          race_building_cards_verified =
+              morphing != nullptr && !morphing->construction_complete &&
+              morphing->construction_target_type == 132U &&
+              morphing->construction_ticks_remaining != 0U;
+          const std::uint16_t ticks =
+              morphing == nullptr ? 0U : morphing->construction_ticks_remaining;
+          for (std::uint32_t tick = 0;
+               race_building_cards_verified && tick <= ticks + 12U; ++tick) {
+            (void)advance_zerg_building_construction(status);
+          }
+          morphing = find_unit_by_id(status, hatchery_id);
+          race_building_cards_verified =
+              race_building_cards_verified && morphing != nullptr &&
+              morphing->unit_type == 132U &&
+              morphing->construction_complete &&
+              morphing->construction_target_type == 0xFFFFU;
+          status.units.pop_back();
+        }
+        race_building_cards_probe_stage =
+            race_building_cards_verified ? 4 : 3;
+      }
+      if (race_building_cards_verified) {
+        ScenarioUnitPreview den{};
+        den.unit_id = status.next_unit_id++;
+        den.owner = 0U;
+        status.upgrade_levels[29U] = 0U;
+        race_building_cards_verified =
+            configure_preview_type(status, den, 135U);
+        if (race_building_cards_verified) {
+          clear_selection(status);
+          den.selected = true;
+          const std::uint32_t den_id = den.unit_id;
+          status.units.push_back(den);
+          const std::uint32_t minerals_before = status.player_minerals;
+          const std::uint32_t gas_before = status.player_gas;
+          const starcraft::data::UpgradeResearchTraits traits =
+              status.upgrade_traits[29U];
+          race_building_cards_verified = click_command(1U);
+          ScenarioUnitPreview *upgrading = find_unit_by_id(status, den_id);
+          race_building_cards_verified =
+              upgrading != nullptr && upgrading->active_upgrade == 29U &&
+              upgrading->technology_ticks_remaining != 0U;
+          race_building_cards_verified =
+              race_building_cards_verified && click_command(9U);
+          upgrading = find_unit_by_id(status, den_id);
+          race_building_cards_verified =
+              race_building_cards_verified && upgrading != nullptr &&
+              upgrading->active_upgrade == 46U &&
+              upgrading->technology_ticks_remaining == 0U &&
+              status.player_minerals ==
+                  minerals_before - traits.mineral_cost +
+                      3U * traits.mineral_cost / 4U &&
+              status.player_gas == gas_before - traits.gas_cost +
+                                       3U * traits.gas_cost / 4U;
+          if (race_building_cards_verified) {
+            status.player_minerals = 100000U;
+            status.player_gas = 100000U;
+            race_building_cards_verified = click_command(1U);
+            upgrading = find_unit_by_id(status, den_id);
+            const std::uint16_t ticks =
+                upgrading == nullptr ? 0U
+                                     : upgrading->technology_ticks_remaining;
+            for (std::uint32_t tick = 0;
+                 race_building_cards_verified && tick <= ticks; ++tick) {
+              (void)advance_technology_research(status);
+            }
+            upgrading = find_unit_by_id(status, den_id);
+            race_building_cards_verified =
+                race_building_cards_verified && upgrading != nullptr &&
+                upgrading->active_upgrade == 46U &&
+                status.upgrade_levels[29U] == 1U;
+          }
+          status.units.pop_back();
+        }
+        race_building_cards_probe_stage =
+            race_building_cards_verified ? 5 : 4;
+      }
+      if (race_building_cards_verified) {
+        ScenarioUnitPreview canal{};
+        canal.unit_id = status.next_unit_id++;
+        canal.owner = 0U;
+        race_building_cards_verified =
+            configure_preview_type(status, canal, 134U);
+        if (race_building_cards_verified) {
+          clear_selection(status);
+          canal.selected = true;
+          const std::uint32_t canal_id = canal.unit_id;
+          status.units.push_back(canal);
+          race_building_cards_verified = click_command(1U);
+          race_building_cards_verified =
+              race_building_cards_verified && status.placement_active &&
+              status.placement_unit_type == 134U &&
+              status.nydus_parent_id == canal_id;
+          const BuildableUnitVisual *const nydus =
+              find_buildable_unit(status, 134U);
+          bool placement_found{};
+          if (race_building_cards_verified && nydus != nullptr) {
+            for (int y = 160;
+                 y + 160 < status.pathing_map.pixel_height() &&
+                 !placement_found;
+                 y += 32) {
+              for (int x = 160;
+                   x + 160 < status.pathing_map.pixel_width(); x += 32) {
+                if (placement_is_valid(status, *nydus,
+                                       static_cast<std::uint16_t>(x),
+                                       static_cast<std::uint16_t>(y))) {
+                  status.placement_x = static_cast<std::uint16_t>(x);
+                  status.placement_y = static_cast<std::uint16_t>(y);
+                  status.placement_valid = true;
+                  placement_found = true;
+                  break;
+                }
+              }
+            }
+          }
+          race_building_cards_verified =
+              race_building_cards_verified && placement_found &&
+              place_current_building(status);
+          const ScenarioUnitPreview *const parent =
+              find_unit_by_id(status, canal_id);
+          const ScenarioUnitPreview *const exit =
+              parent == nullptr
+                  ? nullptr
+                  : find_unit_by_id(status, parent->attached_addon_id);
+          race_building_cards_verified =
+              race_building_cards_verified && parent != nullptr &&
+              exit != nullptr && exit->unit_type == 134U &&
+              exit->addon_parent_id == canal_id &&
+              status.nydus_parent_id == 0U;
+          if (exit != nullptr && status.units.back().unit_id == exit->unit_id) {
+            status.units.pop_back();
+          }
+          status.units.pop_back();
+        }
+        race_building_cards_probe_stage =
+            race_building_cards_verified ? 6 : 5;
+      }
+      if (race_building_cards_verified) {
+        ScenarioUnitPreview archives{};
+        archives.unit_id = status.next_unit_id++;
+        archives.owner = 0U;
+        status.researched_technologies[22U] = false;
+        race_building_cards_verified =
+            configure_preview_type(status, archives, 165U);
+        if (race_building_cards_verified) {
+          clear_selection(status);
+          archives.selected = true;
+          const std::uint32_t archives_id = archives.unit_id;
+          status.units.push_back(archives);
+          race_building_cards_verified = click_command(1U);
+          ScenarioUnitPreview *researching =
+              find_unit_by_id(status, archives_id);
+          race_building_cards_verified =
+              researching != nullptr && researching->active_technology == 22U &&
+              command_card_for(status).count == 1U &&
+              command_card_for(status).buttons[0].action ==
+                  CommandButtonVisual::Action::cancel_research;
+          status.units.pop_back();
+        }
+        race_building_cards_probe_stage =
+            race_building_cards_verified ? 7 : 6;
+      }
+    }
 
     bool all_production_verified = true;
     int all_production_probe_stage{};
@@ -1794,6 +2807,147 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             command_centers_after == command_centers_before + 1U;
       }
     }
+    bool race_construction_verified = true;
+    int race_construction_probe_stage{};
+    if (race_construction_probe) {
+      race_construction_verified = false;
+      status.player_minerals = 10000U;
+      status.player_gas = 10000U;
+      const auto insert_worker =
+          [&](const std::uint16_t unit_type) -> std::uint32_t {
+        ScenarioUnitPreview worker{};
+        worker.unit_id = status.next_unit_id++;
+        worker.owner = 0U;
+        if (!configure_preview_type(status, worker, unit_type)) {
+          return 0U;
+        }
+        for (int y = 64; y < status.pathing_map.pixel_height() - 64;
+             y += 32) {
+          for (int x = 64; x < status.pathing_map.pixel_width() - 64;
+               x += 32) {
+            if (!creation_position_passable(status, worker, x, y)) {
+              continue;
+            }
+            worker.x = static_cast<std::uint16_t>(x);
+            worker.y = static_cast<std::uint16_t>(y);
+            worker.x_fixed = x << 8U;
+            worker.y_fixed = y << 8U;
+            status.units.push_back(std::move(worker));
+            return status.units.back().unit_id;
+          }
+        }
+        return 0U;
+      };
+      const auto place_for_worker =
+          [&](const std::uint32_t worker_id,
+              const std::uint16_t building_type) -> bool {
+        ScenarioUnitPreview *const worker = find_unit_by_id(status, worker_id);
+        const BuildableUnitVisual *const buildable =
+            find_buildable_unit(status, building_type);
+        if (worker == nullptr || buildable == nullptr) {
+          return false;
+        }
+        clear_selection(status);
+        worker->selected = true;
+        status.placement_active = true;
+        status.placement_unit_type = building_type;
+        const int half_width = buildable->placement_width / 2;
+        const int half_height = buildable->placement_height / 2;
+        for (int y = half_height;
+             y + half_height <= status.pathing_map.pixel_height(); y += 32) {
+          for (int x = half_width;
+               x + half_width <= status.pathing_map.pixel_width(); x += 32) {
+            status.placement_x = static_cast<std::uint16_t>(x);
+            status.placement_y = static_cast<std::uint16_t>(y);
+            if (!placement_is_valid(status, *buildable, status.placement_x,
+                                    status.placement_y)) {
+              continue;
+            }
+            status.placement_valid = true;
+            return place_current_building(status);
+          }
+        }
+        return false;
+      };
+
+      const std::uint32_t drone_id =
+          insert_worker(starcraft::lang::zerg_drone_type);
+      const std::size_t before_drone_morph = status.units.size();
+      const bool drone_placed =
+          drone_id != 0U && place_for_worker(drone_id, 131U);
+      ScenarioUnitPreview *zerg_building = find_unit_by_id(status, drone_id);
+      const bool drone_morphed =
+          drone_placed && status.units.size() == before_drone_morph &&
+          zerg_building != nullptr && zerg_building->unit_type == 131U &&
+          !zerg_building->construction_complete &&
+          zerg_building->construction_builder_id == 0U;
+      race_construction_probe_stage = drone_morphed ? 1 : 0;
+      if (drone_morphed) {
+        zerg_building->construction_ticks_remaining = 1U;
+        for (int tick = 0; tick < 128 && !zerg_building->construction_complete;
+             ++tick) {
+          SendMessageA(window, WM_TIMER, 1, 0);
+          zerg_building = find_unit_by_id(status, drone_id);
+          if (zerg_building == nullptr) {
+            break;
+          }
+        }
+      }
+      const bool zerg_completed =
+          zerg_building != nullptr && zerg_building->construction_complete &&
+          zerg_building->hit_points == zerg_building->max_hit_points;
+      race_construction_probe_stage =
+          zerg_completed ? 2 : race_construction_probe_stage;
+      if (zerg_building != nullptr) {
+        zerg_building->alive = false;
+        zerg_building->selected = false;
+      }
+
+      const std::uint32_t probe_id =
+          insert_worker(starcraft::lang::protoss_probe_type);
+      const std::size_t before_probe_build = status.units.size();
+      const bool nexus_placed =
+          probe_id != 0U && place_for_worker(probe_id, 154U);
+      ScenarioUnitPreview *probe = find_unit_by_id(status, probe_id);
+      ScenarioUnitPreview *nexus =
+          nexus_placed && status.units.size() == before_probe_build + 1U
+              ? &status.units.back()
+              : nullptr;
+      const std::uint32_t nexus_id = nexus == nullptr ? 0U : nexus->unit_id;
+      const bool probe_released =
+          nexus != nullptr && nexus->unit_type == 154U &&
+          !nexus->construction_complete &&
+          nexus->construction_builder_id == 0U && probe != nullptr &&
+          probe->alive && probe->unit_type == starcraft::lang::protoss_probe_type &&
+          probe->active_order == ActiveUnitOrder::none;
+      race_construction_probe_stage =
+          probe_released ? 3 : race_construction_probe_stage;
+      if (probe_released) {
+        nexus->construction_ticks_remaining = 1U;
+        for (int tick = 0; tick < 128 && !nexus->construction_complete;
+             ++tick) {
+          SendMessageA(window, WM_TIMER, 1, 0);
+          nexus = find_unit_by_id(status, nexus_id);
+          if (nexus == nullptr) {
+            break;
+          }
+        }
+      }
+      const bool protoss_completed =
+          nexus != nullptr && nexus->construction_complete &&
+          nexus->hit_points == nexus->max_hit_points;
+      race_construction_verified = zerg_completed && probe_released &&
+                                   protoss_completed;
+      race_construction_probe_stage =
+          !drone_morphed   ? 0
+          : !zerg_completed
+              ? static_cast<int>(20 +
+                                 zerg_building->construction_animation_phase)
+          : !probe_released ? 2
+          : !protoss_completed
+              ? static_cast<int>(10 + nexus->construction_animation_phase)
+              : 4;
+    }
     bool construction_verified = true;
     bool construction_status_verified = true;
     bool construction_animation_verified = true;
@@ -2274,6 +3428,15 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
     if (movement_probe && !movement_verified) {
       return 220 + movement_probe_stage;
     }
+    if (worker_build_cards_probe && !worker_build_cards_verified) {
+      return 260 + worker_build_cards_probe_stage;
+    }
+    if (race_construction_probe && !race_construction_verified) {
+      return 280 + race_construction_probe_stage;
+    }
+    if (race_building_cards_probe && !race_building_cards_verified) {
+      return 300 + race_building_cards_probe_stage;
+    }
     return rendered && captured && selection_verified &&
                    command_panel_verified && production_verified &&
                    movement_verified && pathfinding_verified &&
@@ -2291,6 +3454,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                    unit_audio_verified && music_verified &&
                    harvest_queue_verified && geysers_verified &&
                    all_production_verified
+                   && worker_build_cards_verified &&
+                   race_construction_verified &&
+                   race_building_cards_verified
                ? 0
                : 11;
   }

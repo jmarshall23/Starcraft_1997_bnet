@@ -54,6 +54,12 @@ using PlacementPassable = bool (*)(int x, int y, void* context) noexcept;
     std::uint8_t chk_race,
     MeleeUnitTypes& output) noexcept;  // VAs 0x00480B60, 0x00480C80
 
+[[nodiscard]] bool is_melee_starting_unit_type(
+    std::uint16_t unit_type) noexcept;
+[[nodiscard]] bool melee_starting_unit_matches_race(
+    std::uint16_t unit_type,
+    std::uint8_t chk_race) noexcept;
+
 [[nodiscard]] PlacementPoint align_melee_base(
     std::uint16_t start_x,
     std::uint16_t start_y,

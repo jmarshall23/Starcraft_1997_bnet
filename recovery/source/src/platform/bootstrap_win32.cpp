@@ -24,6 +24,9 @@ int WINAPI WinMain(const HINSTANCE instance, HINSTANCE, LPSTR command_line,
   }
 
   RecoveryWindowState window_state{&status};
+  const bool glue_ready = initialize_glue_assets(window_state.glue);
+  const bool game_dialogs_ready =
+      initialize_game_dialog_assets(window_state.game_dialog, status);
   WNDCLASSA window_class{};
   window_class.style = CS_DBLCLKS | CS_OWNDC;
   window_class.lpfnWndProc = recovery_window_proc;
@@ -41,6 +44,13 @@ int WINAPI WinMain(const HINSTANCE instance, HINSTANCE, LPSTR command_line,
   if (!status.detail.empty()) {
     window_title += " | ";
     window_title += status.detail;
+  }
+  if (!glue_ready && !window_state.glue.failure.empty()) {
+    window_title += " | ";
+    window_title += window_state.glue.failure;
+  }
+  if (!game_dialogs_ready) {
+    window_title += " | In-game dialog assets failed to decode.";
   }
   RECT requested_window{0, 0, 960, 600};
   AdjustWindowRect(&requested_window, WS_OVERLAPPEDWINDOW, FALSE);

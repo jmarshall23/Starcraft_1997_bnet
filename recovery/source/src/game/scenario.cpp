@@ -117,4 +117,20 @@ bool MultiplayerScenario::tile(
   return true;
 }
 
+bool MultiplayerScenario::configure_player(const std::size_t player,
+                                            const std::uint8_t ownership,
+                                            const std::uint8_t race) noexcept {
+  if (!valid_ || player >= players_.size() || (ownership != 0U && race >= 3U)) {
+    return false;
+  }
+  if (players_[player].ownership != 0U && ownership == 0U) {
+    --active_player_count_;
+  } else if (players_[player].ownership == 0U && ownership != 0U) {
+    ++active_player_count_;
+  }
+  players_[player].ownership = ownership;
+  players_[player].race = race;
+  return true;
+}
+
 }  // namespace starcraft::game

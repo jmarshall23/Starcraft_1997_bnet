@@ -180,13 +180,35 @@ bool collect_building_obstacles(
           unit.selection_width == 0 || unit.selection_height == 0) {
         continue;
       }
-      const int left = static_cast<int>(unit.x) - unit.selection_width / 2;
-      const int top = static_cast<int>(unit.y) - unit.selection_height / 2;
+      // CUnitPathCollide.cpp::sub_43AC00/sub_43AD40 build the blocking
+      // rectangle from the four units.dat collision extents at
+      // dword_8E0990/dword_8E0994.  The placement dimensions are deliberately
+      // larger for structures such as a Hatchery; using them here traps a
+      // correctly settled Drone in the non-colliding apron and makes every
+      // movement tick re-plan from the same point.
+      const bool has_dat_extents =
+          unit.collision_left != 0U || unit.collision_top != 0U ||
+          unit.collision_right != 0U || unit.collision_bottom != 0U;
+      const int left =
+          static_cast<int>(unit.x) -
+          (has_dat_extents ? unit.collision_left : unit.selection_width / 2);
+      const int top =
+          static_cast<int>(unit.y) -
+          (has_dat_extents ? unit.collision_top : unit.selection_height / 2);
+      const int right =
+          static_cast<int>(unit.x) +
+          (has_dat_extents ? unit.collision_right
+                           : unit.selection_width - unit.selection_width / 2);
+      const int bottom =
+          static_cast<int>(unit.y) +
+          (has_dat_extents
+               ? unit.collision_bottom
+               : unit.selection_height - unit.selection_height / 2);
       output.push_back({
           left,
           top,
-          left + unit.selection_width,
-          top + unit.selection_height,
+          right,
+          bottom,
       });
     }
     return true;
@@ -1086,6 +1108,7 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
             addon->addon_parent_id = 0;
           }
         }
+        target->destroyed_by_owner = worker.owner;
         target->alive = false;
         target->selected = false;
         target->active_order = ActiveUnitOrder::none;
@@ -1267,6 +1290,10 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       }
       status.player_minerals += worker.cargo_minerals;
       status.player_gas += worker.cargo_gas;
+      if (worker.owner < status.minerals_gathered.size()) {
+        status.minerals_gathered[worker.owner] += worker.cargo_minerals;
+        status.gas_gathered[worker.owner] += worker.cargo_gas;
+      }
       worker.cargo_minerals = 0;
       worker.cargo_gas = 0;
       ScenarioUnitPreview *const source =

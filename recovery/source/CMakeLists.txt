@@ -104,18 +104,31 @@ add_executable(StarCraftRecovery WIN32
   src/lang/CImage.cpp
   src/lang/CUnitBuildRuntime.cpp
   src/lang/CUnitInitRuntime.cpp
+  src/lang/CUnitPBuildRuntime.cpp
+  src/lang/CUnitUpgradeRuntime.cpp
   src/lang/CUnitUpdate.cpp
+  src/lang/CUnitZBuildRuntime.cpp
   src/lang/CUnitZergRuntime.cpp
   src/lang/cellscrl.cpp
   src/lang/filedist.cpp
   src/lang/event_Win.cpp
   src/lang/gamedata.cpp
   src/lang/gamesnd.cpp
+  src/lang/gluChat.cpp
+  src/lang/gluChatSlot.cpp
+  src/lang/gluConn.cpp
+  src/lang/gluMain.cpp
+  src/lang/gluMap.cpp
+  src/lang/gluRdy.cpp
+  src/lang/gluScore.cpp
+  src/lang/glues.cpp
   src/lang/map_load.cpp
   src/lang/minimap.cpp
+  src/lang/Music.cpp
   src/lang/placebox.cpp
   src/lang/select.cpp
   src/lang/snd.cpp
+  src/lang/statmisc.cpp
   src/lang/statcmd.cpp
   src/lang/statdata.cpp
   src/lang/statdraw.cpp
@@ -123,6 +136,10 @@ add_executable(StarCraftRecovery WIN32
   src/lang/statres.cpp
   src/lang/statwire.cpp
   src/lang/target.cpp
+  src/lang/title.cpp
+  src/lang/opt_dlgs.cpp
+  src/lang/VictDlg.cpp
+  src/lang/victory.cpp
   src/staredit/mapcomn/creep_runtime.cpp
 )
 target_link_libraries(
@@ -150,6 +167,9 @@ target_link_libraries(archive_inventory PRIVATE starcraft_core)
 
 add_executable(stat_text_inventory tools/stat_text_inventory.cpp)
 target_link_libraries(stat_text_inventory PRIVATE starcraft_core)
+
+add_executable(dialog_inventory tools/dialog_inventory.cpp)
+target_link_libraries(dialog_inventory PRIVATE starcraft_core)
 
 if(MSVC)
   # Preserve the original PE's fixed x86 image-base assumption while recovery is
@@ -377,9 +397,42 @@ if(BUILD_TESTING)
   )
 
   add_test(NAME bootstrap_asset_probe COMMAND StarCraftRecovery --probe-assets)
+  add_test(NAME bootstrap_glue_probe COMMAND StarCraftRecovery --probe-glue)
+  add_test(
+    NAME bootstrap_game_flow_probe
+    COMMAND StarCraftRecovery --probe-game-flow --probe-map-index=0
+  )
+  add_test(
+    NAME bootstrap_glue_zerg_map_probe
+    COMMAND StarCraftRecovery --probe-glue --probe-map-index=3 --probe-worker-build-cards
+  )
+  add_test(
+    NAME bootstrap_glue_zerg_race_conversion_probe
+    COMMAND StarCraftRecovery --probe-glue --probe-map-index=0 --probe-local-race=0 --probe-worker-build-cards
+  )
+  add_test(
+    NAME bootstrap_glue_zerg_drone_movement_probe
+    COMMAND StarCraftRecovery --probe-glue --probe-map-index=0 --probe-local-race=0 --probe-drone-movement
+  )
+  add_test(
+    NAME bootstrap_glue_protoss_race_probe
+    COMMAND StarCraftRecovery --probe-glue --probe-map-index=0 --probe-local-race=2 --probe-worker-build-cards
+  )
   add_test(NAME bootstrap_opengl_probe COMMAND StarCraftRecovery --probe-opengl)
   add_test(NAME bootstrap_selection_probe COMMAND StarCraftRecovery --probe-selection)
   add_test(NAME bootstrap_command_panel_probe COMMAND StarCraftRecovery --probe-command-panel)
+  add_test(
+    NAME bootstrap_worker_build_cards_probe
+    COMMAND StarCraftRecovery --probe-worker-build-cards
+  )
+  add_test(
+    NAME bootstrap_race_building_cards_probe
+    COMMAND StarCraftRecovery --probe-race-building-cards
+  )
+  add_test(
+    NAME bootstrap_race_construction_probe
+    COMMAND StarCraftRecovery --probe-race-construction
+  )
   add_test(NAME bootstrap_status_panel_probe COMMAND StarCraftRecovery --probe-status-panel)
   add_test(NAME bootstrap_multi_status_probe COMMAND StarCraftRecovery --probe-multi-status)
   add_test(NAME bootstrap_production_probe COMMAND StarCraftRecovery --probe-production)

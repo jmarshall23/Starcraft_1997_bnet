@@ -19,7 +19,6 @@ constexpr std::array<std::array<std::uint8_t, 7>, 7> kCameraScrollSpeeds{{
     {{0, 8, 16, 24, 32, 40, 48}},
     {{0, 8, 24, 32, 40, 56, 64}},
 }};
-constexpr std::size_t kDefaultCameraScrollSpeed = 3;
 
 bool set_camera_position(BootstrapStatus &status, const int requested_x,
                          const int requested_y) noexcept {
@@ -109,6 +108,7 @@ bool advance_camera_scroll(RecoveryWindowState &state) noexcept {
       camera_key_down(state, VK_NUMPAD4) || camera_key_down(state, VK_NUMPAD7);
   vertical = down ? 1 : (up ? -1 : 0);
   horizontal = right ? 1 : (left ? -1 : 0);
+  const bool keyboard_scroll = horizontal != 0 || vertical != 0;
 
   // cursor.cpp::sub_44AA10 at 0x0044AA10 uses a two-pixel edge band.
   // Its 478 bottom edge belonged to the original 480-line surface; this
@@ -129,7 +129,12 @@ bool advance_camera_scroll(RecoveryWindowState &state) noexcept {
     ++state.camera_scroll_ramp;
   }
   const int distance =
-      kCameraScrollSpeeds[kDefaultCameraScrollSpeed][state.camera_scroll_ramp];
+      kCameraScrollSpeeds[(std::min)(
+          static_cast<std::size_t>(6U),
+          static_cast<std::size_t>(keyboard_scroll
+                                       ? state.game_dialog.key_scroll
+                                       : state.game_dialog.mouse_scroll))]
+                         [state.camera_scroll_ramp];
   const bool moved = set_camera_position(
       *status, static_cast<int>(status->camera_x) + horizontal * distance,
       static_cast<int>(status->camera_y) + vertical * distance);

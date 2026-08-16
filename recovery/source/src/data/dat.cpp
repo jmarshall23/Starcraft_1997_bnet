@@ -65,6 +65,18 @@ constexpr std::array<DatFieldShape, 16> kImageShapes{{
     {1, 590},
 }};
 
+// StarCraft.exe descriptor tables 0x00502000 and 0x00502A78. The research
+// tables contain 28 technology rows and 46 upgrade rows respectively.
+constexpr std::array<DatFieldShape, 9> kTechnologyShapes{{
+    {2, 28}, {2, 28}, {2, 28}, {2, 28}, {2, 28},
+    {2, 28}, {2, 28}, {2, 28}, {1, 28},
+}};
+
+constexpr std::array<DatFieldShape, 11> kUpgradeShapes{{
+    {2, 46}, {2, 46}, {2, 46}, {2, 46}, {2, 46}, {2, 46},
+    {2, 46}, {2, 46}, {2, 46}, {1, 46}, {1, 46},
+}};
+
 constexpr std::array<DatFieldShape, 1> kMapDataShapes{{
     {4, 13},
 }};
@@ -227,6 +239,10 @@ bool CoreDataSet::load(runtime::StormModule &storm) noexcept {
                 total_payload_bytes_, failed_asset_) ||
       !load_dat(storm, R"(arr\images.dat)", kImageShapes, images_,
                 total_payload_bytes_, failed_asset_) ||
+      !load_dat(storm, R"(arr\techdata.dat)", kTechnologyShapes,
+                technologies_, total_payload_bytes_, failed_asset_) ||
+      !load_dat(storm, R"(arr\upgrades.dat)", kUpgradeShapes, upgrades_,
+                total_payload_bytes_, failed_asset_) ||
       !load_dat(storm, R"(arr\mapdata.dat)", kMapDataShapes, mapdata_,
                 total_payload_bytes_, failed_asset_) ||
       !load_dat(storm, R"(arr\portdata.dat)", kPortraitShapes, portraits_,
@@ -277,6 +293,10 @@ const DatTable &CoreDataSet::weapons() const noexcept { return weapons_; }
 const DatTable &CoreDataSet::flingy() const noexcept { return flingy_; }
 const DatTable &CoreDataSet::sprites() const noexcept { return sprites_; }
 const DatTable &CoreDataSet::images() const noexcept { return images_; }
+const DatTable &CoreDataSet::technologies() const noexcept {
+  return technologies_;
+}
+const DatTable &CoreDataSet::upgrades() const noexcept { return upgrades_; }
 const DatTable &CoreDataSet::mapdata() const noexcept { return mapdata_; }
 const DatTable &CoreDataSet::portraits() const noexcept { return portraits_; }
 const std::vector<std::uint8_t> &CoreDataSet::image_strings() const noexcept {
@@ -557,6 +577,46 @@ bool CoreDataSet::unit_simulation_traits(
          cooldowns->value(traits.ground_weapon,
                           traits.ground_weapon_cooldown) &&
          traits.ground_weapon_damage != 0 && traits.ground_weapon_cooldown != 0;
+}
+
+bool CoreDataSet::technology_research_traits(
+    const std::uint16_t technology,
+    TechnologyResearchTraits &traits) const noexcept {
+  // CUnitUpgrade.cpp::sub_4467E0 reads word_8D9178/word_8D91E8 for cost and
+  // stores word_8D9258[technology] >> 1 as the live research timer.
+  const DatField *const minerals = technologies_.field(0);
+  const DatField *const gas = technologies_.field(1);
+  const DatField *const time = technologies_.field(2);
+  return minerals != nullptr && gas != nullptr && time != nullptr &&
+         minerals->value(technology, traits.mineral_cost) &&
+         gas->value(technology, traits.gas_cost) &&
+         time->value(technology, traits.research_time);
+}
+
+bool CoreDataSet::upgrade_research_traits(
+    const std::uint16_t upgrade,
+    UpgradeResearchTraits &traits) const noexcept {
+  // CUnitUpgrade.cpp::sub_446740/sub_446790 and sub_4469E0 use these exact
+  // base/factor arrays with the player's current byte_51791F level. The last
+  // byte field, byte_8E1840, is the original maximum level.
+  const DatField *const mineral_cost = upgrades_.field(0);
+  const DatField *const mineral_factor = upgrades_.field(1);
+  const DatField *const gas_cost = upgrades_.field(2);
+  const DatField *const gas_factor = upgrades_.field(3);
+  const DatField *const research_time = upgrades_.field(4);
+  const DatField *const time_factor = upgrades_.field(5);
+  const DatField *const maximum_level = upgrades_.field(10);
+  return mineral_cost != nullptr && mineral_factor != nullptr &&
+         gas_cost != nullptr && gas_factor != nullptr &&
+         research_time != nullptr && time_factor != nullptr &&
+         maximum_level != nullptr &&
+         mineral_cost->value(upgrade, traits.mineral_cost) &&
+         mineral_factor->value(upgrade, traits.mineral_factor) &&
+         gas_cost->value(upgrade, traits.gas_cost) &&
+         gas_factor->value(upgrade, traits.gas_factor) &&
+         research_time->value(upgrade, traits.research_time) &&
+         time_factor->value(upgrade, traits.time_factor) &&
+         maximum_level->value(upgrade, traits.maximum_level);
 }
 
 std::string CoreDataSet::unit_portrait_path(const std::uint16_t unit_type,

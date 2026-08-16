@@ -289,13 +289,14 @@ IScriptTickResult IScriptProgramView::tick(
         ++state.unit_event_count;
         break;
       case 0x27:  // OR flags into the image target
-        // CImage.cpp consumes one flag byte and applies it to the target
-        // object's byte +91. The bootstrap has no bullet target object, but
-        // advancing the script is still required for its visual/sound path.
+        // CImage.cpp consumes one flag byte and ORs it into the target
+        // object's byte +91. CUnitPBuild/CUnitZBuild use bits 1 and 4 from
+        // this exact event to advance construction state machines.
         if (!read_u8(state.program_counter++, byte)) {
           state.active = false;
           return IScriptTickResult::malformed_program;
         }
+        state.image_target_flags |= byte;
         break;
       case 0x2B:  // launch the explicitly named weapon at the unit target
         // CImage.cpp's opcode dispatcher at 0x00412100 consumes one weapon

@@ -28,7 +28,9 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   glClear(GL_COLOR_BUFFER_BIT);
 
   const BootstrapStatus *const status = state.status;
-  if (status != nullptr && status->terrain_ready) {
+  if (glue_active(state.glue)) {
+    (void)render_glue(state);
+  } else if (status != nullptr && status->terrain_ready) {
     draw_preview_frame_gl(status->terrain, 0.0F, 0.0F,
                           static_cast<float>(kMapViewportWidth),
                           static_cast<float>(kMapViewportHeight));
@@ -49,6 +51,8 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
     draw_selected_status_panel_gl(state, GetTickCount());
     draw_selected_command_panel_gl(state);
     draw_command_target_gl(state);
+    draw_hud_menu_button_gl(state);
+    draw_game_dialog_gl(state, GetTickCount());
   }
   glFlush();
   std::array<std::array<GLint, 2>, 4> sample_points{{
@@ -67,8 +71,18 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
         has_colored_pixel || pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0;
   }
   const bool commands_valid = glGetError() == GL_NO_ERROR;
+  const bool decoded_score_surface =
+      state.game_dialog.screen == GameDialogScreen::score &&
+      state.status != nullptr && state.status->local_race < 3U &&
+      !state.game_dialog
+           .score_backgrounds[2U * state.status->local_race +
+                              (state.game_dialog.outcome ==
+                                       MatchOutcome::victory
+                                   ? 1U
+                                   : 0U)]
+           .bgra.empty();
   return SwapBuffers(state.device_context) != FALSE && commands_valid &&
-         has_colored_pixel;
+         (has_colored_pixel || decoded_score_surface);
 }
 
 } // namespace starcraft::recovery

@@ -1,7 +1,9 @@
 #include "../platform/bootstrap_runtime.hpp"
 
 #include "starcraft/lang/cunit_build.hpp"
+#include "starcraft/lang/cunit_protoss.hpp"
 #include "starcraft/lang/cunit_terran.hpp"
+#include "starcraft/lang/cunit_zerg.hpp"
 #include "starcraft/lang/place_unit.hpp"
 
 #include <algorithm>
@@ -122,7 +124,11 @@ bool placement_is_valid(const BootstrapStatus &status,
       }
     }
   }
-  const bool refinery = buildable.unit_type == 110U;
+  // The three race refineries share the original geyser-only placement path:
+  // Terran Refinery 110, Zerg Extractor 149, Protoss Assimilator 157.
+  const bool refinery = buildable.unit_type == 110U ||
+                        buildable.unit_type == 149U ||
+                        buildable.unit_type == 157U;
   std::uint32_t geyser_id{};
   if (refinery) {
     for (const ScenarioUnitPreview &unit : status.units) {
@@ -192,22 +198,35 @@ bool place_current_building(BootstrapStatus &status) noexcept {
     status.placement_valid = false;
     return false;
   }
-  if (!resource_cost_available(status, buildable->simulation.mineral_cost,
-                               buildable->simulation.gas_cost) ||
+  const bool nydus_exit = status.nydus_parent_id != 0U &&
+                          buildable->unit_type == 134U;
+  if ((!nydus_exit &&
+       !resource_cost_available(status, buildable->simulation.mineral_cost,
+                                buildable->simulation.gas_cost)) ||
       !placement_is_valid(status, *buildable, status.placement_x,
                           status.placement_y)) {
     status.placement_valid = false;
     return false;
   }
-  const ScenarioUnitPreview *const selected_source =
-      first_selected_unit(status);
+  const ScenarioUnitPreview *const selected_source = first_selected_unit(status);
   const bool addon = (buildable->simulation.dat_flags & 2U) != 0U;
   std::uint32_t worker_id{};
   std::uint32_t parent_id{};
+  bool terran_worker{};
+  bool zerg_worker{};
+  bool protoss_worker{};
   if (selected_source == nullptr || selected_source->owner != 0) {
     return false;
   }
-  if (addon) {
+  if (nydus_exit) {
+    if (selected_source->unit_id != status.nydus_parent_id ||
+        selected_source->unit_type != 134U ||
+        !selected_source->construction_complete ||
+        selected_source->attached_addon_id != 0U) {
+      return false;
+    }
+    parent_id = selected_source->unit_id;
+  } else if (addon) {
     std::uint16_t addon_x{};
     std::uint16_t addon_y{};
     if (!selected_source->construction_complete ||
@@ -220,14 +239,22 @@ bool place_current_building(BootstrapStatus &status) noexcept {
     }
     parent_id = selected_source->unit_id;
   } else {
-    if (selected_source->unit_type != 7) {
+    terran_worker =
+        starcraft::lang::is_terran_scv(selected_source->unit_type);
+    zerg_worker = starcraft::lang::is_zerg_drone(selected_source->unit_type);
+    protoss_worker =
+        starcraft::lang::is_protoss_probe(selected_source->unit_type);
+    if (!terran_worker && !zerg_worker && !protoss_worker) {
       return false;
     }
     worker_id = selected_source->unit_id;
   }
   try {
     std::size_t geyser_index = SIZE_MAX;
-    if (buildable->unit_type == 110U) {
+    const bool refinery = buildable->unit_type == 110U ||
+                          buildable->unit_type == 149U ||
+                          buildable->unit_type == 157U;
+    if (refinery) {
       for (std::size_t index = 0; index < status.units.size(); ++index) {
         const ScenarioUnitPreview &unit = status.units[index];
         if (unit.alive && unit.unit_type == 188U &&
@@ -241,38 +268,65 @@ bool place_current_building(BootstrapStatus &status) noexcept {
         return false;
       }
     }
-    const UnitRenderAsset &asset = status.unit_assets[buildable->asset_index];
+
+    const auto initialize_construction =
+        [&](ScenarioUnitPreview &building) -> bool {
+      if (!configure_preview_type(status, building, buildable->unit_type)) {
+        return false;
+      }
+      building.x = status.placement_x;
+      building.y = status.placement_y;
+      building.x_fixed = static_cast<std::int32_t>(building.x) << 8U;
+      building.y_fixed = static_cast<std::int32_t>(building.y) << 8U;
+      building.owner = 0U;
+      building.is_building = true;
+      // CUnitInit.cpp::sub_42E6B0 and CUnitBuild.cpp::sub_422D20 initialize
+      // unfinished life at exactly one tenth maximum. CUnit+172 is the
+      // units.dat build time divided by two.
+      building.construction_complete = false;
+      building.construction_ticks_total = static_cast<std::uint16_t>((
+          std::max)(1U,
+                    static_cast<unsigned>(buildable->simulation.build_time) >>
+                        1U));
+      building.construction_ticks_remaining =
+          building.construction_ticks_total;
+      building.hit_points =
+          (std::max)(1U, building.max_hit_points / 10U);
+      building.construction_builder_id = terran_worker ? worker_id : 0U;
+      building.addon_parent_id = parent_id;
+      building.construction_animation_phase = 0U;
+      return true;
+    };
+
+    // CUnitZBuild.cpp::sub_4475E0 changes the Drone CUnit itself to the
+    // selected structure for every entry except Extractor 149. Preserve that
+    // identity and selection instead of creating a second unit.
+    if (zerg_worker && buildable->unit_type != 149U) {
+      ScenarioUnitPreview *const drone = find_unit_by_id(status, worker_id);
+      if (drone == nullptr) {
+        return false;
+      }
+      cancel_unit_order(status, *drone);
+      if (!initialize_construction(*drone)) {
+        return false;
+      }
+      status.player_minerals -= buildable->simulation.mineral_cost;
+      status.player_gas -= buildable->simulation.gas_cost;
+      status.placement_active = false;
+      status.placement_valid = false;
+      status.placement_unit_type = 0xFFFFU;
+      status.active_command_card = 0U;
+      return true;
+    }
+
     ScenarioUnitPreview building{};
     building.unit_id = status.next_unit_id++;
-    building.x = status.placement_x;
-    building.y = status.placement_y;
-    building.x_fixed = static_cast<std::int32_t>(building.x) << 8U;
-    building.y_fixed = static_cast<std::int32_t>(building.y) << 8U;
-    building.unit_type = buildable->unit_type;
-    building.owner = 0;
-    building.asset_index = buildable->asset_index;
-    building.selection_width = buildable->placement_width;
-    building.selection_height = buildable->placement_height;
-    building.iscript_state = asset.initial_iscript_state;
-    building.overlay_iscript_state = asset.initial_overlay_iscript_state;
-    building.current_sprite_frame = asset.initial_iscript_state.frame;
-    building.current_overlay_frame = asset.initial_overlay_iscript_state.frame;
-    building.iscript_ready = asset.iscript_ready;
-    building.overlay_ready = asset.overlay_ready;
-    building.is_building = true;
-    apply_simulation_traits(building, buildable->simulation);
-    // CUnitInit.cpp::sub_42E6B0 and CUnitBuild.cpp::sub_422D20 initialize an
-    // unfinished building at exactly one tenth of maximum fixed-point life.
-    // The +172 field is units.dat build time / 2 and is decremented only while
-    // a builder is actively applying the +168 construction increment.
-    building.construction_complete = false;
-    building.construction_ticks_total = static_cast<std::uint16_t>((
-        std::max)(1U, static_cast<unsigned>(buildable->simulation.build_time) >>
-                          1U));
-    building.construction_ticks_remaining = building.construction_ticks_total;
-    building.hit_points = (std::max)(1U, building.max_hit_points / 10U);
-    building.construction_builder_id = worker_id;
-    building.addon_parent_id = parent_id;
+    if (!initialize_construction(building)) {
+      return false;
+    }
+    // Extractor is the sole Zerg branch that creates a separate building on
+    // the geyser. Transfer selection before sub_4301A0's Drone cleanup.
+    building.selected = zerg_worker && buildable->unit_type == 149U;
     if (geyser_index != SIZE_MAX) {
       building.resource_amount = status.units[geyser_index].resource_amount;
     }
@@ -288,15 +342,26 @@ bool place_current_building(BootstrapStatus &status) noexcept {
       status.units[geyser_index].alive = false;
       status.units[geyser_index].selected = false;
     }
-    status.player_minerals -= buildable->simulation.mineral_cost;
-    status.player_gas -= buildable->simulation.gas_cost;
+    if (zerg_worker && buildable->unit_type == 149U) {
+      ScenarioUnitPreview *const drone = find_unit_by_id(status, worker_id);
+      if (drone != nullptr) {
+        cancel_unit_order(status, *drone);
+        drone->alive = false;
+        drone->selected = false;
+      }
+    }
+    if (!nydus_exit) {
+      status.player_minerals -= buildable->simulation.mineral_cost;
+      status.player_gas -= buildable->simulation.gas_cost;
+    }
     status.placement_active = false;
     status.placement_valid = false;
     status.placement_unit_type = 0xFFFFU;
+    status.nydus_parent_id = 0U;
     status.active_command_card = 0;
     ScenarioUnitPreview *const worker = find_unit_by_id(status, worker_id);
     ScenarioUnitPreview *const created = find_unit_by_id(status, building_id);
-    if (!addon && worker != nullptr && created != nullptr &&
+    if (!addon && terran_worker && worker != nullptr && created != nullptr &&
         !begin_scv_interaction(status, *worker, *created,
                                ActiveUnitOrder::construct)) {
       created->construction_builder_id = 0;

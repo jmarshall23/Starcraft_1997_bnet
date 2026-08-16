@@ -282,6 +282,22 @@ void draw_selected_status_panel_gl(const RecoveryWindowState &state,
     return;
   }
 
+  if (unit.technology_ticks_total != 0U &&
+      unit.technology_ticks_remaining != 0U) {
+    const std::string_view label =
+        unit.active_technology < status->technology_traits.size()
+            ? std::string_view{"Researching"}
+            : std::string_view{"Upgrading"};
+    draw_status_text_gl(state, status->status_action_label_control, label,
+                        240, 210, 96);
+    const float progress =
+        1.0F - static_cast<float>(unit.technology_ticks_remaining) /
+                   unit.technology_ticks_total;
+    draw_status_progress_gl(*status, status->status_progress_control,
+                            progress);
+    return;
+  }
+
   draw_status_text_gl(state, status->status_action_label_control,
                       active_order_text(unit.active_order), 175, 175, 175);
 }

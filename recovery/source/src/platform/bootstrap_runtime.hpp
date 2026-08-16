@@ -46,6 +46,195 @@ struct SpritePreviewFrame {
   std::vector<std::uint8_t> opacity{};
 };
 
+enum class GlueScreen : std::uint8_t {
+  title,
+  main_menu,
+  connection,
+  map_selection,
+  lobby,
+  ready,
+  gameplay,
+};
+
+enum class GlueAction : std::uint8_t {
+  none,
+  redraw,
+  start_game,
+  quit,
+};
+
+struct GlueControl {
+  std::int16_t identifier{};
+  std::uint16_t type{};
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  std::uint32_t flags{};
+  std::string text{};
+};
+
+struct GlueImage {
+  std::int16_t control_identifier{};
+  SpritePreviewFrame frame{};
+};
+
+struct GlueMapEntry {
+  std::string path{};
+  std::string name{};
+  std::uint16_t width{};
+  std::uint16_t height{};
+  std::uint16_t tileset{};
+  std::size_t player_count{};
+  std::array<std::uint8_t, starcraft::data::chk_player_slot_count> ownership{};
+  std::array<std::uint8_t, starcraft::data::chk_player_slot_count> races{};
+};
+
+struct GlueLobbySlot {
+  std::string name{};
+  std::uint8_t ownership{};
+  std::uint8_t race{};
+  bool local{};
+};
+
+struct GlueRuntime {
+  GlueScreen screen{GlueScreen::gameplay};
+  SpritePreviewFrame title_background{};
+  SpritePreviewFrame main_background{};
+  SpritePreviewFrame connection_background{};
+  std::vector<GlueControl> main_controls{};
+  std::vector<GlueControl> connection_controls{};
+  std::vector<GlueControl> lobby_controls{};
+  std::vector<GlueImage> main_images{};
+  std::vector<GlueImage> connection_images{};
+  std::vector<GlueImage> lobby_images{};
+  std::vector<GlueMapEntry> maps{};
+  std::array<GlueLobbySlot, starcraft::data::chk_player_slot_count>
+      lobby_slots{};
+  std::array<std::string, 3> providers{{
+      "Offline Skirmish",
+      "Local Area Network",
+      "Battle.net",
+  }};
+  std::array<std::string, 3> provider_descriptions{{
+      "Create a local game with computer-controlled player slots.",
+      "Local-network transport will use the new session protocol.",
+      "Online login, chat, and matchmaking will use the new service.",
+  }};
+  std::string message{};
+  std::string failure{};
+  std::uint32_t screen_entered_tick{};
+  std::uint32_t message_until{};
+  std::uint32_t ready_deadline{};
+  std::int16_t hovered_control{-1};
+  std::int16_t pressed_control{-1};
+  std::size_t selected_provider{};
+  std::size_t selected_map{};
+  bool assets_ready{};
+};
+
+// opt_dlgs.cpp, VictDlg.cpp, victory.cpp, and gluScore.cpp form the recovered
+// in-game dialog/result state machine.  The values deliberately mirror the
+// separate retail BIN dialogs instead of treating the F10 menu as glue.
+enum class GameDialogScreen : std::uint8_t {
+  none,
+  game_menu,
+  options,
+  sound_options,
+  speed_options,
+  voice_options,
+  help_menu,
+  keystroke_help,
+  tips,
+  objectives,
+  abort_menu,
+  confirm_restart,
+  confirm_quit_menu,
+  confirm_quit_program,
+  victory,
+  defeat,
+  score,
+  count,
+};
+
+enum class MatchOutcome : std::uint8_t { none, defeat, victory };
+
+enum class ScoreCategory : std::uint8_t {
+  overview,
+  units,
+  structures,
+  resources,
+};
+
+enum class GameDialogAction : std::uint8_t {
+  none,
+  redraw,
+  restart_match,
+  return_to_menu,
+  quit_program,
+};
+
+struct MatchScoreRow {
+  std::uint8_t player{};
+  std::uint8_t race{};
+  bool victorious{};
+  std::string name{};
+  std::uint32_t produced{};
+  std::uint32_t killed{};
+  std::uint32_t lost{};
+  std::uint32_t unit_score{};
+  std::uint32_t built{};
+  std::uint32_t razed{};
+  std::uint32_t structures_lost{};
+  std::uint32_t structure_score{};
+  std::uint32_t minerals{};
+  std::uint32_t gas{};
+  std::uint32_t resources_spent{};
+  std::uint32_t resource_score{};
+  std::uint32_t total{};
+};
+
+struct GameDialogRuntime {
+  std::array<std::vector<GlueControl>,
+             static_cast<std::size_t>(GameDialogScreen::count)>
+      layouts{};
+  std::vector<GlueControl> hud_menu_controls{};
+  std::vector<GlueControl> score_controls{};
+  std::vector<SpritePreviewFrame> dialog_tile_frames{};
+  std::array<SpritePreviewFrame, 6> score_backgrounds{};
+  std::array<SpritePreviewFrame, 6> score_boxes{};
+  std::vector<std::uint8_t> help_text_table{};
+  std::vector<std::uint8_t> tips_table{};
+  std::vector<std::uint8_t> glue_text_table{};
+  std::vector<std::uint32_t> initial_unit_ids{};
+  std::vector<MatchScoreRow> score_rows{};
+  GameDialogScreen screen{GameDialogScreen::none};
+  MatchOutcome outcome{MatchOutcome::none};
+  ScoreCategory score_category{ScoreCategory::overview};
+  std::int16_t hovered_control{-1};
+  std::int16_t pressed_control{-1};
+  std::uint32_t score_started_tick{};
+  std::uint32_t result_started_tick{};
+  std::uint32_t initial_minerals{};
+  std::uint32_t initial_gas{};
+  std::size_t tip_index{1U};
+  std::size_t help_scroll{};
+  std::uint8_t music_volume{75U};
+  std::uint8_t digital_volume{75U};
+  std::uint8_t game_speed{4U};
+  std::uint8_t mouse_scroll{3U};
+  std::uint8_t key_scroll{3U};
+  std::uint8_t voice_mode{};
+  bool unit_speech{true};
+  bool acknowledgements{true};
+  bool building_sounds{true};
+  bool show_tips{true};
+  bool assets_ready{};
+  bool match_active{};
+  bool paused{};
+  bool observer_mode{};
+};
+
 struct SmackerPortrait {
   smk decoder{};
   SpritePreviewFrame frame{};
@@ -139,6 +328,7 @@ struct ScenarioUnitPreview {
   std::uint16_t collision_right{};
   std::uint16_t collision_bottom{};
   std::uint8_t owner{};
+  std::uint8_t destroyed_by_owner{0xFFU};
   std::size_t asset_index{};
   starcraft::lang::IScriptState iscript_state{};
   starcraft::lang::IScriptState overlay_iscript_state{};
@@ -181,6 +371,9 @@ struct ScenarioUnitPreview {
   std::uint16_t action_timer{};
   std::uint16_t construction_ticks_total{};
   std::uint16_t construction_ticks_remaining{};
+  std::uint16_t construction_target_type{0xFFFFU};
+  std::uint16_t technology_ticks_total{};
+  std::uint16_t technology_ticks_remaining{};
   std::uint8_t armor{};
   std::uint8_t armor_class{};
   std::uint8_t weapon_damage_class{};
@@ -189,6 +382,8 @@ struct ScenarioUnitPreview {
   std::uint8_t cargo_gas{};
   std::uint8_t action_phase{};
   std::uint8_t construction_animation_phase{};
+  std::uint8_t active_technology{28U};
+  std::uint8_t active_upgrade{46U};
   std::uint8_t last_animation{};
   std::int8_t dynamic_overlay_x_offset{};
   std::int8_t dynamic_overlay_y_offset{};
@@ -240,6 +435,12 @@ struct CommandButtonVisual {
     open_card,
     begin_building_placement,
     build_addon,
+    research_technology,
+    upgrade_technology,
+    morph_building,
+    place_nydus_exit,
+    cancel_research,
+    cancel_upgrade,
     close_card,
   } action{};
 };
@@ -391,6 +592,7 @@ struct BootstrapStatus {
   std::uint16_t last_command_position{};
   std::uint16_t active_command_card{};
   std::uint16_t placement_unit_type{0xFFFFU};
+  std::uint32_t nydus_parent_id{};
   std::uint16_t placement_x{};
   std::uint16_t placement_y{};
   bool placement_active{};
@@ -400,13 +602,22 @@ struct BootstrapStatus {
   std::uint8_t target_terrain_order{};
   std::uint8_t last_issued_order{};
   std::uint8_t last_command_opcode{};
-  std::array<BuildableUnitVisual, 18> buildable_units{};
+  std::vector<BuildableUnitVisual> buildable_units{};
   std::array<RuntimeUnitType, starcraft::lang::kUnitTypeCount>
       runtime_unit_types{};
+  std::array<starcraft::data::TechnologyResearchTraits, 28>
+      technology_traits{};
+  std::array<starcraft::data::UpgradeResearchTraits, 46> upgrade_traits{};
+  std::array<bool, 28> researched_technologies{};
+  std::array<std::uint8_t, 46> upgrade_levels{};
   std::uint16_t failed_runtime_unit_type{0xFFFFU};
   std::uint32_t next_unit_id{1};
   std::uint32_t player_minerals{50};
   std::uint32_t player_gas{};
+  std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
+      minerals_gathered{};
+  std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
+      gas_gathered{};
   std::uint8_t local_race{};
   bool team_colors_ready{};
   std::vector<std::uint8_t> game_palette{};
@@ -436,6 +647,8 @@ struct BootstrapStatus {
 
 struct RecoveryWindowState {
   BootstrapStatus *status{};
+  GlueRuntime glue{};
+  GameDialogRuntime game_dialog{};
   HDC device_context{};
   HGLRC rendering_context{};
   bool selection_dragging{};
@@ -451,6 +664,7 @@ struct RecoveryWindowState {
   bool mouse_in_client{};
   std::uint16_t pressed_command_position{};
   GLuint font_display_lists{};
+  GLuint glue_font_display_lists{};
   ALCdevice *audio_device{};
   ALCcontext *audio_context{};
   ALuint audio_source{};
@@ -493,6 +707,96 @@ decode_preview_frames(const std::vector<std::uint8_t> &group,
 [[nodiscard]] bool decode_pcx_frame(const starcraft::runtime::DecodedPcx &image,
                                     bool transparent_zero,
                                     SpritePreviewFrame &frame);
+[[nodiscard]] bool initialize_glue_assets(GlueRuntime &glue) noexcept;
+[[nodiscard]] bool parse_glue_layout(
+    const std::vector<std::uint8_t> &layout,
+    std::vector<GlueControl> &controls) noexcept;
+[[nodiscard]] bool enumerate_glue_maps(
+    starcraft::runtime::StormModule &storm, const std::filesystem::path &root,
+    GlueRuntime &glue) noexcept;
+void configure_lobby_slots(GlueRuntime &glue) noexcept;
+[[nodiscard]] bool glue_active(const GlueRuntime &glue) noexcept;
+[[nodiscard]] bool render_glue(const RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool client_to_glue(HWND window, LPARAM lparam, int &glue_x,
+                                  int &glue_y) noexcept;
+[[nodiscard]] GlueAction glue_mouse_move(GlueRuntime &glue, int x,
+                                         int y) noexcept;
+[[nodiscard]] GlueAction glue_left_down(GlueRuntime &glue, int x,
+                                        int y) noexcept;
+[[nodiscard]] GlueAction glue_left_up(GlueRuntime &glue, int x, int y,
+                                      std::uint32_t now) noexcept;
+[[nodiscard]] GlueAction glue_key_down(GlueRuntime &glue, WPARAM key,
+                                       std::uint32_t now) noexcept;
+[[nodiscard]] GlueAction advance_glue(GlueRuntime &glue,
+                                      std::uint32_t now) noexcept;
+void draw_glue_text_gl(const RecoveryWindowState &state, std::string_view text,
+                       float x, float y, std::uint8_t red = 220U,
+                       std::uint8_t green = 220U,
+                       std::uint8_t blue = 220U,
+                       bool large = false) noexcept;
+void draw_glue_centered_text_gl(const RecoveryWindowState &state,
+                                std::string_view text,
+                                const GlueControl &control,
+                                std::uint8_t red = 220U,
+                                std::uint8_t green = 220U,
+                                std::uint8_t blue = 220U,
+                                bool large = true) noexcept;
+void draw_title_gl(const RecoveryWindowState &state) noexcept;
+void draw_main_menu_gl(const RecoveryWindowState &state) noexcept;
+void draw_connection_gl(const RecoveryWindowState &state) noexcept;
+void draw_map_selection_gl(const RecoveryWindowState &state) noexcept;
+void draw_lobby_gl(const RecoveryWindowState &state) noexcept;
+void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept;
+void draw_ready_gl(const RecoveryWindowState &state,
+                   std::uint32_t now) noexcept;
+[[nodiscard]] std::int16_t main_menu_control_at(const GlueRuntime &glue, int x,
+                                                int y) noexcept;
+[[nodiscard]] std::int16_t connection_control_at(const GlueRuntime &glue,
+                                                 int x, int y) noexcept;
+[[nodiscard]] GlueAction
+activate_main_menu_control(GlueRuntime &glue, std::int16_t identifier,
+                           std::uint32_t now) noexcept;
+[[nodiscard]] GlueAction
+activate_connection_control(GlueRuntime &glue, std::int16_t identifier, int x,
+                            int y, std::uint32_t now) noexcept;
+[[nodiscard]] std::int16_t map_selection_control_at(const GlueRuntime &glue,
+                                                    int x, int y) noexcept;
+[[nodiscard]] GlueAction
+activate_map_selection_control(GlueRuntime &glue, std::int16_t identifier,
+                               int x, int y, std::uint32_t now) noexcept;
+[[nodiscard]] std::int16_t lobby_control_at(const GlueRuntime &glue, int x,
+                                            int y) noexcept;
+[[nodiscard]] GlueAction activate_lobby_control(
+    GlueRuntime &glue, std::int16_t identifier, int x, int y,
+    std::uint32_t now) noexcept;
+[[nodiscard]] bool start_selected_glue_map(RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool initialize_game_dialog_assets(
+    GameDialogRuntime &dialog, const BootstrapStatus &status) noexcept;
+void begin_match_flow(RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool game_dialog_active(const RecoveryWindowState &state) noexcept;
+void open_game_menu(RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool hud_menu_button_at(const RecoveryWindowState &state, int x,
+                                      int y) noexcept;
+[[nodiscard]] GameDialogAction game_dialog_mouse_move(
+    RecoveryWindowState &state, int x, int y) noexcept;
+[[nodiscard]] GameDialogAction game_dialog_left_down(
+    RecoveryWindowState &state, int x, int y) noexcept;
+[[nodiscard]] GameDialogAction game_dialog_left_up(
+    RecoveryWindowState &state, int x, int y, std::uint32_t now) noexcept;
+[[nodiscard]] GameDialogAction game_dialog_key_down(
+    RecoveryWindowState &state, WPARAM key, std::uint32_t now) noexcept;
+void draw_hud_menu_button_gl(const RecoveryWindowState &state) noexcept;
+void draw_game_dialog_gl(const RecoveryWindowState &state,
+                         std::uint32_t now) noexcept;
+void evaluate_melee_outcome(RecoveryWindowState &state) noexcept;
+void show_match_outcome(RecoveryWindowState &state,
+                        MatchOutcome outcome) noexcept;
+[[nodiscard]] bool play_result_music(RecoveryWindowState &state,
+                                     MatchOutcome outcome) noexcept;
+[[nodiscard]] bool play_title_music(RecoveryWindowState &state) noexcept;
+void build_match_scores(RecoveryWindowState &state) noexcept;
+void draw_score_screen_gl(const RecoveryWindowState &state,
+                          std::uint32_t now) noexcept;
 [[nodiscard]] bool decode_smacker_frame(SmackerPortrait &portrait) noexcept;
 [[nodiscard]] bool load_unit_portrait(starcraft::runtime::StormModule &storm,
                                       const starcraft::data::CoreDataSet &data,
@@ -684,6 +988,12 @@ issue_scv_return_cargo(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool tile_has_creep(const BootstrapStatus &status, int tile_x,
                                   int tile_y) noexcept;
 [[nodiscard]] bool advance_addon_construction(BootstrapStatus &status) noexcept;
+[[nodiscard]] bool advance_protoss_building_construction(
+    BootstrapStatus &status) noexcept;
+[[nodiscard]] bool advance_zerg_building_construction(
+    BootstrapStatus &status) noexcept;
+[[nodiscard]] bool advance_technology_research(
+    BootstrapStatus &status) noexcept;
 [[nodiscard]] bool addon_center_for_parent(const BuildableUnitVisual &addon,
                                            const ScenarioUnitPreview &parent,
                                            std::uint16_t &center_x,
@@ -743,7 +1053,12 @@ extract_unit_sound_ranges(const starcraft::data::CoreDataSet &data,
     const std::vector<std::uint8_t> &sfx_table,
     const std::array<bool, starcraft::lang::kUnitTypeCount> &wanted_types,
     BootstrapStatus &status) noexcept;
-[[nodiscard]] BootstrapStatus probe_assets();
+[[nodiscard]] BootstrapStatus probe_assets(
+    const std::filesystem::path &selected_map = {},
+    const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
+        *ownership_override = nullptr,
+    const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
+        *race_override = nullptr);
 [[nodiscard]] bool initialize_opengl(HWND window,
                                      RecoveryWindowState &state) noexcept;
 void shutdown_opengl(HWND window, RecoveryWindowState &state) noexcept;

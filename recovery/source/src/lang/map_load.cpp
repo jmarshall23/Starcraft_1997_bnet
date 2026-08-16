@@ -6,6 +6,7 @@
 #include "starcraft/lang/cunit_build.hpp"
 #include "starcraft/lang/cunit_harvest.hpp"
 #include "starcraft/lang/cunit_init.hpp"
+#include "starcraft/lang/cunit_protoss.hpp"
 #include "starcraft/lang/cunit_terran.hpp"
 #include "starcraft/lang/cunit_zerg.hpp"
 #include "starcraft/lang/iscript.hpp"
@@ -114,7 +115,12 @@ bool build_terrain_preview(
   return true;
 }
 
-BootstrapStatus probe_assets() {
+BootstrapStatus probe_assets(
+    const std::filesystem::path &selected_map,
+    const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
+        *const ownership_override,
+    const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
+        *const race_override) {
   BootstrapStatus status{};
   const std::filesystem::path root = locate_input_root();
   if (root.empty()) {
@@ -148,8 +154,14 @@ BootstrapStatus probe_assets() {
   // lang\maphdr.cpp::sub_46C3D0 at 0x0046C3D0 opens an SCM as a Storm
   // archive and then reads staredit\scenario.chk from it. Keep the supplied
   // map read-only and use the same archive path here.
-  const std::filesystem::path map_path = root / L"maps" / L"96x96_space4.scm";
-  status.map_name = "maps\\96x96_space4.scm";
+  const std::filesystem::path relative_map =
+      selected_map.empty()
+          ? std::filesystem::path{L"maps"} / L"96x96_space4.scm"
+          : selected_map;
+  const std::filesystem::path map_path =
+      relative_map.is_absolute() ? relative_map : root / relative_map;
+  status.map_name = relative_map.generic_string();
+  std::replace(status.map_name.begin(), status.map_name.end(), '/', '\\');
   void *map_archive{};
   const bool map_opened = storm.open_archive(map_path, &map_archive, 3000);
   std::vector<std::uint8_t> map_chk;
@@ -158,7 +170,18 @@ BootstrapStatus probe_assets() {
                         map_archive, R"(staredit\scenario.chk)", map_chk);
   const starcraft::data::ChkView chk{map_chk.data(), map_chk.size()};
   starcraft::game::MultiplayerScenario scenario{};
-  const bool scenario_loaded = map_loaded && scenario.load(chk);
+  bool scenario_loaded = map_loaded && scenario.load(chk);
+  if (scenario_loaded && ownership_override != nullptr &&
+      race_override != nullptr) {
+    for (std::size_t player = 0; player < ownership_override->size();
+         ++player) {
+      scenario_loaded =
+          scenario.configure_player(player, (*ownership_override)[player],
+                                    (*race_override)[player]) &&
+          scenario_loaded;
+    }
+    scenario_loaded = scenario_loaded && scenario.active_player_count() >= 2U;
+  }
   // The recovered game keeps g_hScenArchive open, but this bootstrap's
   // transitional global Storm lookup must not search the map MPQ for every
   // DAT/GRP asset. The complete CHK is already resident, so close it now.
@@ -170,6 +193,20 @@ BootstrapStatus probe_assets() {
   const bool data_loaded = data.load(storm);
   status.unit_traits_ready =
       data_loaded && data.extract_unit_traits(status.unit_traits);
+  bool research_data_ready = data_loaded;
+  for (std::size_t technology = 0;
+       research_data_ready && technology < status.technology_traits.size();
+       ++technology) {
+    research_data_ready = data.technology_research_traits(
+        static_cast<std::uint16_t>(technology),
+        status.technology_traits[technology]);
+  }
+  for (std::size_t upgrade = 0;
+       research_data_ready && upgrade < status.upgrade_traits.size();
+       ++upgrade) {
+    research_data_ready = data.upgrade_research_traits(
+        static_cast<std::uint16_t>(upgrade), status.upgrade_traits[upgrade]);
+  }
   const bool unit_sound_ranges_ready =
       data_loaded && extract_unit_sound_ranges(data, status);
   starcraft::gds::TilesetData terrain_tileset{};
@@ -280,15 +317,13 @@ BootstrapStatus probe_assets() {
       }
       PcmWaveView music_view{};
       status.music_available = parse_pcm_wave(status.music_wave, music_view);
-      std::string unit_color_path = "game\\";
-      unit_color_path.push_back(local_race_code);
-      unit_color_path += "unit.pcx";
       starcraft::runtime::DecodedPcx unit_colors{};
       // CUnitColor initialization at 0x00424E20 asks the PCX decoder for
-      // exactly 96 bytes (12 owners * 8 translated indices), even though the
-      // source tunit.pcx row is 128 pixels wide.
+      // exactly 96 bytes from the literal game\tunit.pcx path (12 owners * 8
+      // translated indices), even though its source row is 128 pixels wide.
+      // This remap is shared by all three race consoles.
       status.team_colors_ready =
-          storm.load_pcx(unit_color_path.c_str(), unit_colors) &&
+          storm.load_pcx(R"(game\tunit.pcx)", unit_colors) &&
           unit_colors.width == 128 && unit_colors.height == 1 &&
           unit_colors.pixels.size() >= 96 && palette.size() == 1024;
       if (status.team_colors_ready) {
@@ -380,9 +415,6 @@ BootstrapStatus probe_assets() {
       std::string panel_path = R"(unit\cmdbtns\)";
       panel_path.push_back(local_race_code);
       panel_path += "cmdbtns.grp";
-      std::string icon_remap_path = R"(unit\cmdbtns\)";
-      icon_remap_path.push_back(local_race_code);
-      icon_remap_path += "icon.pcx";
       std::string layout_path = R"(rez\statbtn)";
       layout_path.push_back(local_race_code);
       layout_path += ".bin";
@@ -396,7 +428,10 @@ BootstrapStatus probe_assets() {
       std::uint16_t icon_width{};
       std::uint16_t icon_height{};
       const bool icon_remap_loaded =
-          storm.load_pcx(icon_remap_path.c_str(), icon_remap) &&
+          // statcmd.cpp::sub_4A46B0 at 0x004A46B0 varies the panel GRP and
+          // statbtn layout by race, but loads the literal shared path
+          // unit\cmdbtns\ticon.pcx for the 96-byte icon color table.
+          storm.load_pcx(R"(unit\cmdbtns\ticon.pcx)", icon_remap) &&
           icon_remap.width == 96 && icon_remap.height == 1;
       if (icon_remap_loaded) {
         normal_icon_remap.assign(icon_remap.pixels.begin(),
@@ -500,6 +535,19 @@ BootstrapStatus probe_assets() {
       return &runtime;
     };
 
+    if (!focus_unit_found && scenario.players()[0].ownership != 0U) {
+      // A melee CHK is allowed to contain only start-location markers and
+      // resources. CUnitInit/place_unit then creates the local race's base
+      // and four workers. Do not make map launch depend on an unrelated
+      // preplaced owner-zero unit happening to lie inside the first camera
+      // rectangle (96x96_ash4 has no such unit).
+      starcraft::lang::MeleeUnitTypes local_types{};
+      focus_unit_found = starcraft::lang::melee_unit_types(
+                             scenario.players()[0].race, local_types) &&
+                         data.unit_image_id(local_types.worker,
+                                            status.image_id);
+    }
+
     if (focus_unit_found) {
       status.focus_asset_index = ensure_asset(status.image_id);
       focus_asset_ready = status.focus_asset_index != SIZE_MAX;
@@ -562,6 +610,17 @@ BootstrapStatus probe_assets() {
       for (const starcraft::game::ScenarioUnit &unit : scenario.units()) {
         if ((owner_pass == 0 && unit.owner != 0) ||
             (owner_pass == 1 && unit.owner == 0)) {
+          continue;
+        }
+        // The supplied beta melee maps include one base and one worker for
+        // each slot's initial race. place_unit.cpp::sub_480B60/sub_480C80
+        // derive the runtime start from the lobby race instead. When a slot
+        // changes race, discard only those stale starting identities before
+        // the recovered melee plan supplies the selected race's base/workers.
+        if (unit.owner < 8U &&
+            starcraft::lang::is_melee_starting_unit_type(unit.unit_type) &&
+            !starcraft::lang::melee_starting_unit_matches_race(
+                unit.unit_type, scenario.players()[unit.owner].race)) {
           continue;
         }
         (void)append_unit_preview(unit.unit_type, unit.x, unit.y, unit.owner);
@@ -638,6 +697,16 @@ BootstrapStatus probe_assets() {
         production_assets_ready = false;
       }
     }
+    const starcraft::lang::ZergUnitTypeView morph_targets =
+        starcraft::lang::zerg_building_morph_target_types();
+    for (std::size_t target_index = 0; target_index < morph_targets.count;
+         ++target_index) {
+      const std::uint16_t target_type = morph_targets.unit_types[target_index];
+      if (ensure_runtime_unit_type(target_type) == nullptr) {
+        status.failed_runtime_unit_type = target_type;
+        production_assets_ready = false;
+      }
+    }
 
     std::uint16_t scv_image{};
     std::uint16_t scv_build_time{};
@@ -680,41 +749,57 @@ BootstrapStatus probe_assets() {
     build_assets_ready = true;
     const starcraft::lang::TerranUnitTypeView terran_buildables =
         starcraft::lang::terran_buildable_unit_types();
-    build_assets_ready =
-        terran_buildables.count == status.buildable_units.size();
-    for (std::size_t index = 0;
-         build_assets_ready && index < terran_buildables.count; ++index) {
-      BuildableUnitVisual &buildable = status.buildable_units[index];
-      buildable.unit_type = terran_buildables.unit_types[index];
+    const starcraft::lang::ZergUnitTypeView zerg_buildables =
+        starcraft::lang::zerg_buildable_unit_types();
+    const starcraft::lang::ProtossUnitTypeView protoss_buildables =
+        starcraft::lang::protoss_buildable_unit_types();
+    status.buildable_units.clear();
+    status.buildable_units.reserve(terran_buildables.count +
+                                   zerg_buildables.count +
+                                   protoss_buildables.count);
+    const auto cache_buildable = [&](const std::uint16_t unit_type) -> bool {
+      BuildableUnitVisual buildable{};
+      buildable.unit_type = unit_type;
       std::uint16_t image_id{};
-      build_assets_ready = data.unit_placement_size(
-                               buildable.unit_type, buildable.placement_width,
-                               buildable.placement_height) &&
-                           data.unit_image_id(buildable.unit_type, image_id) &&
-                           build_assets_ready;
-      if (!build_assets_ready) {
-        break;
+      if (!data.unit_placement_size(unit_type, buildable.placement_width,
+                                    buildable.placement_height) ||
+          !data.unit_image_id(unit_type, image_id)) {
+        return false;
       }
       buildable.asset_index = ensure_asset(image_id);
       if (buildable.asset_index == SIZE_MAX) {
-        build_assets_ready = false;
-        break;
+        return false;
       }
-      if (!data.unit_simulation_traits(buildable.unit_type,
-                                       buildable.simulation)) {
-        build_assets_ready = false;
-        break;
+      if (!data.unit_simulation_traits(unit_type, buildable.simulation) ||
+          ensure_runtime_unit_type(unit_type) == nullptr) {
+        status.failed_runtime_unit_type = unit_type;
+        return false;
       }
       if ((buildable.simulation.dat_flags & 2U) != 0U) {
         buildable.addon_parent_type =
-            starcraft::lang::terran_addon_parent_type(buildable.unit_type);
+            starcraft::lang::terran_addon_parent_type(unit_type);
         if (buildable.addon_parent_type == 0xFFFFU ||
-            !data.unit_addon_position(buildable.unit_type, buildable.addon_x,
+            !data.unit_addon_position(unit_type, buildable.addon_x,
                                       buildable.addon_y)) {
-          build_assets_ready = false;
-          break;
+          return false;
         }
       }
+      status.buildable_units.push_back(buildable);
+      return true;
+    };
+    const auto cache_buildable_view = [&](const auto view) {
+      for (std::size_t index = 0; index < view.count; ++index) {
+        if (!cache_buildable(view.unit_types[index])) {
+          return false;
+        }
+      }
+      return true;
+    };
+    build_assets_ready = cache_buildable_view(terran_buildables) &&
+                         cache_buildable_view(zerg_buildables) &&
+                         cache_buildable_view(protoss_buildables);
+    if (!build_assets_ready) {
+      status.buildable_units.clear();
     }
 
     const auto ensure_portrait = [&](const std::uint16_t unit_type,
@@ -798,6 +883,7 @@ BootstrapStatus probe_assets() {
       focus_asset_ready && scv_asset_ready && palette_loaded &&
       cargo_assets_ready && working_overlay_asset_ready && build_assets_ready &&
       production_assets_ready && portrait_assets_ready && melee_start_ready &&
+      research_data_ready &&
       status.terrain_ready && status.hud_ready && status.wireframe_ready &&
       status.group_wireframe_ready && status.status_panel_ready &&
       status.resource_panel_ready && status.resource_icons_ready &&
@@ -819,11 +905,12 @@ BootstrapStatus probe_assets() {
   if (status.assets_ready) {
     char detail[300]{};
     std::snprintf(detail, sizeof(detail),
-                  "%s: %ux%u %s, four players, %zu units/%zu THGY sprites; "
+                  "%s: %ux%u %s, %zu players, %zu units/%zu THGY sprites; "
                   "camera %u,%u px; %s; image %u/script %u/draw %u.",
                   status.map_name.c_str(), status.scenario_width,
                   status.scenario_height, status.tileset_name.c_str(),
-                  status.scenario_unit_count, status.scenario_sprite_count,
+                  status.active_player_count, status.scenario_unit_count,
+                  status.scenario_sprite_count,
                   status.camera_x, status.camera_y, status.hud_path.c_str(),
                   status.image_id, status.iscript_id,
                   status.image_draw_function);
@@ -834,16 +921,74 @@ BootstrapStatus probe_assets() {
     status.primary =
         "The supplied map or its recovered render path did not initialize.";
     if (!map_opened) {
-      status.detail =
-          "Could not open maps\\96x96_space4.scm as a read-only Storm archive.";
+      status.detail = "Could not open " + status.map_name +
+                      " as a read-only Storm archive.";
     } else if (!scenario_loaded) {
       status.detail =
           "Could not parse the beta CHK sections from staredit\\scenario.chk.";
     } else if (!data_loaded) {
       status.detail = "Failed DAT/TBL asset: " + data.failed_asset();
+    } else if (!focus_unit_found) {
+      status.detail = "No local melee CUnit image could be selected.";
+    } else if (!focus_asset_ready) {
+      status.detail = "The selected local CUnit image did not decode.";
+    } else if (!scv_asset_ready) {
+      status.detail = "The SCV runtime asset did not initialize.";
+    } else if (!palette_loaded) {
+      status.detail = "The selected ERA palette did not load.";
+    } else if (!cargo_assets_ready || !working_overlay_asset_ready) {
+      status.detail = "A worker cargo or building-working image failed.";
+    } else if (!build_assets_ready || !production_assets_ready) {
+      status.detail = "A production or building runtime asset failed.";
+    } else if (!portrait_assets_ready) {
+      status.detail = "A required unit portrait did not decode.";
+    } else if (!melee_start_ready) {
+      status.detail =
+          "The recovered melee base/worker placement could not settle.";
+    } else if (!status.terrain_ready) {
+      status.detail = "The selected ERA terrain did not render.";
+    } else if (!status.hud_ready) {
+      status.detail = "The selected race console PCX did not decode.";
+    } else if (!status.wireframe_ready || !status.group_wireframe_ready) {
+      status.detail = "A selected-unit wireframe asset did not decode.";
+    } else if (!status.status_panel_ready || !status.resource_panel_ready ||
+               !status.resource_icons_ready ||
+               !status.status_progress_art_ready) {
+      status.detail = "A selected-race status panel asset did not decode.";
+    } else if (!status.unit_traits_ready || status.stat_text_table.empty()) {
+      status.detail = "A unit trait or status text table did not load.";
+    } else if (status.resource_error_waves[0].empty() ||
+               status.resource_error_waves[1].empty()) {
+      status.detail = "A selected-race advisor sound did not load.";
+    } else if (!status.unit_sounds_ready) {
+      status.detail = "A required unit response sound did not load.";
+    } else if (!status.music_available) {
+      status.detail = "The selected-race loose music track did not load.";
+    } else if (!status.command_panel_ready) {
+      status.detail = "The selected-race command panel did not decode.";
+    } else if (!status.portrait_panel_ready) {
+      status.detail = "The portrait panel layout did not decode.";
+    } else if (!status.minimap_ready) {
+      status.detail = "The selected map minimap did not render.";
+    } else if (!status.team_colors_ready) {
+      status.detail = "The selected-race unit color table did not decode.";
+    } else if (!status.pathing_map.valid()) {
+      status.detail = "The selected map pathing grid did not build.";
+    } else if (status.creep_tiles.size() !=
+                   static_cast<std::size_t>(status.scenario_width) *
+                       status.scenario_height ||
+               status.creep_visual_tiles.size() !=
+                   static_cast<std::size_t>(status.scenario_width) *
+                       status.scenario_height) {
+      status.detail = "The selected map creep grids did not initialize.";
+    } else if (!status.scenario.valid() || status.active_player_count < 2U ||
+               status.units.empty()) {
+      status.detail = "The selected scenario runtime has no playable units.";
+    } else if (!map_closed || !patch_closed || !archive_closed) {
+      status.detail = "A read-only Storm archive did not close cleanly.";
     } else {
-      status.detail = "The ERA tileset, initial CUnit image, IScript, or "
-                      "archive close did not verify.";
+      status.detail = "A HUD, status panel, sound, or team-color runtime "
+                      "dependency did not initialize.";
     }
   }
   return status;

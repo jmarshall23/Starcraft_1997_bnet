@@ -106,6 +106,22 @@ struct UnitSimulationTraits {
   bool has_ground_weapon{};
 };
 
+struct TechnologyResearchTraits {
+  std::uint16_t mineral_cost{};
+  std::uint16_t gas_cost{};
+  std::uint16_t research_time{};
+};
+
+struct UpgradeResearchTraits {
+  std::uint16_t mineral_cost{};
+  std::uint16_t mineral_factor{};
+  std::uint16_t gas_cost{};
+  std::uint16_t gas_factor{};
+  std::uint16_t research_time{};
+  std::uint16_t time_factor{};
+  std::uint8_t maximum_level{};
+};
+
 class CoreDataSet final {
  public:
   [[nodiscard]] bool load(runtime::StormModule& storm) noexcept;
@@ -115,6 +131,8 @@ class CoreDataSet final {
   [[nodiscard]] const DatTable& flingy() const noexcept;
   [[nodiscard]] const DatTable& sprites() const noexcept;
   [[nodiscard]] const DatTable& images() const noexcept;
+  [[nodiscard]] const DatTable& technologies() const noexcept;
+  [[nodiscard]] const DatTable& upgrades() const noexcept;
   [[nodiscard]] const DatTable& mapdata() const noexcept;
   [[nodiscard]] const DatTable& portraits() const noexcept;
   [[nodiscard]] const std::vector<std::uint8_t>& image_strings() const noexcept;
@@ -163,6 +181,12 @@ class CoreDataSet final {
   [[nodiscard]] bool unit_simulation_traits(
       std::uint16_t unit_type,
       UnitSimulationTraits& traits) const noexcept;
+  [[nodiscard]] bool technology_research_traits(
+      std::uint16_t technology,
+      TechnologyResearchTraits& traits) const noexcept;
+  [[nodiscard]] bool upgrade_research_traits(
+      std::uint16_t upgrade,
+      UpgradeResearchTraits& traits) const noexcept;
   [[nodiscard]] std::string unit_portrait_path(
       std::uint16_t unit_type,
       std::uint8_t owner,
@@ -176,6 +200,8 @@ class CoreDataSet final {
   DatTable flingy_{};
   DatTable sprites_{};
   DatTable images_{};
+  DatTable technologies_{};
+  DatTable upgrades_{};
   DatTable mapdata_{};
   DatTable portraits_{};
   std::vector<std::uint8_t> image_strings_{};

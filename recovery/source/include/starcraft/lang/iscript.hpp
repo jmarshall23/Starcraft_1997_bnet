@@ -39,6 +39,7 @@ struct IScriptState {
   std::uint16_t flingy_velocity{};
   std::uint32_t flingy_speed_event_count{};
   std::uint16_t flingy_speed{};
+  std::uint8_t image_target_flags{};
   bool overlay_above{};
   bool alternate_unit_event{};
   bool mirrored{};

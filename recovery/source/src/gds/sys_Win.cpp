@@ -58,7 +58,25 @@ bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
                                              state.font_display_lists) != FALSE;
   SelectObject(state.device_context, previous);
   DeleteObject(font);
-  return font_ready;
+  state.glue_font_display_lists = glGenLists(96);
+  const HFONT glue_font = CreateFontA(
+      -20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+      VARIABLE_PITCH | FF_DONTCARE, "Arial");
+  if (!font_ready || state.glue_font_display_lists == 0U ||
+      glue_font == nullptr) {
+    if (glue_font != nullptr) {
+      DeleteObject(glue_font);
+    }
+    return false;
+  }
+  const HGDIOBJ previous_glue = SelectObject(state.device_context, glue_font);
+  const bool glue_font_ready =
+      wglUseFontBitmapsA(state.device_context, 32, 96,
+                         state.glue_font_display_lists) != FALSE;
+  SelectObject(state.device_context, previous_glue);
+  DeleteObject(glue_font);
+  return glue_font_ready;
 }
 
 void shutdown_opengl(const HWND window, RecoveryWindowState &state) noexcept {
@@ -66,6 +84,10 @@ void shutdown_opengl(const HWND window, RecoveryWindowState &state) noexcept {
     if (state.font_display_lists != 0) {
       glDeleteLists(state.font_display_lists, 96);
       state.font_display_lists = 0;
+    }
+    if (state.glue_font_display_lists != 0) {
+      glDeleteLists(state.glue_font_display_lists, 96);
+      state.glue_font_display_lists = 0;
     }
     wglMakeCurrent(nullptr, nullptr);
     wglDeleteContext(state.rendering_context);

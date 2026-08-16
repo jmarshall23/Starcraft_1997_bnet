@@ -26,6 +26,20 @@ bool melee_unit_types(
   }
 }
 
+bool is_melee_starting_unit_type(const std::uint16_t unit_type) noexcept {
+  // place_unit.cpp::sub_480B60/sub_480C80 recover these exact worker/base
+  // identities from the selected player race.
+  return unit_type == 41U || unit_type == 7U || unit_type == 64U ||
+         unit_type == 131U || unit_type == 106U || unit_type == 154U;
+}
+
+bool melee_starting_unit_matches_race(const std::uint16_t unit_type,
+                                      const std::uint8_t chk_race) noexcept {
+  MeleeUnitTypes types{};
+  return melee_unit_types(chk_race, types) &&
+         (unit_type == types.worker || unit_type == types.base);
+}
+
 PlacementPoint align_melee_base(
     const std::uint16_t start_x,
     const std::uint16_t start_y,

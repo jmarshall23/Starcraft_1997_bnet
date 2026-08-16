@@ -4,6 +4,53 @@
 
 namespace starcraft::recovery {
 
+namespace {
+
+void apply_glue_action(const HWND window, RecoveryWindowState *const state,
+                       const GlueAction action) noexcept {
+  if (action == GlueAction::redraw) {
+    InvalidateRect(window, nullptr, FALSE);
+  } else if (action == GlueAction::start_game && state != nullptr) {
+    (void)start_selected_glue_map(*state);
+    InvalidateRect(window, nullptr, FALSE);
+  } else if (action == GlueAction::quit) {
+    PostMessageA(window, WM_CLOSE, 0, 0);
+  }
+}
+
+void apply_game_dialog_action(const HWND window,
+                              RecoveryWindowState *const state,
+                              const GameDialogAction action) noexcept {
+  if (state == nullptr || action == GameDialogAction::none) {
+    return;
+  }
+  if (action == GameDialogAction::redraw) {
+    InvalidateRect(window, nullptr, FALSE);
+  } else if (action == GameDialogAction::restart_match) {
+    (void)start_selected_glue_map(*state);
+    InvalidateRect(window, nullptr, FALSE);
+  } else if (action == GameDialogAction::return_to_menu) {
+    state->game_dialog.screen = GameDialogScreen::none;
+    state->game_dialog.match_active = false;
+    state->game_dialog.paused = false;
+    state->game_dialog.observer_mode = false;
+    state->glue.screen = GlueScreen::main_menu;
+    state->glue.screen_entered_tick = GetTickCount();
+    state->glue.hovered_control = -1;
+    state->glue.pressed_control = -1;
+    if (state->music_playing) {
+      alSourceStop(state->music_source);
+      state->music_playing = false;
+    }
+    (void)play_title_music(*state);
+    InvalidateRect(window, nullptr, FALSE);
+  } else if (action == GameDialogAction::quit_program) {
+    PostMessageA(window, WM_CLOSE, 0, 0);
+  }
+}
+
+} // namespace
+
 bool client_to_game(const HWND window, const LPARAM lparam, int &game_x,
                     int &game_y) noexcept {
   RECT client{};
@@ -53,6 +100,9 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     // Audio failure does not make the render window unusable; the dedicated
     // audio regression probe still requires a live OpenAL device.
     (void)initialize_audio(*state);
+    if (glue_active(state->glue)) {
+      (void)play_title_music(*state);
+    }
     return 0;
   }
   case WM_ERASEBKGND:
@@ -74,10 +124,41 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
   case WM_LBUTTONDOWN: {
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
+    if (state != nullptr && glue_active(state->glue)) {
+      int glue_x{};
+      int glue_y{};
+      if (client_to_glue(window, lparam, glue_x, glue_y)) {
+        const GlueAction action =
+            glue_left_down(state->glue, glue_x, glue_y);
+        if (action == GlueAction::redraw) {
+          SetCapture(window);
+        }
+        apply_glue_action(window, state, action);
+      }
+      return 0;
+    }
     int game_x{};
     int game_y{};
     const bool game_position = state != nullptr && state->status != nullptr &&
                                client_to_game(window, lparam, game_x, game_y);
+    if (game_position && game_dialog_active(*state)) {
+      const GameDialogAction action =
+          game_dialog_left_down(*state, game_x, game_y);
+      if (action == GameDialogAction::redraw) {
+        SetCapture(window);
+      }
+      apply_game_dialog_action(window, state, action);
+      return 0;
+    }
+    if (game_position && hud_menu_button_at(*state, game_x, game_y)) {
+      open_game_menu(*state);
+      InvalidateRect(window, nullptr, FALSE);
+      return 0;
+    }
+    if (state != nullptr &&
+        (state->game_dialog.paused || state->game_dialog.observer_mode)) {
+      return 0;
+    }
     if (game_position && !state->status->placement_active &&
         !state->status->command_target_active &&
         center_camera_from_minimap(*state->status, game_x, game_y)) {
@@ -164,6 +245,23 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
   case WM_MOUSEMOVE: {
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
+    if (state != nullptr && glue_active(state->glue)) {
+      int glue_x{};
+      int glue_y{};
+      if (client_to_glue(window, lparam, glue_x, glue_y)) {
+        if (!state->mouse_in_client) {
+          state->mouse_in_client = true;
+          TRACKMOUSEEVENT tracking{};
+          tracking.cbSize = sizeof(tracking);
+          tracking.dwFlags = TME_LEAVE;
+          tracking.hwndTrack = window;
+          TrackMouseEvent(&tracking);
+        }
+        apply_glue_action(window, state,
+                          glue_mouse_move(state->glue, glue_x, glue_y));
+      }
+      return 0;
+    }
     int game_x{};
     int game_y{};
     if (state != nullptr && state->status != nullptr &&
@@ -177,6 +275,14 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
         tracking.dwFlags = TME_LEAVE;
         tracking.hwndTrack = window;
         TrackMouseEvent(&tracking);
+      }
+      if (game_dialog_active(*state)) {
+        apply_game_dialog_action(
+            window, state, game_dialog_mouse_move(*state, game_x, game_y));
+        return 0;
+      }
+      if (state->game_dialog.paused || state->game_dialog.observer_mode) {
+        return 0;
       }
       if (state->minimap_dragging) {
         (void)center_camera_from_minimap(*state->status, game_x, game_y);
@@ -198,6 +304,13 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
     if (state != nullptr) {
+      if (glue_active(state->glue)) {
+        apply_glue_action(window, state,
+                          glue_mouse_move(state->glue, -1, -1));
+      } else if (game_dialog_active(*state)) {
+        apply_game_dialog_action(
+            window, state, game_dialog_mouse_move(*state, -1, -1));
+      }
       state->mouse_in_client = false;
       state->camera_scroll_ramp = 0;
     }
@@ -209,12 +322,17 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     int game_x{};
     int game_y{};
     if (state != nullptr && state->status != nullptr) {
+      if (game_dialog_active(*state) || state->game_dialog.paused ||
+          state->game_dialog.observer_mode) {
+        return 0;
+      }
       BootstrapStatus &status = *state->status;
       if (status.placement_active || status.command_target_active ||
           status.active_command_card != 0) {
         status.placement_active = false;
         status.placement_valid = false;
         status.placement_unit_type = 0xFFFFU;
+        status.nydus_parent_id = 0U;
         status.active_command_card = 0;
         cancel_command_target(status);
         InvalidateRect(window, nullptr, FALSE);
@@ -246,12 +364,31 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
   case WM_KEYDOWN: {
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
+    if (state != nullptr && glue_active(state->glue)) {
+      apply_glue_action(window, state,
+                        glue_key_down(state->glue, wparam, GetTickCount()));
+      return 0;
+    }
+    if (state != nullptr &&
+        (game_dialog_active(*state) || wparam == VK_F10)) {
+      apply_game_dialog_action(
+          window, state,
+          game_dialog_key_down(*state, wparam, GetTickCount()));
+      return 0;
+    }
     if (wparam == VK_ESCAPE && state != nullptr && state->status != nullptr) {
+      const bool cancelled = state->status->placement_active ||
+                             state->status->command_target_active ||
+                             state->status->active_command_card != 0;
       state->status->placement_active = false;
       state->status->placement_valid = false;
       state->status->placement_unit_type = 0xFFFFU;
+      state->status->nydus_parent_id = 0U;
       state->status->active_command_card = 0;
       cancel_command_target(*state->status);
+      if (!cancelled) {
+        open_game_menu(*state);
+      }
       InvalidateRect(window, nullptr, FALSE);
       return 0;
     }
@@ -284,8 +421,30 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
   case WM_LBUTTONUP: {
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
+    if (state != nullptr && glue_active(state->glue)) {
+      int glue_x{-1};
+      int glue_y{-1};
+      (void)client_to_glue(window, lparam, glue_x, glue_y);
+      const GlueAction action =
+          glue_left_up(state->glue, glue_x, glue_y, GetTickCount());
+      if (GetCapture() == window) {
+        ReleaseCapture();
+      }
+      apply_glue_action(window, state, action);
+      return 0;
+    }
     int game_x{};
     int game_y{};
+    if (state != nullptr && game_dialog_active(*state)) {
+      (void)client_to_game(window, lparam, game_x, game_y);
+      const GameDialogAction action = game_dialog_left_up(
+          *state, game_x, game_y, GetTickCount());
+      if (GetCapture() == window) {
+        ReleaseCapture();
+      }
+      apply_game_dialog_action(window, state, action);
+      return 0;
+    }
     if (state != nullptr && state->minimap_dragging) {
       if (state->status != nullptr &&
           client_to_game(window, lparam, game_x, game_y)) {
@@ -338,6 +497,8 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
     if (state != nullptr && reinterpret_cast<HWND>(lparam) != window) {
+      state->glue.pressed_control = -1;
+      state->game_dialog.pressed_control = -1;
       state->selection_dragging = false;
       state->minimap_dragging = false;
       state->pressed_command_position = 0;
@@ -347,6 +508,29 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
   case WM_TIMER: {
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
+    if (state != nullptr && glue_active(state->glue)) {
+      apply_glue_action(window, state,
+                        advance_glue(state->glue, GetTickCount()));
+      return 0;
+    }
+    if (state != nullptr && state->game_dialog.paused) {
+      const std::uint32_t now = GetTickCount();
+      if (state->game_dialog.screen == GameDialogScreen::defeat &&
+          now - state->game_dialog.result_started_tick >= 20000U) {
+        build_match_scores(*state);
+        state->game_dialog.score_started_tick = now;
+        state->game_dialog.screen = GameDialogScreen::score;
+        state->game_dialog.hovered_control = -1;
+        state->game_dialog.pressed_control = -1;
+      } else if (state->game_dialog.screen == GameDialogScreen::score &&
+                 now - state->game_dialog.score_started_tick >= 120000U) {
+        apply_game_dialog_action(window, state,
+                                 GameDialogAction::return_to_menu);
+        return 0;
+      }
+      InvalidateRect(window, nullptr, FALSE);
+      return 0;
+    }
     BootstrapStatus *const status = state == nullptr ? nullptr : state->status;
     if (status != nullptr && !status->unit_assets.empty() &&
         !status->units.empty()) {
@@ -356,14 +540,21 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
       (void)advance_camera_scroll(*state);
       (void)advance_zerg_larvae(*status);
       (void)advance_unit_production(*status, clock);
+      (void)advance_technology_research(*status);
       advance_resource_display(*status);
       (void)advance_unit_movement(*status);
       const bool unit_actions_changed = advance_unit_actions(*status);
       const bool addon_construction_changed =
           advance_addon_construction(*status);
+      const bool protoss_construction_changed =
+          advance_protoss_building_construction(*status);
+      const bool zerg_construction_changed =
+          advance_zerg_building_construction(*status);
       (void)play_pending_resource_error(*state);
       (void)play_pending_game_sound(*state);
-      if (unit_actions_changed || addon_construction_changed) {
+      evaluate_melee_outcome(*state);
+      if (unit_actions_changed || addon_construction_changed ||
+          protoss_construction_changed || zerg_construction_changed) {
         (void)rebuild_creep_tiles(*status);
       }
       (void)advance_selected_portrait(*status, clock);

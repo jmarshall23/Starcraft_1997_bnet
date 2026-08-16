@@ -46,6 +46,9 @@ class MultiplayerScenario final {
       std::uint16_t x,
       std::uint16_t y,
       std::uint16_t& tile_id) const noexcept;
+  [[nodiscard]] bool configure_player(std::size_t player,
+                                      std::uint8_t ownership,
+                                      std::uint8_t race) noexcept;
 
  private:
   std::uint16_t width_{};
