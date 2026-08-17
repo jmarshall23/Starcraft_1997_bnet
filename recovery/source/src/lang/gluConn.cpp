@@ -55,7 +55,8 @@ void set_message(GlueRuntime &glue, const char *const message,
 
 void draw_wrapped_text(const RecoveryWindowState &state,
                        const std::string_view text, const float x,
-                       const float y, const float maximum_width) noexcept {
+                       const float y, const float maximum_width,
+                       const GlueFontStyle style) noexcept {
   try {
     std::istringstream words{std::string{text}};
     std::string line;
@@ -66,8 +67,7 @@ void draw_wrapped_text(const RecoveryWindowState &state,
           line.empty() ? word : line + " " + word;
       if (!line.empty() &&
           state.glue.small_font.text_width(candidate) > maximum_width) {
-        draw_glue_styled_text_gl(state, line, x, baseline,
-                                 GlueFontStyle::normal);
+        draw_glue_styled_text_gl(state, line, x, baseline, style);
         line = word;
         baseline += static_cast<float>(
             state.glue.small_font.maximum_height + 2U);
@@ -76,8 +76,7 @@ void draw_wrapped_text(const RecoveryWindowState &state,
       }
     }
     if (!line.empty()) {
-      draw_glue_styled_text_gl(state, line, x, baseline,
-                               GlueFontStyle::normal);
+      draw_glue_styled_text_gl(state, line, x, baseline, style);
     }
   } catch (...) {
   }
@@ -149,7 +148,8 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
       control_with_id(state.glue.connection_controls, -1);
   if (heading != nullptr && !heading->text.empty()) {
     draw_glue_centered_styled_text_gl(state, heading->text, *heading,
-                                      GlueFontStyle::normal, false);
+                                      glue_control_font_style(*heading),
+                                      false);
   }
 
   const GlueControl *const list =
@@ -186,7 +186,7 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
           static_cast<float>(list_left + 12),
           static_cast<float>(list_top + 24) +
               row_height * static_cast<float>(index),
-          selected ? GlueFontStyle::bright_green : GlueFontStyle::normal,
+          selected ? GlueFontStyle::bright_green : GlueFontStyle::gold,
           false);
     }
   }
@@ -196,7 +196,7 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
   if (provider_name != nullptr) {
     draw_glue_centered_styled_text_gl(
         state, state.glue.providers[state.glue.selected_provider],
-        *provider_name, GlueFontStyle::gold, true);
+        *provider_name, glue_control_font_style(*provider_name), true);
   }
   const GlueControl *const description =
       control_with_id(state.glue.connection_controls, 8);
@@ -213,7 +213,8 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
         state.glue.provider_descriptions[state.glue.selected_provider],
         static_cast<float>(description_left + 4),
         static_cast<float>(description_top + 18),
-        static_cast<float>(description_right - description_left - 8));
+        static_cast<float>(description_right - description_left - 8),
+        glue_control_font_style(*description));
   }
   for (const std::int16_t identifier : {std::int16_t{9}, std::int16_t{10}}) {
     const GlueControl *const button =
@@ -225,8 +226,7 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
     const bool pressed = state.glue.pressed_control == identifier;
     draw_glue_centered_styled_text_gl(
         state, button->text, *button,
-        pressed ? GlueFontStyle::error
-                : hovered ? GlueFontStyle::gold : GlueFontStyle::normal,
+        glue_control_font_style(*button, hovered || pressed),
         false);
   }
 }

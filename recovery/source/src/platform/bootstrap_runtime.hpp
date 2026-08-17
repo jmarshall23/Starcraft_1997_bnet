@@ -216,17 +216,21 @@ struct GlueRuntime {
   SpritePreviewFrame title_background{};
   SpritePreviewFrame main_background{};
   SpritePreviewFrame connection_background{};
+  std::vector<GlueControl> title_controls{};
   std::vector<GlueControl> main_controls{};
+  std::vector<GlueControl> ok_popup_controls{};
   std::vector<GlueControl> connection_controls{};
   std::vector<GlueControl> lobby_controls{};
   std::vector<GlueImage> main_images{};
   std::vector<GlueImage> connection_images{};
   std::vector<GlueImage> lobby_images{};
   std::vector<GlueVideo> main_videos{};
+  SpritePreviewFrame ok_popup_background{};
   std::vector<SpritePreviewFrame> main_dialog_frames{};
   std::vector<SpritePreviewFrame> network_dialog_frames{};
   starcraft::gds::BitmapFont small_font{};
   starcraft::gds::BitmapFont large_font{};
+  std::array<std::array<std::uint32_t, 8>, 6> title_font_colors{};
   std::array<std::array<std::uint32_t, 8>, 6> main_font_colors{};
   std::array<std::array<std::uint32_t, 8>, 6> network_font_colors{};
   BattleArtwork battle_artwork{};
@@ -244,6 +248,7 @@ struct GlueRuntime {
       "Create a local game with computer-controlled player slots.",
   }};
   std::string message{};
+  std::string modal_message{};
   std::string failure{};
   std::uint32_t screen_entered_tick{};
   std::uint32_t selected_map_changed_tick{};
@@ -263,6 +268,7 @@ struct GlueRuntime {
   std::vector<GlueTransformControl> transform_controls{};
   battle::BattleRuntime battle_net{};
   bool online_lobby{};
+  bool modal_popup_visible{};
   bool assets_ready{};
 };
 
@@ -1050,6 +1056,11 @@ void configure_lobby_slots(GlueRuntime &glue) noexcept;
                                         char character) noexcept;
 [[nodiscard]] GlueAction advance_glue(GlueRuntime &glue,
                                       std::uint32_t now) noexcept;
+[[nodiscard]] bool title_loading_visible(const GlueRuntime &glue,
+                                         std::uint32_t now) noexcept;
+[[nodiscard]] GlueFontStyle
+glue_control_font_style(const GlueControl &control,
+                        bool highlighted = false) noexcept;
 void glues_enter_screen(GlueRuntime &glue, GlueScreen screen,
                         std::uint32_t now) noexcept;
 [[nodiscard]] GlueAction glues_leave_screen(GlueRuntime &glue,
@@ -1088,6 +1099,7 @@ void draw_glue_centered_styled_text_gl(
     std::uint8_t alpha = 255U) noexcept;
 void draw_title_gl(const RecoveryWindowState &state) noexcept;
 void draw_main_menu_gl(const RecoveryWindowState &state) noexcept;
+void draw_glue_ok_popup_gl(const RecoveryWindowState &state) noexcept;
 void draw_connection_gl(const RecoveryWindowState &state) noexcept;
 void draw_map_selection_gl(const RecoveryWindowState &state) noexcept;
 void draw_lobby_gl(const RecoveryWindowState &state) noexcept;
@@ -1101,6 +1113,11 @@ void draw_ready_gl(const RecoveryWindowState &state,
 [[nodiscard]] GlueAction
 activate_main_menu_control(GlueRuntime &glue, std::int16_t identifier,
                            std::uint32_t now) noexcept;
+void show_glue_ok_popup(GlueRuntime &glue,
+                        std::string_view message) noexcept;
+void dismiss_glue_ok_popup(GlueRuntime &glue) noexcept;
+[[nodiscard]] std::int16_t glue_ok_popup_control_at(
+    const GlueRuntime &glue, int x, int y) noexcept;
 [[nodiscard]] GlueAction
 activate_connection_control(GlueRuntime &glue, std::int16_t identifier, int x,
                             int y, std::uint32_t now) noexcept;

@@ -177,6 +177,24 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       capture_argument == nullptr
           ? nullptr
           : capture_argument + sizeof(capture_option) - 1U;
+  constexpr char title_capture_option[] = "--capture-glue-title=";
+  const char *const title_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, title_capture_option);
+  const char *const title_capture_path =
+      title_capture_argument == nullptr
+          ? nullptr
+          : title_capture_argument + sizeof(title_capture_option) - 1U;
+  constexpr char popup_capture_option[] = "--capture-glue-popup=";
+  const char *const popup_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, popup_capture_option);
+  const char *const popup_capture_path =
+      popup_capture_argument == nullptr
+          ? nullptr
+          : popup_capture_argument + sizeof(popup_capture_option) - 1U;
   constexpr char lobby_capture_option[] = "--capture-glue-lobby=";
   const char *const lobby_capture_argument =
       command_line == nullptr
@@ -241,7 +259,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       ai_probe || terran_air_probe || protoss_abilities_probe ||
       minimap_probe || camera_probe || status_panel_probe ||
       multi_status_probe || construction_status_probe ||
-      capture_path != nullptr || connection_capture_path != nullptr ||
+      capture_path != nullptr || title_capture_path != nullptr ||
+      popup_capture_path != nullptr ||
+      connection_capture_path != nullptr ||
       map_capture_path != nullptr || lobby_capture_path != nullptr ||
       game_capture_path != nullptr || battle_capture_path != nullptr) {
     handled = true;
@@ -343,6 +363,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       };
       const bool layouts_valid =
           window_state.glue.assets_ready &&
+          window_state.glue.title_font_colors[0][1] != 0U &&
+          window_state.glue.main_font_colors[1][1] != 0U &&
+          window_state.glue.network_font_colors[0][1] != 0U &&
           window_state.glue.main_videos.size() == 8U &&
           std::all_of(window_state.glue.main_videos.begin(),
                       window_state.glue.main_videos.end(),
@@ -351,11 +374,16 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                !video.animation.frame.bgra.empty();
                       }) &&
           window_state.glue.network_dialog_frames.size() > 52U &&
+          has_control(window_state.glue.title_controls, -10, "Loading...") &&
           has_control(window_state.glue.main_controls, 2, "Exit") &&
           has_control(window_state.glue.main_controls, 3, "Single Player") &&
           has_control(window_state.glue.main_controls, 4, "Multiplayer") &&
           has_control(window_state.glue.main_controls, 5,
                       "Campaign Editor") &&
+          has_control(window_state.glue.ok_popup_controls, 1, "Ok") &&
+          has_control(window_state.glue.ok_popup_controls, 2, "") &&
+          window_state.glue.ok_popup_background.width == 288U &&
+          window_state.glue.ok_popup_background.height == 153U &&
           has_control(window_state.glue.connection_controls, -1,
                       "Select Connection") &&
           has_control(window_state.glue.connection_controls, 9, "Ok") &&
@@ -363,8 +391,47 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           has_control(window_state.glue.lobby_controls, 6, "Ok") &&
           has_control(window_state.glue.lobby_controls, 7, "Cancel") &&
           !window_state.glue.maps.empty();
+      const auto main_multiplayer = std::find_if(
+          window_state.glue.main_controls.begin(),
+          window_state.glue.main_controls.end(),
+          [](const GlueControl &control) { return control.identifier == 4; });
+      const auto title_loading = std::find_if(
+          window_state.glue.title_controls.begin(),
+          window_state.glue.title_controls.end(),
+          [](const GlueControl &control) { return control.identifier == -10; });
+      const auto connection_heading = std::find_if(
+          window_state.glue.connection_controls.begin(),
+          window_state.glue.connection_controls.end(),
+          [](const GlueControl &control) { return control.identifier == -1; });
+      const std::uint32_t title_started =
+          window_state.glue.screen_entered_tick;
+      const bool recovered_font_states =
+          title_loading != window_state.glue.title_controls.end() &&
+          title_loading->left == 220 && title_loading->top == 400 &&
+          title_loading->right == 419 && title_loading->bottom == 419 &&
+          main_multiplayer != window_state.glue.main_controls.end() &&
+          glue_control_font_style(*main_multiplayer) ==
+              GlueFontStyle::green &&
+          glue_control_font_style(*main_multiplayer, true) ==
+              GlueFontStyle::bright_green &&
+          connection_heading !=
+              window_state.glue.connection_controls.end() &&
+          glue_control_font_style(*connection_heading) ==
+              GlueFontStyle::gold &&
+          !title_loading_visible(window_state.glue, title_started + 499U) &&
+          title_loading_visible(window_state.glue, title_started + 500U) &&
+          title_loading_visible(window_state.glue, title_started + 999U) &&
+          !title_loading_visible(window_state.glue, title_started + 1000U);
+      // Exercise the visible half of title.cpp's 500 ms loading cycle in the
+      // OpenGL probe, not only the clean first half.
+      window_state.glue.clock_tick = title_started + 500U;
       const bool title_rendered =
-          layouts_valid && render_opengl(window, window_state);
+          layouts_valid && recovered_font_states &&
+          render_opengl(window, window_state);
+      const bool title_captured =
+          title_capture_path == nullptr ||
+          (title_rendered && capture_opengl_bmp(window, window_state,
+                                                title_capture_path));
       const GlueAction title_action =
           glue_key_down(window_state.glue, VK_RETURN, GetTickCount());
       const bool main_rendered =
@@ -375,6 +442,28 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           capture_path == nullptr ||
           (main_rendered &&
            capture_opengl_bmp(window, window_state, capture_path));
+      constexpr std::string_view disabled_message =
+          "This feature has been disabled for the Battle.net beta.";
+      const GlueAction popup_action = activate_main_menu_control(
+          window_state.glue, 3, GetTickCount());
+      const bool popup_state_valid =
+          popup_action == GlueAction::redraw &&
+          window_state.glue.screen == GlueScreen::main_menu &&
+          window_state.glue.modal_popup_visible &&
+          window_state.glue.modal_message == disabled_message &&
+          glue_ok_popup_control_at(window_state.glue, 320, 289) == 1;
+      const bool popup_rendered =
+          popup_state_valid && render_opengl(window, window_state);
+      const bool popup_captured =
+          popup_capture_path == nullptr ||
+          (popup_rendered && capture_opengl_bmp(
+                                 window, window_state, popup_capture_path));
+      const bool popup_dismissed =
+          glue_key_down(window_state.glue, VK_RETURN, GetTickCount()) ==
+              GlueAction::redraw &&
+          !window_state.glue.modal_popup_visible &&
+          window_state.glue.modal_message.empty() &&
+          window_state.glue.screen == GlueScreen::main_menu;
       const auto settle_transform = [&window_state](const std::uint32_t now) {
         (void)advance_glue(window_state.glue, now + 1000U);
         if (window_state.glue.transform_phase != GlueTransformPhase::none) {
@@ -505,7 +594,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                   render_opengl(window, window_state);
       const GlueAction ready_action =
           advance_glue(window_state.glue, ready_now + 4000U);
-      const bool flow_valid = transform_started && transform_finished &&
+      const bool flow_valid = popup_rendered && popup_captured &&
+                              popup_dismissed && transform_started &&
+                              transform_finished &&
                               combo_verified &&
                               ready_action == GlueAction::start_game &&
                               start_selected_glue_map(window_state) &&
@@ -994,7 +1085,8 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         glue_failure_code = 50 + game_flow_stage;
       }
       DestroyWindow(window);
-      return title_rendered && main_rendered && main_captured &&
+      return title_rendered && title_captured && main_rendered &&
+                     main_captured &&
                      connection_rendered && connection_captured &&
                      map_rendered && map_captured && lobby_rendered &&
                      lobby_captured && ready_rendered &&

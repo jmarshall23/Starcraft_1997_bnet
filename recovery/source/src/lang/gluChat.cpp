@@ -175,31 +175,31 @@ void draw_lobby_gl(const RecoveryWindowState &state) noexcept {
   if (state.glue.selected_map < state.glue.maps.size()) {
     const GlueMapEntry &map = state.glue.maps[state.glue.selected_map];
     draw_glue_styled_text_gl(state, "Game Name:", 404.0F + right_x,
-                             69.0F + right_y, GlueFontStyle::normal);
+                             69.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(
         state, state.glue.online_lobby ? "Battle.net Game" : "Local Skirmish",
         412.0F + right_x, 88.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(state, "Game Type:", 404.0F + right_x,
-                             149.0F + right_y, GlueFontStyle::normal);
+                             149.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(state, "Melee", 412.0F + right_x,
                              167.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(state, "Map Name:", 404.0F + right_x,
-                             181.0F + right_y, GlueFontStyle::normal);
+                             181.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(state, map.name, 412.0F + right_x,
                              200.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(state, "Map Size:", 428.0F + right_x,
-                             242.0F + right_y, GlueFontStyle::normal);
+                             242.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(
         state,
         std::to_string(map.width) + "x" + std::to_string(map.height),
-        536.0F + right_x, 242.0F + right_y, GlueFontStyle::normal);
+        536.0F + right_x, 242.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(state, "Game Speed:", 428.0F + right_x,
-                             260.0F + right_y, GlueFontStyle::normal);
+                             260.0F + right_y, GlueFontStyle::gold);
     draw_glue_styled_text_gl(state, "Fastest", 536.0F + right_x,
-                             260.0F + right_y, GlueFontStyle::normal);
+                             260.0F + right_y, GlueFontStyle::gold);
   }
   draw_glue_styled_text_gl(state, "Observers", 32.0F + left_x,
-                           275.0F + left_y, GlueFontStyle::normal);
+                           275.0F + left_y, GlueFontStyle::gold);
 
   for (const std::int16_t identifier : {std::int16_t{6}, std::int16_t{7}}) {
     const GlueControl *const button =
@@ -211,8 +211,7 @@ void draw_lobby_gl(const RecoveryWindowState &state) noexcept {
     const bool pressed = state.glue.pressed_control == identifier;
     draw_glue_centered_styled_text_gl(
         state, button->text, *button,
-        pressed ? GlueFontStyle::error
-                : hovered ? GlueFontStyle::gold : GlueFontStyle::normal,
+        glue_control_font_style(*button, hovered || pressed),
         false);
   }
 }

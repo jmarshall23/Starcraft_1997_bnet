@@ -66,17 +66,6 @@ void draw_control_videos(const RecoveryWindowState &state,
   }
 }
 
-void set_message(GlueRuntime &glue, const char *const message,
-                 const std::uint32_t now) noexcept {
-  try {
-    glue.message = message;
-    glue.message_until = now + 4500U;
-  } catch (...) {
-    glue.message.clear();
-    glue.message_until = 0U;
-  }
-}
-
 } // namespace
 
 std::int16_t main_menu_control_at(const GlueRuntime &glue, const int x,
@@ -96,23 +85,26 @@ GlueAction activate_main_menu_control(GlueRuntime &glue,
   case 2: // Exit
     return GlueAction::quit;
   case 3: // Single Player
-    set_message(glue,
-                "This feature has been disabled for the Battle.net beta.",
-                now);
+    show_glue_ok_popup(
+        glue, "This feature has been disabled for the Battle.net beta.");
     return GlueAction::redraw;
   case 4: // Multiplayer
     glues_enter_screen(glue, GlueScreen::connection, now);
     return GlueAction::redraw;
   case 5: // Campaign Editor
-    set_message(glue,
-                "This feature has been disabled for the Battle.net beta.",
-                now);
+    show_glue_ok_popup(
+        glue,
+        "The campaign editor is not yet available. Once the Battle.net beta "
+        "is activated, connect to Battle.net and the campaign editor will be "
+        "enabled.");
     return GlueAction::redraw;
   case 8: // View Intro
-    set_message(glue, "This feature has been disabled for the Battle.net beta.", now);
+    show_glue_ok_popup(
+        glue, "This feature has been disabled for the Battle.net beta.");
     return GlueAction::redraw;
   case 9: // Show Credits
-    set_message(glue, "This feature has been disabled for the Battle.net beta.", now);
+    show_glue_ok_popup(
+        glue, "This feature has been disabled for the Battle.net beta.");
     return GlueAction::redraw;
   default:
     return GlueAction::none;
@@ -144,12 +136,10 @@ void draw_main_menu_gl(const RecoveryWindowState &state) noexcept {
     }
     const bool hovered = state.glue.hovered_control == control.identifier;
     const bool pressed = state.glue.pressed_control == control.identifier;
-    const std::uint8_t red = pressed ? 255U : hovered ? 255U : 208U;
-    const std::uint8_t green = pressed ? 128U : hovered ? 224U : 208U;
-    const std::uint8_t blue = pressed ? 48U : hovered ? 96U : 208U;
-    draw_glue_centered_text_gl(state, control.text, control, red, green, blue,
-                               control.identifier >= 2 &&
-                                   control.identifier <= 5);
+    draw_glue_centered_styled_text_gl(
+        state, control.text, control,
+        glue_control_font_style(control, hovered || pressed),
+        control.identifier >= 2 && control.identifier <= 5);
   }
 }
 

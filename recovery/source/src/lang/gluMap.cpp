@@ -308,18 +308,18 @@ void draw_map_selection_gl(const RecoveryWindowState &state) noexcept {
     draw_glue_styled_text_gl(
         state, detail, 39.0F + left_x, top + 18.0F + left_y,
         index == state.glue.selected_map ? GlueFontStyle::bright_green
-                                         : GlueFontStyle::normal,
+                                         : GlueFontStyle::gold,
         false, alpha);
   }
   const GlueMapEntry &selected = state.glue.maps[state.glue.selected_map];
   draw_glue_styled_text_gl(state, "Game Type:", 404.0F + right_x,
-                           137.0F + right_y, GlueFontStyle::normal, false,
+                           137.0F + right_y, GlueFontStyle::gold, false,
                            detail_alpha);
   draw_glue_styled_text_gl(state, "Melee", 412.0F + right_x,
                            167.0F + right_y, GlueFontStyle::gold, false,
                            detail_alpha);
   draw_glue_styled_text_gl(state, "Map Size:", 404.0F + right_x,
-                           207.0F + right_y, GlueFontStyle::normal, false,
+                           207.0F + right_y, GlueFontStyle::gold, false,
                            detail_alpha);
   draw_glue_styled_text_gl(
       state,
@@ -337,8 +337,7 @@ void draw_map_selection_gl(const RecoveryWindowState &state) noexcept {
     const bool pressed = state.glue.pressed_control == identifier;
     draw_glue_centered_styled_text_gl(
         state, button->text, *button,
-        pressed ? GlueFontStyle::error
-                : hovered ? GlueFontStyle::gold : GlueFontStyle::normal,
+        glue_control_font_style(*button, hovered || pressed),
         false, alpha);
   }
 }

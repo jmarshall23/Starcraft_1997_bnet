@@ -174,6 +174,7 @@ add_executable(StarCraftRecovery WIN32
   src/lang/gluConn.cpp
   src/lang/gluMain.cpp
   src/lang/gluMap.cpp
+  src/lang/gluPopup.cpp
   src/lang/gluRdy.cpp
   src/lang/gluScore.cpp
   src/lang/glues.cpp

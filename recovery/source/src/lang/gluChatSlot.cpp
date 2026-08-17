@@ -182,8 +182,8 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
     const bool selected = state.glue.hovered_control == name_id ||
                           state.glue.hovered_control == race_id;
     const GlueFontStyle style =
-        selected ? GlueFontStyle::gold
-                 : active ? GlueFontStyle::normal
+        selected ? GlueFontStyle::bright_green
+                 : active ? GlueFontStyle::gold
                           : GlueFontStyle::disabled;
     draw_combo_field(state, name_rect, !slot.local,
                      state.glue.hovered_control == name_id,
@@ -273,7 +273,7 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
                               : slots[static_cast<std::size_t>(row)],
             static_cast<float>(owner->left + 4),
             static_cast<float>(top + row * kPopupRowHeight + 14),
-            hovered ? GlueFontStyle::gold : GlueFontStyle::normal);
+            hovered ? GlueFontStyle::bright_green : GlueFontStyle::gold);
       }
     }
   }

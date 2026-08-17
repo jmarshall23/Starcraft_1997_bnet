@@ -127,14 +127,17 @@ bool load_glue_pcx(starcraft::runtime::StormModule &storm,
 bool load_glue_font_colors(
     starcraft::runtime::StormModule &storm, const char *const path,
     const std::vector<std::uint8_t> &palette,
-    std::array<std::array<std::uint32_t, 8>, 6> &colors) {
+  std::array<std::array<std::uint32_t, 8>, 6> &colors) {
   starcraft::runtime::DecodedPcx table{};
-  if (!storm.load_pcx(path, table) || table.width != 48U ||
-      table.height != 1U || table.pixels.size() != 48U ||
+  if (!storm.load_pcx(path, table) || table.width == 0U ||
+      table.width % 8U != 0U || table.width > colors.size() * 8U ||
+      table.height != 1U || table.pixels.size() != table.width ||
       palette.size() != 1024U) {
     return false;
   }
-  for (std::size_t style = 0; style < colors.size(); ++style) {
+  colors = {};
+  const std::size_t style_count = table.width / 8U;
+  for (std::size_t style = 0; style < style_count; ++style) {
     for (std::size_t shade = 0; shade < colors[style].size(); ++shade) {
       const std::size_t palette_index = table.pixels[style * 8U + shade];
       const std::size_t color = palette_index * 4U;
@@ -235,6 +238,8 @@ void reset_screen_state(GlueRuntime &glue, const GlueScreen screen,
   glue.pressed_control = -1;
   glue.message.clear();
   glue.message_until = 0U;
+  glue.modal_message.clear();
+  glue.modal_popup_visible = false;
   glue.popup_control = -1;
   glue.popup_row = -1;
   glue.transform_started_tick = now;
@@ -448,9 +453,12 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
     return false;
   }
 
+  std::vector<std::uint8_t> title_layout;
   std::vector<std::uint8_t> main_layout;
+  std::vector<std::uint8_t> ok_popup_layout;
   std::vector<std::uint8_t> connection_layout;
   std::vector<std::uint8_t> lobby_layout;
+  std::vector<std::uint8_t> title_palette;
   std::vector<std::uint8_t> main_palette;
   std::vector<std::uint8_t> network_palette;
   std::vector<std::uint8_t> main_dialog_group;
@@ -459,7 +467,7 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
   std::uint16_t dialog_height{};
   const bool loaded =
       load_glue_pcx(storm, R"(glue\title\title-beta.pcx)", false,
-                    glue.title_background) &&
+                    glue.title_background, &title_palette) &&
       load_glue_pcx(storm, R"(glue\PalMm\BackGnd.pcx)", false,
                     glue.main_background, &main_palette) &&
       load_glue_pcx(storm, R"(glue\PalNl\BackGnd.pcx)", false,
@@ -468,18 +476,26 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
                                           glue.small_font) &&
       starcraft::gds::load_starcraft_font(storm, R"(font\font16.fnt)",
                                           glue.large_font) &&
+      load_glue_font_colors(storm, R"(glue\title\TFont.pcx)", title_palette,
+                            glue.title_font_colors) &&
       load_glue_font_colors(storm, R"(glue\PalMm\TFont.pcx)", main_palette,
                             glue.main_font_colors) &&
       load_glue_font_colors(storm, R"(glue\PalNl\TFont.pcx)",
                             network_palette, glue.network_font_colors) &&
+      storm.load_file(R"(rez\titledlg.bin)", title_layout) &&
       storm.load_file(R"(rez\gluMain.bin)", main_layout) &&
+      storm.load_file(R"(rez\gluPOk.bin)", ok_popup_layout) &&
       storm.load_file(R"(rez\gluConn.bin)", connection_layout) &&
       storm.load_file(R"(rez\gluChat.bin)", lobby_layout) &&
+      parse_glue_layout(title_layout, glue.title_controls) &&
       parse_glue_layout(main_layout, glue.main_controls) &&
+      parse_glue_layout(ok_popup_layout, glue.ok_popup_controls) &&
       parse_glue_layout(connection_layout, glue.connection_controls) &&
       parse_glue_layout(lobby_layout, glue.lobby_controls) &&
       load_main_control_videos(storm, main_layout, glue.main_controls,
                                glue.main_videos) &&
+      load_glue_pcx(storm, R"(glue\PalMm\pOPopup.pcx)", false,
+                    glue.ok_popup_background) &&
       load_control_images(storm, glue.main_controls, glue.main_images) &&
       load_control_images(storm, glue.connection_controls,
                           glue.connection_images) &&
@@ -494,6 +510,18 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
                             dialog_height) &&
       battle::UiLoadArtwork(storm, glue.battle_artwork) &&
       enumerate_glue_maps(storm, root, glue);
+  if (loaded) {
+    const std::int16_t popup_left = static_cast<std::int16_t>(
+        (kGlueWidth - glue.ok_popup_background.width) / 2U);
+    const std::int16_t popup_top = static_cast<std::int16_t>(
+        (kGlueHeight - glue.ok_popup_background.height) / 2U);
+    for (GlueControl &control : glue.ok_popup_controls) {
+      control.left = static_cast<std::int16_t>(control.left + popup_left);
+      control.right = static_cast<std::int16_t>(control.right + popup_left);
+      control.top = static_cast<std::int16_t>(control.top + popup_top);
+      control.bottom = static_cast<std::int16_t>(control.bottom + popup_top);
+    }
+  }
   const bool patch_closed = storm.close_archive(patch);
   const bool base_closed = storm.close_archive(base);
   glue.assets_ready = loaded && patch_closed && base_closed;
@@ -555,6 +583,12 @@ bool client_to_glue(const HWND window, const LPARAM lparam, int &glue_x,
 
 GlueAction glue_mouse_move(GlueRuntime &glue, const int x,
                            const int y) noexcept {
+  if (glue.modal_popup_visible) {
+    const std::int16_t previous = glue.hovered_control;
+    glue.hovered_control = glue_ok_popup_control_at(glue, x, y);
+    return previous == glue.hovered_control ? GlueAction::none
+                                            : GlueAction::redraw;
+  }
   if (glue.transform_phase != GlueTransformPhase::none) {
     const bool changed = glue.hovered_control != -1;
     glue.hovered_control = -1;
@@ -588,6 +622,11 @@ GlueAction glue_mouse_move(GlueRuntime &glue, const int x,
 
 GlueAction glue_left_down(GlueRuntime &glue, const int x,
                           const int y) noexcept {
+  if (glue.modal_popup_visible) {
+    glue.pressed_control = glue_ok_popup_control_at(glue, x, y);
+    return glue.pressed_control == -1 ? GlueAction::none
+                                      : GlueAction::redraw;
+  }
   if (glue.screen == GlueScreen::title) {
     glue.pressed_control = 0;
     return GlueAction::redraw;
@@ -612,6 +651,15 @@ GlueAction glue_left_down(GlueRuntime &glue, const int x,
 
 GlueAction glue_left_up(GlueRuntime &glue, const int x, const int y,
                         const std::uint32_t now) noexcept {
+  if (glue.modal_popup_visible) {
+    const std::int16_t released = glue_ok_popup_control_at(glue, x, y);
+    const std::int16_t pressed = glue.pressed_control;
+    glue.pressed_control = -1;
+    if (pressed == 1 && released == pressed) {
+      dismiss_glue_ok_popup(glue);
+    }
+    return GlueAction::redraw;
+  }
   if (glue.screen == GlueScreen::title) {
     glues_enter_screen(glue, GlueScreen::main_menu, now);
     return GlueAction::redraw;
@@ -649,6 +697,13 @@ GlueAction glue_left_up(GlueRuntime &glue, const int x, const int y,
 
 GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
                          const std::uint32_t now) noexcept {
+  if (glue.modal_popup_visible) {
+    if (key == VK_RETURN || key == VK_ESCAPE) {
+      dismiss_glue_ok_popup(glue);
+      return GlueAction::redraw;
+    }
+    return GlueAction::none;
+  }
   if (glue.screen == GlueScreen::title) {
     glues_enter_screen(glue, GlueScreen::main_menu, now);
     return GlueAction::redraw;
@@ -752,9 +807,14 @@ GlueAction glue_character(GlueRuntime &glue, const char character) noexcept {
 
 GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
   glue.clock_tick = now;
-  if (glue.screen == GlueScreen::title &&
-      now - glue.screen_entered_tick >= kTitleDurationMilliseconds) {
-    glues_enter_screen(glue, GlueScreen::main_menu, now);
+  if (glue.screen == GlueScreen::title) {
+    if (now - glue.screen_entered_tick >= kTitleDurationMilliseconds) {
+      glues_enter_screen(glue, GlueScreen::main_menu, now);
+      return GlueAction::redraw;
+    }
+    // title.cpp::sub_4B3990 alternates the saved -10 control rectangle every
+    // 500 ms while the title task is alive. Request presentation until startup
+    // completes so each recovered half-second boundary reaches the display.
     return GlueAction::redraw;
   }
   if (glue.transform_phase == GlueTransformPhase::entering) {
@@ -809,6 +869,52 @@ GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
   return GlueAction::none;
 }
 
+bool title_loading_visible(const GlueRuntime &glue,
+                           const std::uint32_t now) noexcept {
+  // The title worker waits once before copying the rendered LOADING control to
+  // the display, then waits once more before restoring the clean background.
+  return ((now - glue.screen_entered_tick) / 500U) % 2U != 0U;
+}
+
+GlueFontStyle glue_control_font_style(const GlueControl &control,
+                                      const bool highlighted) noexcept {
+  // DLG/flc.cpp::sub_4DFCB0 uses TFont row 1 for enabled animated controls,
+  // row 2 as their highlight blend reaches full intensity, and row 3 when the
+  // disabled flag is set.
+  if (control.type == 14U) {
+    if ((control.flags & 2U) != 0U) {
+      return GlueFontStyle::disabled;
+    }
+    return highlighted ? GlueFontStyle::bright_green
+                       : GlueFontStyle::green;
+  }
+
+  // DLG/draw.cpp::sub_4DC0D0 passes values 2..6 to sub_4D4060. The font code
+  // subtracts two, so these branches map directly onto the six TFont rows.
+  if ((control.flags & 2U) != 0U) {
+    return GlueFontStyle::disabled;
+  }
+  if ((control.flags & 0x80U) != 0U) {
+    return GlueFontStyle::bright_green;
+  }
+  if (control.type == 1U || control.type == 2U || control.type == 3U ||
+      control.type == 13U) {
+    return GlueFontStyle::green;
+  }
+  if (control.type == 9U || control.type == 10U || control.type == 11U) {
+    if ((control.flags & 0x80000000U) != 0U) {
+      return GlueFontStyle::bright_green;
+    }
+    if ((control.flags & 0x40000000U) != 0U) {
+      return GlueFontStyle::normal;
+    }
+    if ((control.flags & 0x20000000U) != 0U) {
+      return GlueFontStyle::green;
+    }
+  }
+  return GlueFontStyle::gold;
+}
+
 void draw_glue_text_gl(const RecoveryWindowState &state,
                        const std::string_view text, const float x,
                        const float y, const std::uint8_t red,
@@ -843,9 +949,11 @@ void draw_glue_styled_text_gl(const RecoveryWindowState &state,
     return;
   }
   const auto &color_tables =
-      state.glue.screen == GlueScreen::main_menu
-          ? state.glue.main_font_colors
-          : state.glue.network_font_colors;
+      state.glue.screen == GlueScreen::title
+          ? state.glue.title_font_colors
+          : state.glue.screen == GlueScreen::main_menu
+                ? state.glue.main_font_colors
+                : state.glue.network_font_colors;
   const std::size_t style_index = static_cast<std::size_t>(style);
   if (style_index >= color_tables.size()) {
     return;
@@ -988,7 +1096,11 @@ bool render_glue(const RecoveryWindowState &state) noexcept {
     break;
   case GlueScreen::main_menu:
     draw_main_menu_gl(state);
-    draw_message(state);
+    if (state.glue.modal_popup_visible) {
+      draw_glue_ok_popup_gl(state);
+    } else {
+      draw_message(state);
+    }
     break;
   case GlueScreen::connection:
     draw_connection_gl(state);
