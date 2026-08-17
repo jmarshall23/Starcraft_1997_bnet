@@ -40,6 +40,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       command_line != nullptr &&
       (std::strstr(command_line, "--probe-glue") != nullptr ||
        game_flow_probe);
+  const bool battle_ui_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-battle-ui") != nullptr;
   const bool opengl_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-opengl") != nullptr;
@@ -192,8 +195,18 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       game_capture_argument == nullptr
           ? nullptr
           : game_capture_argument + sizeof(game_capture_option) - 1U;
+  constexpr char battle_capture_option[] = "--capture-battle-ui=";
+  const char *const battle_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, battle_capture_option);
+  const char *const battle_capture_path =
+      battle_capture_argument == nullptr
+          ? nullptr
+          : battle_capture_argument + sizeof(battle_capture_option) - 1U;
 
-  if (glue_probe || opengl_probe || selection_probe || command_panel_probe ||
+  if (glue_probe || battle_ui_probe || opengl_probe || selection_probe ||
+      command_panel_probe ||
       worker_build_cards_probe ||
       race_construction_probe || race_building_cards_probe || bunker_probe ||
       production_probe || all_production_probe || harvest_queue_probe ||
@@ -210,9 +223,93 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       minimap_probe || camera_probe || status_panel_probe ||
       multi_status_probe || construction_status_probe ||
       capture_path != nullptr || lobby_capture_path != nullptr ||
-      game_capture_path != nullptr) {
+      game_capture_path != nullptr || battle_capture_path != nullptr) {
     handled = true;
     window_state.validate_render_pixels = opengl_probe;
+    if (battle_ui_probe) {
+      const bool assets_ready = window_state.glue.assets_ready &&
+                                window_state.glue.battle_artwork.ready;
+      const bool began = assets_ready &&
+                         battle::UiBeginConnect(window_state.glue.battle_net);
+      window_state.glue.screen = GlueScreen::battle_net;
+      battle::BattleRuntime &battle_runtime = window_state.glue.battle_net;
+      constexpr char battle_screen_option[] = "--battle-ui-screen=";
+      const char *const battle_screen_argument =
+          command_line == nullptr
+              ? nullptr
+              : std::strstr(command_line, battle_screen_option);
+      const char *const requested_screen =
+          battle_screen_argument == nullptr
+              ? "connect"
+              : battle_screen_argument + sizeof(battle_screen_option) - 1U;
+      const bool connect_screen = std::strncmp(requested_screen, "connect", 7U) == 0;
+      if (began && !connect_screen) {
+        battle_runtime.connect_pending = false;
+        battle_runtime.connect_artwork_presented = false;
+        if (std::strncmp(requested_screen, "logon", 5U) == 0) {
+          (void)battle::UiLogon(battle_runtime);
+        } else if (std::strncmp(requested_screen, "account", 7U) == 0) {
+          (void)battle::UiLogon(battle_runtime);
+          (void)battle::NewAccount(battle_runtime);
+        } else if (std::strncmp(requested_screen, "channel", 7U) == 0) {
+          battle_runtime.screen = battle::BattleScreen::channel_select;
+          battle_runtime.edit_control = battle::EditControl::channel_name;
+          battle_runtime.channels = {{"Blizzard Tech Support", 18U},
+                                     {"StarCraft", 42U},
+                                     {"Brood War", 27U}};
+        } else {
+          battle_runtime.current_channel = "StarCraft";
+          battle_runtime.users = {"Arcturus", "Executor", "Overmind"};
+          battle_runtime.chat_lines = {
+              "Battle.net: Welcome to Battle.net!",
+              "<Arcturus> Ready for a game?"};
+          if (std::strncmp(requested_screen, "chat", 4U) == 0) {
+            battle_runtime.screen = battle::BattleScreen::chat_room;
+            battle_runtime.edit_control = battle::EditControl::chat_input;
+          } else if (std::strncmp(requested_screen, "join", 4U) == 0) {
+            battle_runtime.screen = battle::BattleScreen::join_game;
+            battle_runtime.games = {{1U, "The Hunters", "Arcturus",
+                                     "(8)The Hunters", 3U, 8U}};
+          } else if (std::strncmp(requested_screen, "create", 6U) == 0 ||
+                     std::strncmp(requested_screen, "browse", 6U) == 0) {
+            const std::string_view map =
+                battle_runtime.available_maps.empty()
+                    ? std::string_view{"Unknown Map"}
+                    : std::string_view{
+                          battle_runtime.available_maps.front().name};
+            (void)battle::DoCreateGame(battle_runtime, map);
+            if (std::strncmp(requested_screen, "browse", 6U) == 0) {
+              battle_runtime.screen = battle::BattleScreen::create_browse;
+              battle_runtime.edit_control = battle::EditControl::none;
+            }
+          } else if (std::strncmp(requested_screen, "ladder", 6U) == 0) {
+            battle_runtime.screen = battle::BattleScreen::ladder;
+          } else if (std::strncmp(requested_screen, "profile", 7U) == 0) {
+            battle_runtime.screen = battle::BattleScreen::profile;
+            battle_runtime.profile_name = "Arcturus";
+          }
+        }
+      }
+      const bool state_before_paint =
+          began && !battle_runtime.connected &&
+          (!connect_screen ||
+           (battle_runtime.connect_pending &&
+            !battle_runtime.connect_artwork_presented));
+      const bool rendered = state_before_paint &&
+                            render_opengl(window, window_state);
+      const bool state_after_paint =
+          rendered && !battle_runtime.connected &&
+          (!connect_screen ||
+           (battle_runtime.connect_pending &&
+            battle_runtime.connect_artwork_presented));
+      const bool captured =
+          battle_capture_path == nullptr ||
+          (rendered && capture_opengl_bmp(window, window_state,
+                                          battle_capture_path));
+      battle::UiEndConnect(window_state.glue.battle_net);
+      DestroyWindow(window);
+      return state_after_paint && captured ? 0 : 51;
+    }
     if (glue_probe) {
       const auto has_control = [](const std::vector<GlueControl> &controls,
                                   const std::int16_t identifier,

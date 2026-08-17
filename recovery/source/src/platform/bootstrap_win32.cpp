@@ -1,12 +1,54 @@
 #include "bootstrap_runtime.hpp"
 
+#include <charconv>
+#include <cctype>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 namespace starcraft::recovery {
 
 constexpr char kWindowClass[] = "StarcraftBetaRecovered";
 constexpr char kWindowTitle[] = "Starcraft Beta - Source Recovery Bootstrap";
+
+std::string command_line_option(const char *const command_line,
+                                const std::string_view option) {
+  if (command_line == nullptr) {
+    return {};
+  }
+  const char *const found = std::strstr(command_line, option.data());
+  if (found == nullptr) {
+    return {};
+  }
+  const char *const begin = found + option.size();
+  const char *end = begin;
+  while (*end != '\0' && std::isspace(static_cast<unsigned char>(*end)) == 0) {
+    ++end;
+  }
+  return {begin, end};
+}
+
+void configure_battle_server(GlueRuntime &glue,
+                             const char *const command_line) {
+  const std::string host =
+      command_line_option(command_line, "--battle-host=");
+  if (!host.empty()) {
+    glue.battle_net.server_host = host;
+  }
+  const std::string port_text =
+      command_line_option(command_line, "--battle-port=");
+  unsigned int port{};
+  if (!port_text.empty()) {
+    const auto parsed =
+        std::from_chars(port_text.data(), port_text.data() + port_text.size(),
+                        port);
+    if (parsed.ec == std::errc{} && parsed.ptr == port_text.data() +
+                                                    port_text.size() &&
+        port > 0U && port <= 65535U) {
+      glue.battle_net.server_port = static_cast<std::uint16_t>(port);
+    }
+  }
+}
 
 } // namespace starcraft::recovery
 
@@ -25,6 +67,7 @@ int WINAPI WinMain(const HINSTANCE instance, HINSTANCE, LPSTR command_line,
 
   RecoveryWindowState window_state{&status};
   const bool glue_ready = initialize_glue_assets(window_state.glue);
+  configure_battle_server(window_state.glue, command_line);
   const bool game_dialogs_ready =
       initialize_game_dialog_assets(window_state.game_dialog, status);
   WNDCLASSA window_class{};

@@ -477,6 +477,17 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     }
     return DefWindowProcA(window, message, wparam, lparam);
   }
+  case WM_CHAR: {
+    auto *const state = reinterpret_cast<RecoveryWindowState *>(
+        GetWindowLongPtrA(window, GWLP_USERDATA));
+    if (state != nullptr && glue_active(state->glue)) {
+      apply_glue_action(window, state,
+                        glue_character(state->glue,
+                                       static_cast<char>(wparam & 0xFFU)));
+      return 0;
+    }
+    return DefWindowProcA(window, message, wparam, lparam);
+  }
   case WM_KILLFOCUS: {
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
@@ -577,6 +588,7 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     auto *const state = reinterpret_cast<RecoveryWindowState *>(
         GetWindowLongPtrA(window, GWLP_USERDATA));
     if (state != nullptr) {
+      battle::UiDestroy(state->glue.battle_net);
       shutdown_audio(*state);
       shutdown_opengl(window, *state);
     }

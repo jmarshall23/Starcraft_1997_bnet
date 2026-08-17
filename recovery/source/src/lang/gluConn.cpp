@@ -97,9 +97,12 @@ GlueAction activate_connection_control(GlueRuntime &glue,
     set_message(glue, "The new LAN session transport is the next net task.",
                 now);
   } else {
-    set_message(glue,
-                "The recovered Battle.net screen flow is the next net task.",
-                now);
+    if (battle::UiBeginConnect(glue.battle_net)) {
+      glue.online_lobby = false;
+      return glues_leave_screen(glue, GlueScreen::battle_net,
+                                GlueAction::none, now);
+    }
+    set_message(glue, glue.battle_net.status.c_str(), now);
   }
   return GlueAction::redraw;
 }

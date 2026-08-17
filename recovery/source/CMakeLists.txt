@@ -52,6 +52,37 @@ if(Python3_Interpreter_FOUND)
   )
 endif()
 
+find_program(DOTNET_EXECUTABLE dotnet)
+if(DOTNET_EXECUTABLE)
+  set(STARCRAFT_RECOVERY_SERVER_PROJECT
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/server/StarCraftRecoveryServer.csproj")
+  set(STARCRAFT_RECOVERY_SERVER_EXE
+      "${STARCRAFT_RECOVERY_ROOT}/StarCraftRecoveryServer.exe")
+  set(STARCRAFT_RECOVERY_SERVER_PUBLISH_DIR
+      "${CMAKE_CURRENT_BINARY_DIR}/server-publish")
+  file(GLOB STARCRAFT_RECOVERY_SERVER_SOURCES CONFIGURE_DEPENDS
+       "${CMAKE_CURRENT_SOURCE_DIR}/src/server/*.cs"
+       "${CMAKE_CURRENT_SOURCE_DIR}/src/server/*.csproj")
+  add_custom_command(
+    OUTPUT "${STARCRAFT_RECOVERY_SERVER_EXE}"
+    COMMAND "${DOTNET_EXECUTABLE}" publish
+            "${STARCRAFT_RECOVERY_SERVER_PROJECT}"
+            --configuration Release
+            --runtime win-x64
+            --self-contained false
+            --output "${STARCRAFT_RECOVERY_SERVER_PUBLISH_DIR}"
+            -p:PublishSingleFile=true
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${STARCRAFT_RECOVERY_SERVER_PUBLISH_DIR}/StarCraftRecoveryServer.exe"
+            "${STARCRAFT_RECOVERY_SERVER_EXE}"
+    DEPENDS ${STARCRAFT_RECOVERY_SERVER_SOURCES}
+    COMMENT "Publishing the recovery Battle.net server"
+    VERBATIM
+  )
+  add_custom_target(StarCraftRecoveryServer ALL
+                    DEPENDS "${STARCRAFT_RECOVERY_SERVER_EXE}")
+endif()
+
 add_library(starcraft_core STATIC
   src/data/chk.cpp
   src/data/dat.cpp
@@ -105,6 +136,15 @@ add_executable(StarCraftRecovery WIN32
   src/platform/bootstrap_probes.cpp
   src/platform/bootstrap_win32.cpp
   src/platform/debug_console.cpp
+  src/snp/battle/Account.cpp
+  src/snp/battle/Battle.cpp
+  src/snp/battle/Chatchnl.cpp
+  src/snp/battle/Chatroom.cpp
+  src/snp/battle/COnnect.cpp
+  src/snp/battle/Joingame.cpp
+  src/snp/battle/Logon.cpp
+  src/snp/battle/Srv.cpp
+  src/snp/battle/Ui.cpp
   src/gds/image.cpp
   src/gds/capture.cpp
   src/gds/sys_Win.cpp
@@ -163,7 +203,7 @@ target_include_directories(
 )
 target_link_libraries(
   StarCraftRecovery
-  PRIVATE starcraft_core vendored_libsmacker OpenAL::OpenAL user32 kernel32 gdi32 opengl32
+  PRIVATE starcraft_core vendored_libsmacker OpenAL::OpenAL user32 kernel32 gdi32 opengl32 ws2_32
 )
 set_target_properties(StarCraftRecovery PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${STARCRAFT_RECOVERY_ROOT}"
@@ -200,6 +240,39 @@ if(MSVC)
 endif()
 
 if(BUILD_TESTING)
+  if(DOTNET_EXECUTABLE)
+    add_test(NAME battle_server_self_test
+             COMMAND "${STARCRAFT_RECOVERY_SERVER_EXE}" --self-test)
+  endif()
+
+  add_executable(battle_client_probe
+    tools/battle_client_probe.cpp
+    src/snp/battle/Srv.cpp
+    src/snp/battle/Chatchnl.cpp
+    src/snp/battle/Chatroom.cpp
+    src/snp/battle/Logon.cpp
+  )
+  target_compile_features(battle_client_probe PRIVATE cxx_std_17)
+  target_link_libraries(battle_client_probe PRIVATE ws2_32)
+
+  add_executable(battle_dialog_inventory tools/battle_dialog_inventory.cpp)
+  target_compile_features(battle_dialog_inventory PRIVATE cxx_std_17)
+
+  add_executable(battle_art_inventory tools/battle_art_inventory.cpp)
+  target_compile_features(battle_art_inventory PRIVATE cxx_std_17)
+  target_link_libraries(battle_art_inventory PRIVATE starcraft_core)
+  find_program(WINDOWS_POWERSHELL_EXECUTABLE powershell)
+  if(DOTNET_EXECUTABLE AND WINDOWS_POWERSHELL_EXECUTABLE)
+    add_test(
+      NAME battle_client_server_integration
+      COMMAND "${WINDOWS_POWERSHELL_EXECUTABLE}"
+              -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/battle_integration_test.ps1"
+              -Server "${STARCRAFT_RECOVERY_SERVER_EXE}"
+              -Client "$<TARGET_FILE:battle_client_probe>")
+    set_tests_properties(battle_client_server_integration PROPERTIES
+                         DEPENDS battle_server_self_test TIMEOUT 15)
+  endif()
   set(STARCRAFT_INPUT_ROOT "${STARCRAFT_RECOVERY_ROOT}")
 
   add_executable(damage_tests tests/damage_tests.cpp)
@@ -420,6 +493,8 @@ if(BUILD_TESTING)
 
   add_test(NAME bootstrap_asset_probe COMMAND StarCraftRecovery --probe-assets)
   add_test(NAME bootstrap_glue_probe COMMAND StarCraftRecovery --probe-glue)
+  add_test(NAME bootstrap_battle_ui_probe
+           COMMAND StarCraftRecovery --probe-battle-ui)
   add_test(
     NAME bootstrap_game_flow_probe
     COMMAND StarCraftRecovery --probe-game-flow --probe-map-index=0

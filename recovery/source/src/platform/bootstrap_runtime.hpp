@@ -10,6 +10,8 @@
 #include "starcraft/lang/pathfinding.hpp"
 #include "starcraft/runtime/storm.hpp"
 
+#include "../snp/battle/Battle.hpp"
+
 #include "smacker.h"
 
 #include <AL/al.h>
@@ -52,6 +54,31 @@ struct SpritePreviewFrame {
   std::vector<std::uint32_t> bgra{};
   std::vector<std::uint8_t> palette_indices{};
   std::vector<std::uint8_t> opacity{};
+};
+
+// gluBN.cpp maps Battle.snp's artwork identifiers to these archive PCX files.
+// Keep the decoded ownership with GlueRuntime so all Battle.net dialogs share
+// the one retail palette/art set exactly as BattleNetDialogProc did.
+struct BattleArtwork {
+  SpritePreviewFrame connect_background{};
+  SpritePreviewFrame logon_background{};
+  SpritePreviewFrame shell_background{};
+  SpritePreviewFrame channel_background{};
+  SpritePreviewFrame join_background{};
+  SpritePreviewFrame chat_background{};
+  SpritePreviewFrame ladder_background{};
+  SpritePreviewFrame create_background{};
+  SpritePreviewFrame browse_background{};
+  SpritePreviewFrame profile_background{};
+  SpritePreviewFrame welcome_ad{};
+  SpritePreviewFrame small_popup{};
+  SpritePreviewFrame large_popup{};
+  std::array<SpritePreviewFrame, 5> battle_buttons{};
+  std::array<SpritePreviewFrame, 5> extra_small_buttons{};
+  std::array<SpritePreviewFrame, 5> small_buttons{};
+  std::array<SpritePreviewFrame, 5> medium_buttons{};
+  std::array<SpritePreviewFrame, 5> browse_buttons{};
+  bool ready{};
 };
 
 // playflic.cpp owns the decoder lifetime used by both glue-control movies and
@@ -113,6 +140,7 @@ enum class GlueScreen : std::uint8_t {
   map_selection,
   lobby,
   ready,
+  battle_net,
   gameplay,
 };
 
@@ -187,6 +215,7 @@ struct GlueRuntime {
   std::vector<GlueVideo> main_videos{};
   std::vector<SpritePreviewFrame> main_dialog_frames{};
   std::vector<SpritePreviewFrame> network_dialog_frames{};
+  BattleArtwork battle_artwork{};
   std::vector<GlueMapEntry> maps{};
   std::array<GlueLobbySlot, starcraft::data::chk_player_slot_count>
       lobby_slots{};
@@ -217,6 +246,8 @@ struct GlueRuntime {
   GlueScreen transform_target{GlueScreen::gameplay};
   GlueAction transform_action{GlueAction::none};
   std::vector<GlueTransformControl> transform_controls{};
+  battle::BattleRuntime battle_net{};
+  bool online_lobby{};
   bool assets_ready{};
 };
 
@@ -987,6 +1018,8 @@ void configure_lobby_slots(GlueRuntime &glue) noexcept;
                                       std::uint32_t now) noexcept;
 [[nodiscard]] GlueAction glue_key_down(GlueRuntime &glue, WPARAM key,
                                        std::uint32_t now) noexcept;
+[[nodiscard]] GlueAction glue_character(GlueRuntime &glue,
+                                        char character) noexcept;
 [[nodiscard]] GlueAction advance_glue(GlueRuntime &glue,
                                       std::uint32_t now) noexcept;
 void glues_enter_screen(GlueRuntime &glue, GlueScreen screen,

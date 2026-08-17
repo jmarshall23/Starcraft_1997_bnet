@@ -248,9 +248,38 @@ std::int16_t control_at(const GlueRuntime &glue, const int x,
     return map_selection_control_at(glue, x, y);
   case GlueScreen::lobby:
     return lobby_control_at(glue, x, y);
+  case GlueScreen::battle_net:
+    return battle::BattleNetControlAt(glue.battle_net, x, y);
   default:
     return -1;
   }
+}
+
+GlueAction apply_battle_ui_action(GlueRuntime &glue,
+                                  const battle::BattleUiAction action,
+                                  const std::uint32_t now) noexcept {
+  switch (action) {
+  case battle::BattleUiAction::redraw:
+    return GlueAction::redraw;
+  case battle::BattleUiAction::leave_battle_net:
+    glue.online_lobby = false;
+    glues_enter_screen(glue, GlueScreen::connection, now);
+    return GlueAction::redraw;
+  case battle::BattleUiAction::enter_game_lobby:
+    glue.online_lobby = true;
+    configure_lobby_slots(glue);
+    glues_enter_screen(glue, GlueScreen::lobby, now);
+    return GlueAction::redraw;
+  case battle::BattleUiAction::none:
+  default:
+    return GlueAction::none;
+  }
+}
+
+std::string_view selected_map_name(const GlueRuntime &glue) noexcept {
+  return glue.selected_map < glue.maps.size()
+             ? std::string_view{glue.maps[glue.selected_map].name}
+             : std::string_view{"Unknown Map"};
 }
 
 } // namespace
@@ -429,13 +458,33 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
       decode_preview_frames(network_dialog_group, network_palette,
                             glue.network_dialog_frames, dialog_width,
                             dialog_height) &&
+      battle::UiLoadArtwork(storm, glue.battle_artwork) &&
       enumerate_glue_maps(storm, root, glue);
   const bool patch_closed = storm.close_archive(patch);
   const bool base_closed = storm.close_archive(base);
   glue.assets_ready = loaded && patch_closed && base_closed;
   if (!glue.assets_ready) {
-    glue.failure = "A title, glue dialog, control image, or multiplayer map "
-                   "failed to decode.";
+    glue.failure = "A title, glue dialog, Battle.net artwork, control image, "
+                   "or multiplayer map failed to decode.";
+    glue.screen = GlueScreen::gameplay;
+    return false;
+  }
+  try {
+    glue.battle_net.available_maps.clear();
+    glue.battle_net.available_maps.reserve(glue.maps.size());
+    for (const GlueMapEntry &map : glue.maps) {
+      battle::BattleMapEntry entry{};
+      entry.path = map.path;
+      entry.name = map.name;
+      entry.width = map.width;
+      entry.height = map.height;
+      entry.players = static_cast<std::uint32_t>(map.player_count);
+      glue.battle_net.available_maps.push_back(std::move(entry));
+    }
+  } catch (...) {
+    glue.assets_ready = false;
+    glue.failure = "The multiplayer map list could not be prepared for "
+                   "Battle.net.";
     glue.screen = GlueScreen::gameplay;
     return false;
   }
@@ -491,6 +540,10 @@ GlueAction glue_mouse_move(GlueRuntime &glue, const int x,
   case GlueScreen::lobby:
     glue.hovered_control = lobby_control_at(glue, x, y);
     break;
+  case GlueScreen::battle_net:
+    return apply_battle_ui_action(
+        glue, battle::BattleNetMouseMove(glue.battle_net, x, y),
+        glue.clock_tick);
   default:
     glue.hovered_control = -1;
     break;
@@ -507,6 +560,11 @@ GlueAction glue_left_down(GlueRuntime &glue, const int x,
   }
   if (glue.transform_phase != GlueTransformPhase::none) {
     return GlueAction::none;
+  }
+  if (glue.screen == GlueScreen::battle_net) {
+    return apply_battle_ui_action(
+        glue, battle::BattleNetLeftDown(glue.battle_net, x, y),
+        glue.clock_tick);
   }
   glue.pressed_control = control_at(glue, x, y);
   if (glue.screen == GlueScreen::lobby && glue.popup_control != -1 &&
@@ -527,6 +585,13 @@ GlueAction glue_left_up(GlueRuntime &glue, const int x, const int y,
   if (glue.transform_phase != GlueTransformPhase::none) {
     glue.pressed_control = -1;
     return GlueAction::none;
+  }
+  if (glue.screen == GlueScreen::battle_net) {
+    return apply_battle_ui_action(
+        glue,
+        battle::BattleNetLeftUp(glue.battle_net, x, y,
+                                selected_map_name(glue)),
+        now);
   }
   const std::int16_t released = control_at(glue, x, y);
   const std::int16_t pressed = glue.pressed_control;
@@ -563,6 +628,14 @@ GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
     return GlueAction::redraw;
   }
   if (key == VK_ESCAPE) {
+    if (glue.screen == GlueScreen::battle_net) {
+      return apply_battle_ui_action(
+          glue,
+          battle::BattleNetKeyDown(glue.battle_net,
+                                   static_cast<std::uintptr_t>(key),
+                                   selected_map_name(glue)),
+          now);
+    }
     if (glue.screen == GlueScreen::connection) {
       return glues_leave_screen(glue, GlueScreen::main_menu,
                                 GlueAction::none, now);
@@ -572,6 +645,11 @@ GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
                                 GlueAction::none, now);
     }
     if (glue.screen == GlueScreen::lobby) {
+      if (glue.online_lobby) {
+        glue.online_lobby = false;
+        glues_enter_screen(glue, GlueScreen::battle_net, now);
+        return GlueAction::redraw;
+      }
       return glues_leave_screen(glue, GlueScreen::map_selection,
                                 GlueAction::none, now);
     }
@@ -616,8 +694,24 @@ GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
     }
   } else if (glue.screen == GlueScreen::lobby && key == VK_RETURN) {
     return activate_lobby_control(glue, 6, 0, 0, now);
+  } else if (glue.screen == GlueScreen::battle_net) {
+    return apply_battle_ui_action(
+        glue,
+        battle::BattleNetKeyDown(glue.battle_net,
+                                 static_cast<std::uintptr_t>(key),
+                                 selected_map_name(glue)),
+        now);
   }
   return GlueAction::none;
+}
+
+GlueAction glue_character(GlueRuntime &glue, const char character) noexcept {
+  if (glue.screen != GlueScreen::battle_net) {
+    return GlueAction::none;
+  }
+  return apply_battle_ui_action(
+      glue, battle::BattleNetCharacter(glue.battle_net, character),
+      glue.clock_tick);
 }
 
 GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
@@ -649,6 +743,11 @@ GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
   }
   if (glue.screen == GlueScreen::ready) {
     return GlueAction::redraw;
+  }
+  if (glue.screen == GlueScreen::battle_net) {
+    return apply_battle_ui_action(glue,
+                                  battle::UiNotification(glue.battle_net),
+                                  now);
   }
   if (glue.screen == GlueScreen::main_menu) {
     bool advanced{};
@@ -771,6 +870,9 @@ bool render_glue(const RecoveryWindowState &state) noexcept {
   case GlueScreen::ready:
     draw_ready_gl(state, GetTickCount());
     draw_message(state);
+    break;
+  case GlueScreen::battle_net:
+    battle::DrawBattleNet(state);
     break;
   case GlueScreen::gameplay:
     return false;
