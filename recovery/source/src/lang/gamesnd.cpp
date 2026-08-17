@@ -216,7 +216,13 @@ bool cache_unit_sound_assets(
     // The SCV's explicit weapon-8 event creates the cutter projectile. Its
     // image-498 IScript plays one of SFX 23..27 (EDrRep00..04), the exact
     // working sound range used for harvesting and repair.
-    return cache_range(23U, 27U) && !status.archived_sounds.empty();
+    // CUnitPBuild.cpp::sub_43BBF0/sub_43BDF0 explicitly play 245 when the
+    // Probe materializes the footprint and 246 at the final warp handoff.
+    // Probe weapon 42 creates image 493; ephFire's action-zero script plays
+    // SFX 587 when the mineral beam reaches its impact frame.
+    return cache_range(23U, 27U) && cache_sound(587U) &&
+           cache_range(245U, 246U) &&
+           !status.archived_sounds.empty();
   } catch (...) {
     status.archived_sounds.clear();
     return false;

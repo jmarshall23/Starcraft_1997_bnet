@@ -7,12 +7,93 @@
 #include "starcraft/lang/place_unit.hpp"
 
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace starcraft::recovery {
+namespace {
+
+bool power_frame_contains(const UnitRenderAsset &asset,
+                          const SpritePreviewFrame &frame,
+                          const ScenarioUnitPreview &pylon,
+                          const int world_x, const int world_y) noexcept {
+  // CUnitProtoss.cpp::sub_43C070 samples one quadrant of sprite 198 at
+  // (16 + 32*x, 16 + 32*y), mirrors those samples across both axes, then
+  // sub_43C200 indexes the resulting 32-pixel grid around each live Pylon.
+  const int quadrant_columns =
+      (static_cast<int>(asset.sprite_canvas_width) + 15) >> 5;
+  const int quadrant_rows =
+      (static_cast<int>(asset.sprite_canvas_height) + 15) >> 5;
+  const int half_width = 32 * quadrant_columns;
+  const int half_height = 32 * quadrant_rows;
+  const int dx = world_x - static_cast<int>(pylon.x);
+  const int dy = world_y - static_cast<int>(pylon.y);
+  if (quadrant_columns == 0 || quadrant_rows == 0 ||
+      std::abs(dx) >= half_width || std::abs(dy) >= half_height) {
+    return false;
+  }
+  const int grid_x = (half_width + dx) / 32;
+  const int grid_y = (half_height + dy) / 32;
+  const int sample_column = grid_x < quadrant_columns
+                                ? quadrant_columns - grid_x - 1
+                                : grid_x - quadrant_columns;
+  const int sample_row = grid_y < quadrant_rows
+                             ? grid_y
+                             : 2 * quadrant_rows - grid_y - 1;
+  const int sample_x = sample_column * 32 + 16 - frame.x_offset;
+  const int sample_y = sample_row * 32 + 16 - frame.y_offset;
+  if (sample_x < 0 || sample_y < 0 || sample_x >= frame.width ||
+      sample_y >= frame.height) {
+    return false;
+  }
+  return (frame.bgra[static_cast<std::size_t>(sample_y) * frame.width +
+                     sample_x] >>
+          24U) != 0U;
+}
+
+bool protoss_position_powered(const BootstrapStatus &status,
+                              const std::uint16_t unit_type,
+                              const std::uint8_t owner,
+                              const std::uint16_t center_x,
+                              const std::uint16_t center_y) noexcept {
+  // CUnitProtoss.cpp::sub_43C200 exempts Nexus and Pylon. Assimilator uses
+  // CUnitPBuild's separate geyser order and is likewise not placement-gated.
+  if (unit_type == 154U || unit_type == 156U || unit_type == 157U) {
+    return true;
+  }
+  if (!starcraft::lang::is_protoss_buildable_unit_type(unit_type) ||
+      status.pylon_power_asset_index >= status.unit_assets.size()) {
+    return !starcraft::lang::is_protoss_buildable_unit_type(unit_type);
+  }
+  const UnitRenderAsset &power =
+      status.unit_assets[status.pylon_power_asset_index];
+  for (const ScenarioUnitPreview &pylon : status.units) {
+    if (!pylon.alive || !pylon.construction_complete || pylon.owner != owner ||
+        pylon.unit_type != 156U) {
+      continue;
+    }
+    if (power.initial_iscript_state.frame < power.sprite_frames.size() &&
+        power_frame_contains(
+            power, power.sprite_frames[power.initial_iscript_state.frame],
+            pylon, center_x, center_y)) {
+      return true;
+    }
+    if (power.overlay_ready &&
+        power.initial_overlay_iscript_state.frame < power.overlay_frames.size() &&
+        power_frame_contains(
+            power,
+            power.overlay_frames[power.initial_overlay_iscript_state.frame],
+            pylon, center_x, center_y)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 bool advance_addon_construction(BootstrapStatus &status) noexcept {
   bool changed{};
@@ -73,7 +154,8 @@ bool addon_center_for_parent(const BuildableUnitVisual &addon,
 bool placement_is_valid(const BootstrapStatus &status,
                         const BuildableUnitVisual &buildable,
                         const std::uint16_t center_x,
-                        const std::uint16_t center_y) noexcept {
+                        const std::uint16_t center_y,
+                        const std::uint8_t owner) noexcept {
   // placebox.cpp::sub_481410 at 0x00481410 reads dword_8DFFB0's width and
   // height, divides them by 32, and colors the per-tile placement bitmap.
   // Validate that footprint against map bounds, the CV5 0x0800 terrain-block
@@ -87,12 +169,17 @@ bool placement_is_valid(const BootstrapStatus &status,
   if (left < 0 || top < 0 || right > map_right || bottom > map_bottom) {
     return false;
   }
+  if (!protoss_position_powered(status, buildable.unit_type, owner, center_x,
+                                center_y)) {
+    return false;
+  }
   if ((buildable.simulation.dat_flags & 2U) != 0U) {
     bool attached_to_parent{};
     for (const ScenarioUnitPreview &parent : status.units) {
       std::uint16_t addon_x{};
       std::uint16_t addon_y{};
-      if (!parent.alive || !parent.construction_complete || parent.owner != 0 ||
+      if (!parent.alive || !parent.construction_complete ||
+          parent.owner != owner ||
           parent.attached_addon_id != 0U ||
           !addon_center_for_parent(buildable, parent, addon_x, addon_y)) {
         continue;
@@ -187,6 +274,87 @@ bool update_building_placement(BootstrapStatus &status, const int game_x,
   return true;
 }
 
+bool begin_protoss_build_order(BootstrapStatus &status,
+                               ScenarioUnitPreview &probe,
+                               const BuildableUnitVisual &buildable,
+                               const std::uint16_t center_x,
+                               const std::uint16_t center_y,
+                               const bool charge_resources) noexcept {
+  if (!probe.alive || probe.is_building ||
+      !starcraft::lang::is_protoss_probe(probe.unit_type) ||
+      !placement_is_valid(status, buildable, center_x, center_y, probe.owner)) {
+    return false;
+  }
+  std::uint32_t &minerals = probe.owner == 0U
+                                ? status.player_minerals
+                                : status.player_mineral_stock[probe.owner];
+  std::uint32_t &gas = probe.owner == 0U
+                           ? status.player_gas
+                           : status.player_gas_stock[probe.owner];
+  if (charge_resources &&
+      (minerals < buildable.simulation.mineral_cost ||
+       gas < buildable.simulation.gas_cost)) {
+    return false;
+  }
+
+  const int half_width = buildable.placement_width / 2;
+  const int half_height = buildable.placement_height / 2;
+  std::array<starcraft::lang::PathPoint, 4> approaches{{
+      {static_cast<std::uint16_t>((std::max)(0, static_cast<int>(center_x) -
+                                                    half_width -
+                                                    probe.collision_right - 2)),
+       center_y},
+      {static_cast<std::uint16_t>((std::min)(
+           static_cast<int>(UINT16_MAX), static_cast<int>(center_x) +
+                                             half_width +
+                                             probe.collision_left + 2)),
+       center_y},
+      {center_x,
+       static_cast<std::uint16_t>((std::max)(0, static_cast<int>(center_y) -
+                                                    half_height -
+                                                    probe.collision_bottom - 2))},
+      {center_x,
+       static_cast<std::uint16_t>((std::min)(
+           static_cast<int>(UINT16_MAX), static_cast<int>(center_y) +
+                                             half_height +
+                                             probe.collision_top + 2))},
+  }};
+  std::sort(approaches.begin(), approaches.end(), [&probe](const auto &left,
+                                                           const auto &right) {
+    const auto distance = [&probe](const auto &point) {
+      const std::int64_t dx = static_cast<int>(point.x) - probe.x;
+      const std::int64_t dy = static_cast<int>(point.y) - probe.y;
+      return dx * dx + dy * dy;
+    };
+    return distance(left) < distance(right);
+  });
+  cancel_unit_order(status, probe);
+  bool path_ready{};
+  for (const auto &approach : approaches) {
+    if (plan_scv_path(status, probe, approach.x, approach.y)) {
+      path_ready = true;
+      break;
+    }
+  }
+  if (!path_ready) {
+    return false;
+  }
+  if (charge_resources) {
+    minerals -= buildable.simulation.mineral_cost;
+    gas -= buildable.simulation.gas_cost;
+    if (probe.owner == 0U) {
+      status.player_mineral_stock[0] = minerals;
+      status.player_gas_stock[0] = gas;
+    }
+  }
+  probe.active_order = ActiveUnitOrder::protoss_build;
+  probe.construction_target_type = buildable.unit_type;
+  probe.build_target_x = center_x;
+  probe.build_target_y = center_y;
+  probe.action_phase = 0U;
+  return true;
+}
+
 bool place_current_building(BootstrapStatus &status) noexcept {
   if (!status.placement_active || !status.placement_valid) {
     return false;
@@ -248,6 +416,20 @@ bool place_current_building(BootstrapStatus &status) noexcept {
       return false;
     }
     worker_id = selected_source->unit_id;
+  }
+  if (protoss_worker) {
+    ScenarioUnitPreview *const probe = find_unit_by_id(status, worker_id);
+    if (probe == nullptr ||
+        !begin_protoss_build_order(status, *probe, *buildable,
+                                   status.placement_x, status.placement_y,
+                                   true)) {
+      return false;
+    }
+    status.placement_active = false;
+    status.placement_valid = false;
+    status.placement_unit_type = 0xFFFFU;
+    status.active_command_card = 0U;
+    return true;
   }
   try {
     std::size_t geyser_index = SIZE_MAX;

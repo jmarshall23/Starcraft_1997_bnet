@@ -152,6 +152,12 @@ class CoreDataSet final {
   [[nodiscard]] bool unit_image_id(
       std::uint16_t unit_type,
       std::uint16_t& image_id) const noexcept;
+  [[nodiscard]] bool unit_selection_circle(
+      std::uint16_t unit_type, std::uint16_t& image_id,
+      std::int8_t& y_offset) const noexcept;
+  [[nodiscard]] bool unit_sprite_elevation(
+      std::uint16_t unit_type,
+      std::uint8_t& elevation) const noexcept;
   [[nodiscard]] bool weapon_image_id(
       std::uint16_t weapon_type,
       std::uint16_t& image_id) const noexcept;

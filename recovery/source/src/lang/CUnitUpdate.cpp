@@ -50,8 +50,8 @@ bool restart_unit_animation(const BootstrapStatus &status,
   // sub_41C060 dispatches the requested action to every image currently
   // attached to the sprite. Action 20 makes the Command Center's image-247
   // working layer execute its terminating script while image 246 returns to
-  // idle. Preserve the layer for its first yielded tick; WM_TIMER removes it
-  // when the script reaches END on the following tick.
+  // idle. Preserve the layer for its first yielded tick; the game loop removes
+  // it when the script reaches END on the following tick.
   if (unit.dynamic_overlay_ready &&
       unit.dynamic_overlay_asset_index < status.unit_assets.size()) {
     const UnitRenderAsset &dynamic_asset =
@@ -64,6 +64,8 @@ bool restart_unit_animation(const BootstrapStatus &status,
            dynamic_result == starcraft::lang::IScriptTickResult::sleeping) &&
           dynamic.frame < dynamic_asset.sprite_frames.size()) {
         unit.dynamic_overlay_iscript_state = dynamic;
+        unit.iscript_state.image_target_flags |= dynamic.image_target_flags;
+        unit.dynamic_overlay_iscript_state.image_target_flags = 0U;
         unit.current_dynamic_overlay_frame = dynamic.frame;
       } else {
         unit.dynamic_overlay_ready = false;
@@ -83,6 +85,8 @@ bool restart_unit_animation(const BootstrapStatus &status,
            overlay_result == starcraft::lang::IScriptTickResult::sleeping) &&
           overlay.frame < asset.overlay_frames.size()) {
         unit.overlay_iscript_state = overlay;
+        unit.iscript_state.image_target_flags |= overlay.image_target_flags;
+        unit.overlay_iscript_state.image_target_flags = 0U;
         unit.current_overlay_frame = overlay.frame;
         unit.overlay_ready = true;
       }
@@ -105,6 +109,8 @@ bool restart_unit_animation(const BootstrapStatus &status,
             dynamic.frame < dynamic_asset->sprite_frames.size()) {
           unit.dynamic_overlay_asset_index = dynamic_index;
           unit.dynamic_overlay_iscript_state = dynamic;
+          unit.iscript_state.image_target_flags |= dynamic.image_target_flags;
+          unit.dynamic_overlay_iscript_state.image_target_flags = 0U;
           unit.current_dynamic_overlay_frame = dynamic.frame;
           unit.dynamic_overlay_x_offset = next.overlay_x_offset;
           unit.dynamic_overlay_y_offset = next.overlay_y_offset;
@@ -416,8 +422,12 @@ bool plan_scv_path(BootstrapStatus &status, ScenarioUnitPreview &unit,
   }
   unit.movement_path = std::move(path);
   unit.movement_path_index = 0;
-  unit.movement_final_x = target_x;
-  unit.movement_final_y = target_y;
+  // find_unit_path mirrors CUnitPath's altered-destination behavior when the
+  // requested center is not passable. Keep the actual terminal point; using
+  // the rejected request here makes collision replans repeatedly steer units
+  // toward map corners.
+  unit.movement_final_x = unit.movement_path.back().x;
+  unit.movement_final_y = unit.movement_path.back().y;
   unit.movement_target_x = unit.movement_path.front().x;
   unit.movement_target_y = unit.movement_path.front().y;
   unit.x_fixed = static_cast<std::int32_t>(unit.x) << 8U;
@@ -539,43 +549,157 @@ find_unit_by_id(const BootstrapStatus &status,
 
 int unit_edge_distance(const ScenarioUnitPreview &left,
                        const ScenarioUnitPreview &right) noexcept {
-  const int dx = (std::max)(0, std::abs(static_cast<int>(left.x) - right.x) -
-                                   (static_cast<int>(left.selection_width) +
-                                    right.selection_width) /
-                                       2);
-  const int dy = (std::max)(0, std::abs(static_cast<int>(left.y) - right.y) -
-                                   (static_cast<int>(left.selection_height) +
-                                    right.selection_height) /
-                                       2);
+  const auto extents = [](const ScenarioUnitPreview &unit) {
+    const bool from_dat = unit.collision_left != 0U ||
+                          unit.collision_top != 0U ||
+                          unit.collision_right != 0U ||
+                          unit.collision_bottom != 0U;
+    return std::array<int, 4>{{
+        from_dat ? unit.collision_left : unit.selection_width / 2,
+        from_dat ? unit.collision_top : unit.selection_height / 2,
+        from_dat ? unit.collision_right
+                 : unit.selection_width - unit.selection_width / 2 - 1,
+        from_dat ? unit.collision_bottom
+                 : unit.selection_height - unit.selection_height / 2 - 1,
+    }};
+  };
+  const auto left_extents = extents(left);
+  const auto right_extents = extents(right);
+  const int left_min_x = static_cast<int>(left.x) - left_extents[0];
+  const int left_min_y = static_cast<int>(left.y) - left_extents[1];
+  const int left_max_x = static_cast<int>(left.x) + left_extents[2];
+  const int left_max_y = static_cast<int>(left.y) + left_extents[3];
+  const int right_min_x = static_cast<int>(right.x) - right_extents[0];
+  const int right_min_y = static_cast<int>(right.y) - right_extents[1];
+  const int right_max_x = static_cast<int>(right.x) + right_extents[2];
+  const int right_max_y = static_cast<int>(right.y) + right_extents[3];
+  const int dx = left_max_x < right_min_x
+                     ? right_min_x - left_max_x - 1
+                 : right_max_x < left_min_x
+                     ? left_min_x - right_max_x - 1
+                     : 0;
+  const int dy = left_max_y < right_min_y
+                     ? right_min_y - left_max_y - 1
+                 : right_max_y < left_min_y
+                     ? left_min_y - right_max_y - 1
+                     : 0;
   return static_cast<int>(std::lround(
       std::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy)));
 }
 
+int interaction_range_for(const ScenarioUnitPreview &unit,
+                          const ActiveUnitOrder order) noexcept {
+  // CUnitBuild.cpp::sub_422160 uses sub_429750(..., 5, target), while the
+  // mineral approach in CUnitHarvest.cpp uses 0x18. Combat supplies its DAT
+  // weapon range to that same collision-rectangle distance helper.
+  if (order == ActiveUnitOrder::attack) {
+    return static_cast<int>(unit.weapon_range);
+  }
+  if (order == ActiveUnitOrder::gather ||
+      order == ActiveUnitOrder::return_cargo) {
+    return 0x18;
+  }
+  return 5;
+}
+
 bool plan_scv_interaction_path(BootstrapStatus &status,
                                ScenarioUnitPreview &worker,
-                               const ScenarioUnitPreview &target) noexcept {
-  const int clearance_x =
-      (static_cast<int>(worker.selection_width) + target.selection_width) / 2 +
-      4;
-  const int clearance_y =
-      (static_cast<int>(worker.selection_height) + target.selection_height) /
-          2 +
-      4;
-  std::array<starcraft::lang::PathPoint, 4> points{{
-      {static_cast<std::uint16_t>(
-           (std::max)(0, static_cast<int>(target.x) - clearance_x)),
-       target.y},
-      {static_cast<std::uint16_t>(
-           (std::min)(static_cast<int>(status.pathing_map.pixel_width()) - 1,
-                      static_cast<int>(target.x) + clearance_x)),
-       target.y},
-      {target.x, static_cast<std::uint16_t>(
-                     (std::max)(0, static_cast<int>(target.y) - clearance_y))},
-      {target.x,
-       static_cast<std::uint16_t>(
-           (std::min)(static_cast<int>(status.pathing_map.pixel_height()) - 1,
-                      static_cast<int>(target.y) + clearance_y))},
-  }};
+                               const ScenarioUnitPreview &target,
+                               const int interaction_range) noexcept {
+  const bool worker_dat_extents =
+      worker.collision_left != 0U || worker.collision_top != 0U ||
+      worker.collision_right != 0U || worker.collision_bottom != 0U;
+  const bool target_dat_extents =
+      target.collision_left != 0U || target.collision_top != 0U ||
+      target.collision_right != 0U || target.collision_bottom != 0U;
+  const int worker_left = worker_dat_extents
+                              ? worker.collision_left
+                              : worker.selection_width / 2;
+  const int worker_top = worker_dat_extents
+                             ? worker.collision_top
+                             : worker.selection_height / 2;
+  const int worker_right =
+      worker_dat_extents
+          ? worker.collision_right
+          : worker.selection_width - worker.selection_width / 2 - 1;
+  const int worker_bottom =
+      worker_dat_extents
+          ? worker.collision_bottom
+          : worker.selection_height - worker.selection_height / 2 - 1;
+  const int target_left =
+      static_cast<int>(target.x) -
+      (target_dat_extents ? target.collision_left
+                          : target.selection_width / 2);
+  const int target_top =
+      static_cast<int>(target.y) -
+      (target_dat_extents ? target.collision_top
+                          : target.selection_height / 2);
+  const int target_right =
+      static_cast<int>(target.x) +
+      (target_dat_extents
+           ? target.collision_right
+           : target.selection_width - target.selection_width / 2 - 1);
+  const int target_bottom =
+      static_cast<int>(target.y) +
+      (target_dat_extents
+           ? target.collision_bottom
+           : target.selection_height - target.selection_height / 2 - 1);
+  const int minimum_x = worker_left;
+  const int minimum_y = worker_top;
+  const int maximum_x =
+      static_cast<int>(status.pathing_map.pixel_width()) -
+      worker_right - 1;
+  const int maximum_y =
+      static_cast<int>(status.pathing_map.pixel_height()) -
+      worker_bottom - 1;
+  if (maximum_x < minimum_x || maximum_y < minimum_y) {
+    return false;
+  }
+  std::vector<starcraft::lang::PathPoint> points;
+  try {
+    const int horizontal_begin = target_left - worker_right;
+    const int horizontal_end = target_right + worker_left;
+    const int vertical_begin = target_top - worker_bottom;
+    const int vertical_end = target_bottom + worker_top;
+    points.reserve(static_cast<std::size_t>(
+        8 + 2 * ((horizontal_end - horizontal_begin) / 8 + 1) +
+        2 * ((vertical_end - vertical_begin) / 8 + 1)));
+    const auto append = [&](const int x, const int y) {
+      if (x < minimum_x || x > maximum_x || y < minimum_y ||
+          y > maximum_y) {
+        return;
+      }
+      const starcraft::lang::PathPoint point{
+          static_cast<std::uint16_t>(x), static_cast<std::uint16_t>(y)};
+      if (std::find_if(points.begin(), points.end(),
+                       [&point](const starcraft::lang::PathPoint &candidate) {
+                         return candidate.x == point.x &&
+                                candidate.y == point.y;
+                       }) == points.end()) {
+        points.push_back(point);
+      }
+    };
+    for (int gap = 0; gap <= interaction_range; ++gap) {
+      const int left_x = target_left - worker_right - 1 - gap;
+      const int right_x = target_right + worker_left + 1 + gap;
+      for (int y = vertical_begin; y <= vertical_end; y += 8) {
+        append(left_x, y);
+        append(right_x, y);
+      }
+      append(left_x, target.y);
+      append(right_x, target.y);
+      const int top_y = target_top - worker_bottom - 1 - gap;
+      const int bottom_y = target_bottom + worker_top + 1 + gap;
+      for (int x = horizontal_begin; x <= horizontal_end; x += 8) {
+        append(x, top_y);
+        append(x, bottom_y);
+      }
+      append(target.x, top_y);
+      append(target.x, bottom_y);
+    }
+  } catch (...) {
+    return false;
+  }
   std::sort(points.begin(), points.end(),
             [&worker](const starcraft::lang::PathPoint &a,
                       const starcraft::lang::PathPoint &b) {
@@ -586,7 +710,13 @@ bool plan_scv_interaction_path(BootstrapStatus &status,
               return a_dx * a_dx + a_dy * a_dy < b_dx * b_dx + b_dy * b_dy;
             });
   for (const starcraft::lang::PathPoint &point : points) {
-    if (plan_scv_path(status, worker, point.x, point.y)) {
+    if (!plan_scv_path(status, worker, point.x, point.y)) {
+      continue;
+    }
+    ScenarioUnitPreview terminal = worker;
+    terminal.x = worker.movement_final_x;
+    terminal.y = worker.movement_final_y;
+    if (unit_edge_distance(terminal, target) <= interaction_range) {
       return true;
     }
   }
@@ -600,9 +730,11 @@ bool begin_scv_interaction(BootstrapStatus &status, ScenarioUnitPreview &worker,
                                  order == ActiveUnitOrder::construct ||
                                  order == ActiveUnitOrder::gather ||
                                  order == ActiveUnitOrder::return_cargo;
+  const int interaction_range = interaction_range_for(worker, order);
   if (!worker.alive || worker.is_building || worker.movement_top_speed == 0U ||
       (worker_only_order && (worker.dat_flags & 0x08U) == 0U) ||
-      !target.alive || !plan_scv_interaction_path(status, worker, target)) {
+      !target.alive || !plan_scv_interaction_path(
+                           status, worker, target, interaction_range)) {
     cancel_unit_order(status, worker);
     return false;
   }
@@ -1039,6 +1171,11 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
     if (worker.moving) {
       continue;
     }
+    if (worker.active_order == ActiveUnitOrder::protoss_build) {
+      (void)complete_protoss_build_order(status, worker);
+      changed = true;
+      continue;
+    }
     ScenarioUnitPreview *target =
         find_unit_by_id(status, worker.order_target_id);
     if (target == nullptr || target == &worker) {
@@ -1046,9 +1183,8 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       changed = true;
       continue;
     }
-    const int interaction_range = worker.active_order == ActiveUnitOrder::attack
-                                      ? static_cast<int>(worker.weapon_range)
-                                      : 8;
+    const int interaction_range =
+        interaction_range_for(worker, worker.active_order);
     if (unit_edge_distance(worker, *target) > interaction_range) {
       const ActiveUnitOrder order = worker.active_order;
       const std::uint32_t source_id = worker.harvest_source_id;
@@ -1089,7 +1225,13 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       damage = (std::max)(damage, 128U);
       target->hit_points =
           damage >= target->hit_points ? 0U : target->hit_points - damage;
-      (void)restart_unit_animation(status, worker, 6);
+      // CUnitCombat.cpp::sub_427610 dispatches action 5 for a ground target
+      // and action 6 only for an air target. This runtime currently exposes
+      // the ground weapon path, so action 5 is the exact attack animation
+      // (notably the Zealot's psi-blade sequence).
+      worker.direction = starcraft::lang::direction_from_points(
+          worker.x, worker.y, target->x, target->y);
+      (void)restart_unit_animation(status, worker, 5U);
       worker.action_timer = static_cast<std::uint16_t>(
           (std::max)(1U, static_cast<unsigned>(worker.weapon_cooldown) >> 1U));
       if (target->hit_points == 0) {
@@ -1113,7 +1255,12 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
         target->selected = false;
         target->active_order = ActiveUnitOrder::none;
         target->moving = false;
-        cancel_unit_order(status, worker);
+        // Preserve the just-started attack animation. cancel_unit_order calls
+        // stop_unit_movement, which immediately replaces it with action 12
+        // and made lethal melee attacks appear to have no animation at all.
+        worker.active_order = ActiveUnitOrder::none;
+        worker.order_target_id = 0U;
+        worker.action_phase = 0U;
       }
       changed = true;
       continue;
@@ -1219,14 +1366,57 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       // worker performs the harvest animation; sub_42D9C0 then consumes ten
       // resource units from the source.
       if (worker.action_phase == 0) {
+        if (target->unit_type >= 176U && target->unit_type <= 178U &&
+            target->harvest_queue.active_worker() != 0U &&
+            target->harvest_queue.active_worker() != worker.unit_id) {
+          // CUnitHarvest.cpp::sub_42CE30 does not immediately queue a worker
+          // behind an occupied mineral patch. sub_43F6A0 searches a 512-pixel
+          // CUnitSearches rectangle and sub_43F6C0 accepts the nearest visible,
+          // accessible, non-busy mineral field. Only when that search fails
+          // does sub_42C210 link the worker into the original source queue.
+          const ScenarioUnitPreview *alternate{};
+          std::uint64_t alternate_distance = UINT64_MAX;
+          for (const ScenarioUnitPreview &candidate : status.units) {
+            if (!candidate.alive || candidate.unit_id == target->unit_id ||
+                candidate.unit_type < 176U || candidate.unit_type > 178U ||
+                candidate.resource_amount == 0U ||
+                candidate.harvest_queue.active_worker() != 0U) {
+              continue;
+            }
+            const std::int64_t dx = static_cast<int>(candidate.x) - worker.x;
+            const std::int64_t dy = static_cast<int>(candidate.y) - worker.y;
+            const std::uint64_t distance =
+                static_cast<std::uint64_t>(dx * dx + dy * dy);
+            if (distance <= 512U * 512U && distance < alternate_distance) {
+              alternate = &candidate;
+              alternate_distance = distance;
+            }
+          }
+          if (alternate != nullptr) {
+            if (!begin_scv_interaction(status, worker, *alternate,
+                                       ActiveUnitOrder::gather)) {
+              cancel_unit_order(status, worker);
+            }
+            changed = true;
+            continue;
+          }
+        }
         const starcraft::lang::HarvestAdmission admission =
             target->harvest_queue.request(worker.unit_id);
         if (admission == starcraft::lang::HarvestAdmission::queued ||
             (admission == starcraft::lang::HarvestAdmission::already_present &&
              !target->harvest_queue.is_active(worker.unit_id))) {
           // sub_42C210 links a busy worker into the resource queue. It stays
-          // visible and idle until sub_42C610 promotes it from the tail.
+          // visible and idle until sub_42C610 promotes it from the tail. The
+          // retail movement layer can let workers cross while routing, but it
+          // does not leave the waiter occupying the active worker's final
+          // footprint. Reuse place_unit.cpp::sub_47FBF0's recovered
+          // eight-pixel perimeter search to settle that waiting position.
           worker.action_phase = 2;
+          if (find_live_unit_footprint_collision(status, worker, worker.x,
+                                                 worker.y) != nullptr) {
+            (void)settle_created_unit(status, worker, worker.x, worker.y);
+          }
           continue;
         }
       }
@@ -1239,7 +1429,18 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       if (worker.action_phase == 0) {
         worker.action_timer = 125;
         worker.action_phase = 1;
+        const std::uint32_t previous_weapon_events =
+            worker.iscript_state.weapon_event_count;
         (void)restart_unit_animation(status, worker, 15);
+        if (worker.iscript_state.weapon_event_count != previous_weapon_events &&
+            (worker.iscript_state.weapon_event == 8U ||
+             worker.iscript_state.weapon_event == 42U)) {
+          // Probe Working emits its weapon-42 opcode in the first tick that
+          // restart_unit_animation executes. Materialize that event here;
+          // the normal image-update pass handles later loop iterations.
+          (void)spawn_worker_mining_effect(
+              status, worker, worker.iscript_state.weapon_event);
+        }
         continue;
       }
       if (worker.action_timer != 0) {
@@ -1288,8 +1489,15 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
         changed = true;
         continue;
       }
-      status.player_minerals += worker.cargo_minerals;
-      status.player_gas += worker.cargo_gas;
+      if (worker.owner == 0U) {
+        status.player_minerals += worker.cargo_minerals;
+        status.player_gas += worker.cargo_gas;
+        status.player_mineral_stock[0] = status.player_minerals;
+        status.player_gas_stock[0] = status.player_gas;
+      } else if (worker.owner < status.player_mineral_stock.size()) {
+        status.player_mineral_stock[worker.owner] += worker.cargo_minerals;
+        status.player_gas_stock[worker.owner] += worker.cargo_gas;
+      }
       if (worker.owner < status.minerals_gathered.size()) {
         status.minerals_gathered[worker.owner] += worker.cargo_minerals;
         status.gas_gathered[worker.owner] += worker.cargo_gas;

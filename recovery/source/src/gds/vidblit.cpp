@@ -7,6 +7,22 @@
 
 namespace starcraft::recovery {
 
+bool sprite_draws_before(const ScenarioUnitPreview &left,
+                         const ScenarioUnitPreview &right) noexcept {
+  // Priority.cpp::sub_482620 packs CSprite+0x11 as the most-significant
+  // priority byte. For elevation classes 0..3 it then packs CSprite.y;
+  // elevated sprites omit y so that airborne classes remain above all ground
+  // sprites. CSprite+0x14 is the final stable tie-breaker; unit_id preserves
+  // that allocation order in the recovered runtime.
+  if (left.sprite_elevation != right.sprite_elevation) {
+    return left.sprite_elevation < right.sprite_elevation;
+  }
+  if (left.sprite_elevation <= 3U && left.y != right.y) {
+    return left.y < right.y;
+  }
+  return left.unit_id < right.unit_id;
+}
+
 bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   if (state.device_context == nullptr || state.rendering_context == nullptr ||
       !wglMakeCurrent(state.device_context, state.rendering_context)) {
@@ -40,8 +56,33 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
     draw_preview_frame_gl(status->terrain, 0.0F, 0.0F,
                           static_cast<float>(kMapViewportWidth),
                           static_cast<float>(kMapViewportHeight));
-    for (const ScenarioUnitPreview &unit : status->units) {
-      draw_scenario_unit_gl(*status, unit);
+    draw_pylon_power_fields_gl(*status);
+    try {
+      std::vector<const ScenarioUnitPreview *> sprites;
+      sprites.reserve(status->units.size() + status->transient_images.size());
+      for (const ScenarioUnitPreview &unit : status->units) {
+        if (unit.alive) {
+          sprites.push_back(&unit);
+        }
+      }
+      for (const ScenarioUnitPreview &effect : status->transient_images) {
+        if (effect.alive) {
+          sprites.push_back(&effect);
+        }
+      }
+      std::stable_sort(
+          sprites.begin(), sprites.end(),
+          [](const ScenarioUnitPreview *const left,
+             const ScenarioUnitPreview *const right) {
+            return sprite_draws_before(*left, *right);
+          });
+      for (const ScenarioUnitPreview *const unit : sprites) {
+        draw_scenario_unit_gl(*status, *unit);
+      }
+    } catch (...) {
+      for (const ScenarioUnitPreview &unit : status->units) {
+        draw_scenario_unit_gl(*status, unit);
+      }
     }
     draw_building_placement_gl(*status);
     draw_selection_drag_gl(state);

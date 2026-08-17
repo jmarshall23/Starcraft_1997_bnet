@@ -402,6 +402,44 @@ bool CoreDataSet::unit_image_id(const std::uint16_t unit_type,
          sprite_image->value(sprite_id, image_id) && image_id < 590;
 }
 
+bool CoreDataSet::unit_selection_circle(
+    const std::uint16_t unit_type, std::uint16_t &image_id,
+    std::int8_t &y_offset) const noexcept {
+  // CUnitGUI.cpp::sub_42B340 calls CSprite::sub_41C550 when a unit enters
+  // the selection set. CImage.cpp::sub_410260 follows
+  // units.dat[0] -> flingy.dat[0] -> sprites.dat[3], adds image 532, and
+  // applies sprites.dat[4] as the attached image's signed Y offset.
+  const DatField *const unit_flingy = units_.field(0U);
+  const DatField *const flingy_sprites = flingy_.field(0U);
+  const DatField *const circle_images = sprites_.field(3U);
+  const DatField *const circle_y_offsets = sprites_.field(4U);
+  std::uint8_t flingy_id{};
+  std::uint16_t sprite_id{};
+  std::uint8_t circle_image_offset{};
+  std::uint8_t raw_y_offset{};
+  if (unit_flingy == nullptr || flingy_sprites == nullptr ||
+      circle_images == nullptr || circle_y_offsets == nullptr ||
+      !unit_flingy->value(unit_type, flingy_id) ||
+      !flingy_sprites->value(flingy_id, sprite_id) || sprite_id >= 164U ||
+      !circle_images->value(sprite_id, circle_image_offset) ||
+      !circle_y_offsets->value(sprite_id, raw_y_offset)) {
+    return false;
+  }
+  image_id = static_cast<std::uint16_t>(532U + circle_image_offset);
+  y_offset = static_cast<std::int8_t>(raw_y_offset);
+  return image_id < 590U;
+}
+
+bool CoreDataSet::unit_sprite_elevation(
+    const std::uint16_t unit_type, std::uint8_t &elevation) const noexcept {
+  // CUnitInit.cpp::sub_42E400 copies byte_8E1368[unit_type] to
+  // CSprite+0x11. byte_8E1368 is units.dat field 9: ground units in the
+  // licensed beta use elevation 3 while airborne units such as the Overlord
+  // use elevation 15.
+  const DatField *const elevations = units_.field(9U);
+  return elevations != nullptr && elevations->value(unit_type, elevation);
+}
+
 bool CoreDataSet::weapon_image_id(const std::uint16_t weapon_type,
                                   std::uint16_t &image_id) const noexcept {
   // weapons.dat field 1 backs dword_8E7F98, the flingy graphic created by

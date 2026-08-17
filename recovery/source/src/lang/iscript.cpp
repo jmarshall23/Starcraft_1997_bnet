@@ -298,6 +298,25 @@ IScriptTickResult IScriptProgramView::tick(
         }
         state.image_target_flags |= byte;
         break;
+      case 0x28:  // attack with the encoded weapon/variant
+        // CImage.cpp::sub_415210 consumes one byte and passes it to
+        // CUnitCombat.cpp::sub_4266F0. Preserve the launch boundary so the
+        // unit's attack timeline continues through its damage frame.
+        if (!read_u8(state.program_counter++, byte)) {
+          state.active = false;
+          return IScriptTickResult::malformed_program;
+        }
+        state.weapon_event = byte;
+        ++state.weapon_event_count;
+        break;
+      case 0x29:  // attack the current air target with variant two
+        state.weapon_event = 2U;
+        ++state.weapon_event_count;
+        break;
+      case 0x2A:  // attack with the current order's weapon
+        state.weapon_event = 0xFFU;
+        ++state.weapon_event_count;
+        break;
       case 0x2B:  // launch the explicitly named weapon at the unit target
         // CImage.cpp's opcode dispatcher at 0x00412100 consumes one weapon
         // byte and calls CUnitCombat.cpp::sub_426650. Preserve the event at
@@ -322,6 +341,10 @@ IScriptTickResult IScriptProgramView::tick(
         }
         state.flingy_velocity = static_cast<std::uint16_t>(byte) << 8U;
         ++state.flingy_velocity_event_count;
+        break;
+      case 0x2D:  // clear the owning CUnit's attacking flag
+        // The recovered simulation owns that flag at the order layer. The
+        // opcode is operand-less and must not terminate the image timeline.
         break;
       case 0x37:  // hide
         state.hidden = true;

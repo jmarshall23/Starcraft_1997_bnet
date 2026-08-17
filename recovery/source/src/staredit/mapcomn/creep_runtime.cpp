@@ -34,6 +34,7 @@ bool rebuild_creep_tiles(BootstrapStatus &status) noexcept {
     starcraft::lang::CreepTileState previous{
         status.creep_tiles,
         status.creep_visual_tiles,
+        status.creep_edge_frames,
     };
     starcraft::lang::CreepTileState rebuilt{};
     if (!starcraft::lang::rebuild_creep_tile_state(
@@ -43,12 +44,14 @@ bool rebuild_creep_tiles(BootstrapStatus &status) noexcept {
     }
     status.creep_tiles = std::move(rebuilt.occupied);
     status.creep_visual_tiles = std::move(rebuilt.visual_tile);
+    status.creep_edge_frames = std::move(rebuilt.edge_frame);
     if (status.scenario.valid() && status.terrain_tileset.valid()) {
       SpritePreviewFrame terrain;
       if (!build_terrain_preview(status.terrain_tileset, status.scenario,
                                  status.camera_x, status.camera_y, terrain,
                                  &status.creep_tiles,
-                                 &status.creep_visual_tiles)) {
+                                 &status.creep_visual_tiles,
+                                 &status.creep_edge_frames)) {
         return false;
       }
       status.terrain = std::move(terrain);
@@ -65,10 +68,12 @@ bool rebuild_creep_tiles(BootstrapStatus &status) noexcept {
       status.minimap_ready = true;
     }
     return status.creep_tiles.size() == tile_count &&
-           status.creep_visual_tiles.size() == tile_count;
+           status.creep_visual_tiles.size() == tile_count &&
+           status.creep_edge_frames.size() == tile_count;
   } catch (...) {
     status.creep_tiles.clear();
     status.creep_visual_tiles.clear();
+    status.creep_edge_frames.clear();
     return false;
   }
 }

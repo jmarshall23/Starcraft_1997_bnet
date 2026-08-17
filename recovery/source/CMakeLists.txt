@@ -102,9 +102,12 @@ add_executable(StarCraftRecovery WIN32
   src/gds/sys_Win.cpp
   src/gds/vidblit.cpp
   src/lang/CImage.cpp
+  src/lang/CBulletRuntime.cpp
   src/lang/CUnitBuildRuntime.cpp
   src/lang/CUnitInitRuntime.cpp
   src/lang/CUnitPBuildRuntime.cpp
+  src/lang/CUnitProtossRuntime.cpp
+  src/lang/SAI_MainRuntime.cpp
   src/lang/CUnitUpgradeRuntime.cpp
   src/lang/CUnitUpdate.cpp
   src/lang/CUnitZBuildRuntime.cpp
@@ -112,6 +115,7 @@ add_executable(StarCraftRecovery WIN32
   src/lang/cellscrl.cpp
   src/lang/filedist.cpp
   src/lang/event_Win.cpp
+  src/lang/gameloop.cpp
   src/lang/gamedata.cpp
   src/lang/gamesnd.cpp
   src/lang/gluChat.cpp
@@ -493,6 +497,7 @@ if(BUILD_TESTING)
   )
   add_test(NAME bootstrap_addon_probe COMMAND StarCraftRecovery --probe-addon)
   add_test(NAME bootstrap_creep_probe COMMAND StarCraftRecovery --probe-creep)
+  add_test(NAME bootstrap_ai_probe COMMAND StarCraftRecovery --probe-ai)
   add_test(
     NAME bootstrap_melee_start_probe
     COMMAND StarCraftRecovery --probe-melee-start

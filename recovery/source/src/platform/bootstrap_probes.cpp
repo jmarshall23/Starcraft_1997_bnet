@@ -21,6 +21,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace starcraft::recovery {
@@ -29,6 +30,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                          RecoveryWindowState &window_state,
                          BootstrapStatus &status, bool &handled) {
   handled = false;
+  const auto advance_probe_frame = [&]() noexcept {
+    (void)advance_game_loop_frame(window, window_state, GetTickCount());
+  };
   const bool game_flow_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-game-flow") != nullptr;
@@ -141,6 +145,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
   const bool camera_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-camera") != nullptr;
+  const bool ai_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-ai") != nullptr;
   constexpr char capture_option[] = "--capture-opengl=";
   const char *const capture_argument =
       command_line == nullptr ? nullptr
@@ -179,6 +186,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       smart_orders_probe || refinery_placement_probe ||
       building_placement_probe || construction_probe || addon_probe ||
       creep_probe || melee_start_probe || unit_avoidance_probe ||
+      ai_probe ||
       minimap_probe || camera_probe || status_panel_probe ||
       multi_status_probe || construction_status_probe ||
       capture_path != nullptr || lobby_capture_path != nullptr ||
@@ -476,7 +484,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                       selected->active_order == ActiveUnitOrder::move) {
                     glue_drone_movement_stage = 5;
                     for (int tick = 0; tick < 64; ++tick) {
-                      SendMessageA(window, WM_TIMER, 1, 0);
+                      advance_probe_frame();
                     }
                     selected = find_unit_by_id(status, worker_id);
                     if (selected != nullptr) {
@@ -739,7 +747,14 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, click);
           SendMessageA(window, WM_LBUTTONUP, 0, click);
           selection_verified =
-              selection_count(status) == 1 && visible->selected;
+              selection_count(status) == 1 && visible->selected &&
+              status.selection_colors_ready &&
+              status.selection_color_indices[0][0] == 184U &&
+              status.selection_color_indices[0][7] == 189U &&
+              visible->selection_circle_asset_index <
+                  status.unit_assets.size() &&
+              status.unit_assets[visible->selection_circle_asset_index]
+                      .image_draw_function == 13U;
         }
       }
     }
@@ -752,7 +767,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       const WPARAM key = initial_x < maximum_x ? VK_RIGHT : VK_LEFT;
       SendMessageA(window, WM_KEYDOWN, key, 0);
       for (int tick = 0; tick < 7; ++tick) {
-        SendMessageA(window, WM_TIMER, 1, 0);
+        advance_probe_frame();
       }
       SendMessageA(window, WM_KEYUP, key, 0);
       camera_verified = status.terrain_ready && status.camera_y == initial_y &&
@@ -1633,8 +1648,79 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           mineral == status.units.end() ? 0U : mineral->unit_id;
       const std::uint16_t resource_before =
           mineral == status.units.end() ? 0U : mineral->resource_amount;
+      bool mineral_redirect_verified{};
       if (harvest_queue_verified) {
-        mineral->harvest_queue.clear();
+        ScenarioUnitPreview active_probe{};
+        ScenarioUnitPreview redirected_probe{};
+        ScenarioUnitPreview *source = find_unit_by_id(status, mineral_id);
+        if (source != nullptr && configure_preview_type(status, active_probe, 64U) &&
+            configure_preview_type(status, redirected_probe, 64U)) {
+          const int approach_x =
+              (std::max)(0, static_cast<int>(source->x) - 48);
+          active_probe.unit_id = status.next_unit_id++;
+          active_probe.owner = 0U;
+          active_probe.x = static_cast<std::uint16_t>(approach_x);
+          active_probe.y = source->y;
+          active_probe.x_fixed = approach_x << 8U;
+          active_probe.y_fixed = static_cast<std::int32_t>(source->y) << 8U;
+          redirected_probe = active_probe;
+          redirected_probe.unit_id = status.next_unit_id++;
+          const std::uint32_t active_probe_id = active_probe.unit_id;
+          const std::uint32_t redirected_probe_id = redirected_probe.unit_id;
+          status.units.push_back(std::move(active_probe));
+          status.units.push_back(std::move(redirected_probe));
+          source = find_unit_by_id(status, mineral_id);
+          ScenarioUnitPreview *const redirected =
+              find_unit_by_id(status, redirected_probe_id);
+          if (source != nullptr && redirected != nullptr) {
+            source->harvest_queue.clear();
+            (void)source->harvest_queue.request(active_probe_id);
+            redirected->active_order = ActiveUnitOrder::gather;
+            redirected->order_target_id = mineral_id;
+            redirected->harvest_source_id = mineral_id;
+            redirected->action_phase = 0U;
+            redirected->moving = false;
+            (void)advance_unit_actions(status);
+            mineral_redirect_verified =
+                redirected->active_order == ActiveUnitOrder::gather &&
+                redirected->order_target_id != mineral_id;
+            cancel_unit_order(status, *redirected);
+          }
+          ScenarioUnitPreview *const active =
+              find_unit_by_id(status, active_probe_id);
+          if (active != nullptr) {
+            active->alive = false;
+          }
+          ScenarioUnitPreview *const redirected_after =
+              find_unit_by_id(status, redirected_probe_id);
+          if (redirected_after != nullptr) {
+            redirected_after->alive = false;
+          }
+          source = find_unit_by_id(status, mineral_id);
+          if (source != nullptr) {
+            source->harvest_queue.clear();
+          }
+        }
+      }
+      std::vector<std::pair<std::uint32_t, std::uint16_t>>
+          temporarily_empty_sources;
+      if (mineral_redirect_verified) {
+        for (ScenarioUnitPreview &candidate : status.units) {
+          if (candidate.alive && candidate.unit_id != mineral_id &&
+              candidate.unit_type >= 176U && candidate.unit_type <= 178U &&
+              candidate.resource_amount != 0U) {
+            temporarily_empty_sources.push_back(
+                {candidate.unit_id, candidate.resource_amount});
+            candidate.resource_amount = 0U;
+          }
+        }
+      }
+      if (harvest_queue_verified) {
+        ScenarioUnitPreview *const source =
+            find_unit_by_id(status, mineral_id);
+        if (source != nullptr) {
+          source->harvest_queue.clear();
+        }
         for (const std::uint32_t worker_id : worker_ids) {
           ScenarioUnitPreview *const worker =
               find_unit_by_id(status, worker_id);
@@ -1658,7 +1744,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       bool workers_remained_distinct{};
       std::uint32_t first_active{};
       for (int tick = 0; harvest_queue_verified && tick < 2048; ++tick) {
-        SendMessageA(window, WM_TIMER, 1, 0);
+        advance_probe_frame();
         ScenarioUnitPreview *const source = find_unit_by_id(status, mineral_id);
         ScenarioUnitPreview *const first =
             find_unit_by_id(status, worker_ids[0]);
@@ -1674,7 +1760,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         }
         const std::uint32_t active = source->harvest_queue.active_worker();
         if (!observed_waiter && active != 0U &&
-            source->harvest_queue.queued_count() == 1U) {
+            source->harvest_queue.queued_count() >= 1U) {
           observed_waiter = true;
           first_active = active;
           workers_remained_distinct =
@@ -1686,10 +1772,16 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           break;
         }
       }
-      harvest_queue_verified = harvest_queue_verified && observed_waiter &&
+      harvest_queue_verified = harvest_queue_verified &&
+                               mineral_redirect_verified && observed_waiter &&
                                observed_promotion && workers_remained_distinct;
       harvest_queue_probe_stage =
-          harvest_queue_verified ? 3 : harvest_queue_probe_stage;
+          harvest_queue_verified      ? 3
+          : !mineral_redirect_verified ? 6
+          : !observed_waiter           ? 7
+          : !observed_promotion        ? 8
+          : !workers_remained_distinct ? 9
+                                       : harvest_queue_probe_stage;
       for (const std::uint32_t worker_id : worker_ids) {
         ScenarioUnitPreview *const worker = find_unit_by_id(status, worker_id);
         if (worker != nullptr) {
@@ -1699,6 +1791,14 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       ScenarioUnitPreview *const source = find_unit_by_id(status, mineral_id);
       if (source != nullptr) {
         source->harvest_queue.clear();
+      }
+      for (const auto &empty_source : temporarily_empty_sources) {
+        ScenarioUnitPreview *const source_to_restore =
+            find_unit_by_id(status, empty_source.first);
+        if (source_to_restore != nullptr) {
+          source_to_restore->resource_amount = empty_source.second;
+          source_to_restore->harvest_queue.clear();
+        }
       }
     }
     bool status_panel_verified = true;
@@ -1847,7 +1947,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         const std::uint16_t initial_overlay_pc =
             producer.dynamic_overlay_iscript_state.program_counter;
         for (int tick = 0; tick < 10; ++tick) {
-          SendMessageA(window, WM_TIMER, 1, 0);
+          advance_probe_frame();
         }
         if (producer.dynamic_overlay_asset_index < status.unit_assets.size()) {
           const UnitRenderAsset &working_asset =
@@ -1883,7 +1983,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 status.runtime_unit_types[queued_type]
                     .initialization.simulation.build_time)) *
                 kSimulationTickMilliseconds;
-        SendMessageA(window, WM_TIMER, 1, 0);
+        advance_probe_frame();
         const ScenarioUnitPreview *const producer =
             find_unit_by_id(status, producer_id);
         ScenarioUnitPreview *const produced_worker = last_local_scv();
@@ -1975,6 +2075,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       }
     }
     bool harvest_visual_verified = true;
+    int harvest_visual_probe_stage{};
     if (harvest_visual_probe) {
       harvest_visual_verified = false;
       ScenarioUnitPreview *const worker_pointer = last_local_scv();
@@ -2004,7 +2105,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           for (int tick = 0; tick < 140 && worker.active_order !=
                                                ActiveUnitOrder::return_cargo;
                ++tick) {
-            SendMessageA(window, WM_TIMER, 1, 0);
+            advance_probe_frame();
             animated = animated ||
                        (worker.iscript_ready && worker.last_animation == 15U &&
                         (worker.current_sprite_frame == 51U ||
@@ -2025,7 +2126,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                        std::abs(static_cast<int>(worker.y) - harvest_y) <
                    64;
                ++tick) {
-            SendMessageA(window, WM_TIMER, 1, 0);
+            advance_probe_frame();
           }
           (void)set_camera_position(
               status, static_cast<int>(worker.x) - kMapViewportWidth / 2,
@@ -2035,9 +2136,71 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               worker.cargo_minerals == 8U && animated && cutter_event &&
               window_state.audio_play_count > sounds_before &&
               cargo_asset != nullptr && cargo_asset->image_id == 357U &&
+              cargo_asset->graphics_turns &&
               cargo_asset->overlay_ready &&
               cargo_asset->overlay_image_id == 365U &&
+              cargo_asset->overlay_graphics_turns &&
               render_opengl(window, window_state);
+          harvest_visual_probe_stage = harvest_visual_verified ? 1 : 0;
+          if (harvest_visual_verified) {
+            const std::uint32_t probe_mineral_id = mineral->unit_id;
+            ScenarioUnitPreview probe{};
+            if (configure_preview_type(status, probe, 64U)) {
+              harvest_visual_probe_stage = 2;
+              probe.unit_id = status.next_unit_id++;
+              probe.owner = 0U;
+              probe.x = mineral->x;
+              probe.y = mineral->y;
+              probe.x_fixed = static_cast<std::int32_t>(probe.x) << 8U;
+              probe.y_fixed = static_cast<std::int32_t>(probe.y) << 8U;
+              status.units.push_back(std::move(probe));
+              ScenarioUnitPreview *const inserted_probe =
+                  find_unit_by_id(status, status.units.back().unit_id);
+              ScenarioUnitPreview *const probe_mineral =
+                  find_unit_by_id(status, probe_mineral_id);
+              bool probe_effect_observed{};
+              if (inserted_probe != nullptr && probe_mineral != nullptr &&
+                  begin_scv_interaction(status, *inserted_probe, *probe_mineral,
+                                        ActiveUnitOrder::gather)) {
+                harvest_visual_probe_stage = 3;
+                inserted_probe->x = inserted_probe->movement_final_x;
+                inserted_probe->y = inserted_probe->movement_final_y;
+                inserted_probe->x_fixed =
+                    static_cast<std::int32_t>(inserted_probe->x) << 8U;
+                inserted_probe->y_fixed =
+                    static_cast<std::int32_t>(inserted_probe->y) << 8U;
+                stop_unit_movement(status, *inserted_probe);
+                for (int tick = 0; tick < 32 && !probe_effect_observed;
+                     ++tick) {
+                  advance_probe_frame();
+                  probe_effect_observed = std::any_of(
+                      status.transient_images.begin(),
+                      status.transient_images.end(),
+                      [&status](const ScenarioUnitPreview &effect) {
+                        return effect.alive &&
+                               effect.asset_index ==
+                                   status.probe_mining_effect_asset_index;
+                      });
+                }
+              }
+              harvest_visual_verified =
+                  probe_effect_observed &&
+                  status.probe_mining_effect_asset_index <
+                      status.unit_assets.size() &&
+                  status.unit_assets[status.probe_mining_effect_asset_index]
+                          .image_id == 493U &&
+                  status.unit_assets[status.probe_mining_effect_asset_index]
+                          .image_draw_function == 8U &&
+                  status.unit_assets[status.probe_mining_effect_asset_index]
+                          .image_remapping == 3U &&
+                  status.image_color_shifts[3].size() == 256U * 41U &&
+                  harvest_visual_verified;
+              harvest_visual_probe_stage =
+                  harvest_visual_verified ? 4 : harvest_visual_probe_stage;
+            } else {
+              harvest_visual_verified = false;
+            }
+          }
         }
       }
     }
@@ -2087,7 +2250,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         const bool order_started =
             scv.moving && command_card_for(status).count == 9;
         for (int tick = 0; tick < 16; ++tick) {
-          SendMessageA(window, WM_TIMER, 1, 0);
+          advance_probe_frame();
         }
         const bool scv_moved =
             order_started && (scv.x != initial_x || scv.y != initial_y);
@@ -2171,7 +2334,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             marine_iscript_speed &&
             effective_unit_top_speed(scv) > scv.movement_top_speed;
         for (int tick = 0; tick < 16; ++tick) {
-          SendMessageA(window, WM_TIMER, 1, 0);
+          advance_probe_frame();
         }
         const int marine_distance =
             std::abs(static_cast<int>(scv.x) - marine_initial_x) +
@@ -2253,7 +2416,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               bool remained_passable = order_started;
               for (int tick = 0; tick < 768 && scv.moving && remained_passable;
                    ++tick) {
-                SendMessageA(window, WM_TIMER, 1, 0);
+                advance_probe_frame();
                 remained_passable = starcraft::lang::path_position_passable(
                     status.pathing_map, scv.x, scv.y, scv.selection_width,
                     scv.selection_height, obstacles);
@@ -2371,7 +2534,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               for (int tick = 0;
                    tick < 1536 && separated && (first->moving || other->moving);
                    ++tick) {
-                SendMessageA(window, WM_TIMER, 1, 0);
+                advance_probe_frame();
                 first = find_unit_by_id(status, first_id);
                 other = find_unit_by_id(status, second_id);
                 if (first == nullptr || other == nullptr) {
@@ -2434,10 +2597,12 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       }
     }
     bool worker_actions_verified = true;
+    int worker_actions_probe_stage{};
     if (worker_actions_probe) {
       worker_actions_verified = false;
       ScenarioUnitPreview *const worker_pointer = last_local_scv();
       if (production_verified && worker_pointer != nullptr) {
+        worker_actions_probe_stage = 1;
         clear_selection(status);
         ScenarioUnitPreview &worker = *worker_pointer;
         worker.selected = true;
@@ -2451,10 +2616,14 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               worker.x_fixed = static_cast<std::int32_t>(worker.x) << 8U;
               worker.y_fixed = static_cast<std::int32_t>(worker.y) << 8U;
               stop_unit_movement(status, worker);
-              return unit_edge_distance(worker, target) <=
-                     (order == ActiveUnitOrder::attack
-                          ? static_cast<int>(worker.weapon_range)
-                          : 8);
+              const int range =
+                  order == ActiveUnitOrder::attack
+                      ? static_cast<int>(worker.weapon_range)
+                  : order == ActiveUnitOrder::gather ||
+                            order == ActiveUnitOrder::return_cargo
+                      ? 0x18
+                      : 5;
+              return unit_edge_distance(worker, target) <= range;
             };
 
         auto enemy = std::find_if(status.units.begin(), status.units.end(),
@@ -2465,13 +2634,26 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                   });
         bool attack_verified{};
         if (enemy != status.units.end()) {
+          worker_actions_probe_stage = 2;
           enemy->hit_points = 128;
           attack_verified =
               move_to_interaction_point(*enemy, ActiveUnitOrder::attack);
+          worker_actions_probe_stage =
+              attack_verified ? 3 : worker_actions_probe_stage;
           if (attack_verified) {
-            SendMessageA(window, WM_TIMER, 1, 0);
-            attack_verified = !enemy->alive && enemy->hit_points == 0 &&
-                              worker.active_order == ActiveUnitOrder::none;
+            advance_probe_frame();
+            const bool target_destroyed =
+                !enemy->alive && enemy->hit_points == 0 &&
+                worker.active_order == ActiveUnitOrder::none;
+            worker_actions_probe_stage =
+                target_destroyed ? 4 : worker_actions_probe_stage;
+            const bool attack_animation =
+                worker.iscript_ready && worker.last_animation == 5U;
+            worker_actions_probe_stage =
+                target_destroyed && attack_animation
+                    ? 5
+                    : worker_actions_probe_stage;
+            attack_verified = target_destroyed && attack_animation;
           }
         }
 
@@ -2495,7 +2677,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                tick < 8 && repair_verified &&
                command_center->hit_points < command_center->max_hit_points;
                ++tick) {
-            SendMessageA(window, WM_TIMER, 1, 0);
+            advance_probe_frame();
           }
           repair_verified =
               repair_verified &&
@@ -2517,13 +2699,16 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           const std::uint32_t sounds_before = window_state.audio_play_count;
           bool mining_animation_observed{};
           bool mining_weapon_observed{};
+          bool mining_effect_observed{};
           gather_verified =
               move_to_interaction_point(*mineral, ActiveUnitOrder::gather);
+          worker_actions_probe_stage =
+              gather_verified ? 7 : worker_actions_probe_stage;
           for (int tick = 0;
                tick < 140 && gather_verified &&
                worker.active_order != ActiveUnitOrder::return_cargo;
                ++tick) {
-            SendMessageA(window, WM_TIMER, 1, 0);
+            advance_probe_frame();
             mining_animation_observed =
                 mining_animation_observed ||
                 (worker.iscript_ready && worker.last_animation == 15U &&
@@ -2533,6 +2718,15 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 mining_weapon_observed ||
                 (worker.iscript_state.weapon_event_count != 0U &&
                  worker.iscript_state.weapon_event == 8U);
+            mining_effect_observed =
+                mining_effect_observed ||
+                std::any_of(status.transient_images.begin(),
+                            status.transient_images.end(),
+                            [&status](const ScenarioUnitPreview &effect) {
+                              return effect.alive &&
+                                     effect.asset_index ==
+                                         status.scv_mining_effect_asset_index;
+                            });
           }
           const bool cargo_assets_valid =
               status.mineral_cargo_asset_index < status.unit_assets.size() &&
@@ -2547,19 +2741,24 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               worker.cargo_minerals == 8 &&
               mineral->resource_amount + 10U == resource_before &&
               mining_animation_observed && mining_weapon_observed &&
+              mining_effect_observed &&
               window_state.audio_play_count > sounds_before &&
               cargo_assets_valid && render_opengl(window, window_state);
+          worker_actions_probe_stage =
+              gather_verified ? 8 : worker_actions_probe_stage;
           if (gather_verified) {
             ScenarioUnitPreview *const depot =
                 find_unit_by_id(status, worker.order_target_id);
             gather_verified = depot != nullptr;
+            worker_actions_probe_stage =
+                gather_verified ? 9 : worker_actions_probe_stage;
             if (depot != nullptr) {
               worker.x = worker.movement_final_x;
               worker.y = worker.movement_final_y;
               worker.x_fixed = static_cast<std::int32_t>(worker.x) << 8U;
               worker.y_fixed = static_cast<std::int32_t>(worker.y) << 8U;
               stop_unit_movement(status, worker);
-              SendMessageA(window, WM_TIMER, 1, 0);
+              advance_probe_frame();
               gather_verified =
                   status.player_minerals == minerals_before + 8U &&
                   worker.cargo_minerals == 0 &&
@@ -2570,6 +2769,13 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         }
         worker_actions_verified =
             attack_verified && repair_verified && gather_verified;
+        worker_actions_probe_stage =
+            worker_actions_verified ? 10
+            : worker_actions_probe_stage >= 7
+                ? worker_actions_probe_stage
+            : repair_verified        ? 6
+            : attack_verified        ? 5
+                                     : worker_actions_probe_stage;
       }
     }
     bool refinery_placement_verified = true;
@@ -2876,7 +3082,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               continue;
             }
             status.placement_valid = true;
-            return place_current_building(status);
+            if (place_current_building(status)) {
+              return true;
+            }
           }
         }
         return false;
@@ -2898,7 +3106,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         zerg_building->construction_ticks_remaining = 1U;
         for (int tick = 0; tick < 128 && !zerg_building->construction_complete;
              ++tick) {
-          SendMessageA(window, WM_TIMER, 1, 0);
+          advance_probe_frame();
           zerg_building = find_unit_by_id(status, drone_id);
           if (zerg_building == nullptr) {
             break;
@@ -2921,43 +3129,239 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       const bool nexus_placed =
           probe_id != 0U && place_for_worker(probe_id, 154U);
       ScenarioUnitPreview *probe = find_unit_by_id(status, probe_id);
-      ScenarioUnitPreview *nexus =
-          nexus_placed && status.units.size() == before_probe_build + 1U
-              ? &status.units.back()
-              : nullptr;
+      const bool probe_order_started =
+          nexus_placed && status.units.size() == before_probe_build &&
+          probe != nullptr &&
+          probe->active_order == ActiveUnitOrder::protoss_build &&
+          probe->construction_target_type == 154U;
+      ScenarioUnitPreview *nexus{};
+      for (int tick = 0; probe_order_started && tick < 4096 && nexus == nullptr;
+           ++tick) {
+        advance_probe_frame();
+        probe = find_unit_by_id(status, probe_id);
+        const auto nexus_it = std::find_if(
+            status.units.begin(), status.units.end(),
+            [](const ScenarioUnitPreview &unit) {
+              return unit.alive && unit.owner == 0U &&
+                     unit.unit_type == 154U && !unit.construction_complete;
+            });
+        nexus = nexus_it == status.units.end() ? nullptr : &*nexus_it;
+      }
       const std::uint32_t nexus_id = nexus == nullptr ? 0U : nexus->unit_id;
+      const bool warp_palette_verified =
+          nexus != nullptr && nexus->dynamic_overlay_asset_index <
+                                  status.unit_assets.size() &&
+          status.unit_assets[nexus->dynamic_overlay_asset_index]
+                  .image_draw_function == 8U &&
+          status.unit_assets[nexus->dynamic_overlay_asset_index]
+                  .image_remapping == 3U &&
+          status.image_color_shifts[3].size() == 256U * 41U;
       const bool probe_released =
           nexus != nullptr && nexus->unit_type == 154U &&
           !nexus->construction_complete &&
-          nexus->construction_builder_id == 0U && probe != nullptr &&
+          !nexus->construction_visible && nexus->dynamic_overlay_ready &&
+          warp_palette_verified &&
+          nexus->construction_builder_id == 0U &&
+          status.last_game_sound == 245U && probe != nullptr &&
           probe->alive && probe->unit_type == starcraft::lang::protoss_probe_type &&
           probe->active_order == ActiveUnitOrder::none;
       race_construction_probe_stage =
           probe_released ? 3 : race_construction_probe_stage;
+      bool hidden_for_build_time{};
+      bool materialize_started{};
       if (probe_released) {
-        nexus->construction_ticks_remaining = 1U;
-        for (int tick = 0; tick < 128 && !nexus->construction_complete;
-             ++tick) {
-          SendMessageA(window, WM_TIMER, 1, 0);
+        const std::uint16_t remaining_before =
+            nexus->construction_ticks_remaining;
+        for (int tick = 0; tick < 8 && nexus != nullptr; ++tick) {
+          advance_probe_frame();
           nexus = find_unit_by_id(status, nexus_id);
-          if (nexus == nullptr) {
-            break;
+        }
+        hidden_for_build_time =
+            nexus != nullptr && !nexus->construction_visible &&
+            !nexus->construction_complete &&
+            nexus->construction_ticks_remaining < remaining_before;
+        if (nexus != nullptr) {
+          nexus->construction_ticks_remaining = 1U;
+          for (int tick = 0; nexus != nullptr && tick < 128 &&
+                             !materialize_started;
+               ++tick) {
+            advance_probe_frame();
+            nexus = find_unit_by_id(status, nexus_id);
+            materialize_started =
+                nexus != nullptr && nexus->construction_visible &&
+                !nexus->construction_complete &&
+                nexus->construction_animation_phase == 2U &&
+                nexus->dynamic_overlay_ready &&
+                nexus->dynamic_overlay_asset_index ==
+                    status.protoss_materialize_asset_index &&
+                status.last_game_sound == 246U;
           }
+        }
+        for (int tick = 0;
+             nexus != nullptr && tick < 128 && !nexus->construction_complete;
+             ++tick) {
+          advance_probe_frame();
+          nexus = find_unit_by_id(status, nexus_id);
         }
       }
       const bool protoss_completed =
           nexus != nullptr && nexus->construction_complete &&
-          nexus->hit_points == nexus->max_hit_points;
-      race_construction_verified = zerg_completed && probe_released &&
-                                   protoss_completed;
+          nexus->construction_visible &&
+          nexus->hit_points == nexus->max_hit_points &&
+          status.last_game_sound == 246U;
+      bool pylon_power_verified{};
+      bool pylon_power_display_verified{};
+      bool pylon_power_asset_metadata_verified{};
+      bool sprite_depth_verified{};
+      const BuildableUnitVisual *const pylon_buildable =
+          find_buildable_unit(status, 156U);
+      const BuildableUnitVisual *const gateway_buildable =
+          find_buildable_unit(status, 160U);
+      ScenarioUnitPreview pylon{};
+      if (protoss_completed && pylon_buildable != nullptr &&
+          gateway_buildable != nullptr &&
+          configure_preview_type(status, pylon, 156U)) {
+        for (int pylon_y = pylon_buildable->placement_height / 2;
+             !pylon_power_verified &&
+             pylon_y + pylon_buildable->placement_height / 2 <=
+                 status.pathing_map.pixel_height();
+             pylon_y += 32) {
+          for (int pylon_x = pylon_buildable->placement_width / 2;
+               !pylon_power_verified &&
+               pylon_x + pylon_buildable->placement_width / 2 <=
+                   status.pathing_map.pixel_width();
+               pylon_x += 32) {
+            if (!placement_is_valid(
+                    status, *pylon_buildable,
+                    static_cast<std::uint16_t>(pylon_x),
+                    static_cast<std::uint16_t>(pylon_y), 0U)) {
+              continue;
+            }
+            pylon.unit_id = status.next_unit_id++;
+            pylon.owner = 0U;
+            pylon.x = static_cast<std::uint16_t>(pylon_x);
+            pylon.y = static_cast<std::uint16_t>(pylon_y);
+            pylon.x_fixed = pylon_x << 8U;
+            pylon.y_fixed = pylon_y << 8U;
+            pylon.construction_complete = true;
+            status.units.push_back(pylon);
+            ScenarioUnitPreview &inserted_pylon = status.units.back();
+            for (int gate_y = gateway_buildable->placement_height / 2;
+                 !pylon_power_verified &&
+                 gate_y + gateway_buildable->placement_height / 2 <=
+                     status.pathing_map.pixel_height();
+                 gate_y += 32) {
+              for (int gate_x = gateway_buildable->placement_width / 2;
+                   gate_x + gateway_buildable->placement_width / 2 <=
+                       status.pathing_map.pixel_width();
+                   gate_x += 32) {
+                if (!placement_is_valid(
+                        status, *gateway_buildable,
+                        static_cast<std::uint16_t>(gate_x),
+                        static_cast<std::uint16_t>(gate_y), 0U)) {
+                  continue;
+                }
+                inserted_pylon.construction_complete = false;
+                const bool incomplete_rejected = !placement_is_valid(
+                    status, *gateway_buildable,
+                    static_cast<std::uint16_t>(gate_x),
+                    static_cast<std::uint16_t>(gate_y), 0U);
+                inserted_pylon.construction_complete = true;
+                inserted_pylon.owner = 1U;
+                const bool enemy_rejected = !placement_is_valid(
+                    status, *gateway_buildable,
+                    static_cast<std::uint16_t>(gate_x),
+                    static_cast<std::uint16_t>(gate_y), 0U);
+                inserted_pylon.owner = 0U;
+                pylon_power_verified = incomplete_rejected && enemy_rejected;
+                clear_selection(status);
+                inserted_pylon.selected = true;
+                const bool selected_field =
+                    pylon_power_display_active(status);
+                inserted_pylon.selected = false;
+                const bool deselected_field =
+                    !pylon_power_display_active(status);
+                status.placement_active = true;
+                const bool placement_field =
+                    pylon_power_display_active(status);
+                status.placement_active = false;
+                pylon_power_asset_metadata_verified =
+                    status.pylon_power_asset_index < status.unit_assets.size() &&
+                    status.unit_assets[status.pylon_power_asset_index]
+                            .image_id == 551U &&
+                    status.unit_assets[status.pylon_power_asset_index]
+                            .image_draw_function == 8U &&
+                    status.unit_assets[status.pylon_power_asset_index]
+                            .image_remapping == 3U &&
+                    status.image_color_shifts[3].size() == 256U * 41U;
+                pylon_power_display_verified =
+                    selected_field && deselected_field && placement_field &&
+                    pylon_power_asset_metadata_verified;
+                // Keep the completed Pylon selected through the final GL
+                // probe so sprite 198's recovered render path is exercised.
+                inserted_pylon.selected = true;
+                break;
+              }
+            }
+            if (!pylon_power_verified) {
+              status.units.pop_back();
+            }
+          }
+        }
+      }
+      ScenarioUnitPreview drone_depth{};
+      ScenarioUnitPreview overlord_depth{};
+      if (configure_preview_type(status, drone_depth, 41U) &&
+          configure_preview_type(status, overlord_depth, 42U)) {
+        drone_depth.unit_id = 1U;
+        overlord_depth.unit_id = 2U;
+        drone_depth.y = 300U;
+        overlord_depth.y = 100U;
+        sprite_depth_verified =
+            drone_depth.sprite_elevation == 3U &&
+            overlord_depth.sprite_elevation == 15U &&
+            sprite_draws_before(drone_depth, overlord_depth) &&
+            !sprite_draws_before(overlord_depth, drone_depth);
+      }
+      race_construction_verified = zerg_completed && probe_order_started &&
+                                   probe_released && hidden_for_build_time &&
+                                   materialize_started && protoss_completed &&
+                                   pylon_power_verified &&
+                                   pylon_power_display_verified &&
+                                   sprite_depth_verified;
       race_construction_probe_stage =
           !drone_morphed   ? 0
           : !zerg_completed
               ? static_cast<int>(20 +
                                  zerg_building->construction_animation_phase)
-          : !probe_released ? 2
+          : !probe_order_started ? 2
+          : !probe_released ? 3
+          : !hidden_for_build_time ? 5
+          : !materialize_started ? 6
           : !protoss_completed
-              ? static_cast<int>(10 + nexus->construction_animation_phase)
+              ? static_cast<int>(10 +
+                                 (nexus == nullptr
+                                      ? 0U
+                                      : nexus->construction_animation_phase))
+          : !pylon_power_verified ? 19
+          : !pylon_power_display_verified
+              ? (pylon_power_asset_metadata_verified
+                     ? 20
+                     : status.pylon_power_asset_index >=
+                               status.unit_assets.size()
+                           ? 22
+                     : status.unit_assets[status.pylon_power_asset_index]
+                                   .image_id != 551U
+                           ? 23
+                     : status.unit_assets[status.pylon_power_asset_index]
+                                   .image_draw_function != 8U
+                           ? 24
+                     : status.unit_assets[status.pylon_power_asset_index]
+                                   .image_remapping != 3U
+                           ? 25
+                     : status.image_color_shifts[3].size() != 256U * 41U ? 26
+                                                                         : 27)
+          : !sprite_depth_verified ? 21
               : 4;
     }
     bool construction_verified = true;
@@ -2990,21 +3394,28 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         status.placement_active = true;
         status.placement_unit_type = 106U;
         bool site_found{};
+        std::uint64_t nearest_site_distance = UINT64_MAX;
         const int half_width = command_center->placement_width / 2;
         const int half_height = command_center->placement_height / 2;
         for (int y = half_height;
-             y + half_height <= status.pathing_map.pixel_height() &&
-             !site_found;
+             y + half_height <= status.pathing_map.pixel_height();
              y += 32) {
           for (int x = half_width;
                x + half_width <= status.pathing_map.pixel_width(); x += 32) {
-            status.placement_x = static_cast<std::uint16_t>(x);
-            status.placement_y = static_cast<std::uint16_t>(y);
-            site_found =
-                placement_is_valid(status, *command_center, status.placement_x,
-                                   status.placement_y);
-            if (site_found) {
-              break;
+            if (!placement_is_valid(status, *command_center,
+                                    static_cast<std::uint16_t>(x),
+                                    static_cast<std::uint16_t>(y))) {
+              continue;
+            }
+            const std::int64_t dx = x - static_cast<int>(worker->x);
+            const std::int64_t dy = y - static_cast<int>(worker->y);
+            const std::uint64_t distance =
+                static_cast<std::uint64_t>(dx * dx + dy * dy);
+            if (distance < nearest_site_distance) {
+              nearest_site_distance = distance;
+              status.placement_x = static_cast<std::uint16_t>(x);
+              status.placement_y = static_cast<std::uint16_t>(y);
+              site_found = true;
             }
           }
         }
@@ -3050,7 +3461,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           const std::uint16_t remaining_before =
               created->construction_ticks_remaining;
           const std::uint32_t life_before = created->hit_points;
-          SendMessageA(window, WM_TIMER, 1, 0);
+          advance_probe_frame();
           advanced =
               created->construction_ticks_remaining + 1U == remaining_before &&
               created->hit_points > life_before &&
@@ -3114,12 +3525,12 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 crossed_three && played_three && crossed_four &&
                 created->iscript_ready;
             created->construction_ticks_remaining = 1;
-            SendMessageA(window, WM_TIMER, 1, 0);
+            advance_probe_frame();
             const std::uint16_t idle_program_before =
                 created->iscript_state.program_counter;
             const std::uint8_t idle_sleep_before =
                 created->iscript_state.sleep_ticks;
-            SendMessageA(window, WM_TIMER, 1, 0);
+            advance_probe_frame();
             building_idle_animation_verified =
                 created->iscript_ready &&
                 (created->iscript_state.program_counter !=
@@ -3206,7 +3617,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                 (std::max)(1U, created->max_hit_points / 10U);
         if (linked) {
           created->construction_ticks_remaining = 1;
-          SendMessageA(window, WM_TIMER, 1, 0);
+          advance_probe_frame();
           const std::size_t units_after = status.units.size();
           (void)click_command(8);
           addon_verified = created->construction_complete &&
@@ -3311,7 +3722,26 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             }
           }
         }
-        creep_probe_stage = exact_ellipse ? 4 : creep_probe_stage;
+        bool edge_graphics =
+            exact_ellipse &&
+            status.creep_edge_frames.size() == status.creep_tiles.size();
+        bool decoded_edge{};
+        for (std::size_t tile = 0;
+             edge_graphics && tile < status.creep_edge_frames.size(); ++tile) {
+          if (status.creep_tiles[tile] != 0U ||
+              status.creep_edge_frames[tile] == 0U) {
+            continue;
+          }
+          starcraft::gds::DecodedGrpFrame edge{};
+          decoded_edge = status.terrain_tileset.creep_edge_frame(
+              status.creep_edge_frames[tile], edge);
+          edge_graphics = decoded_edge && edge.width != 0U && edge.height != 0U;
+          break;
+        }
+        edge_graphics = edge_graphics && decoded_edge;
+        creep_probe_stage = exact_ellipse && edge_graphics
+                                ? 4
+                                : creep_probe_stage;
         ScenarioUnitPreview *const inserted =
             find_unit_by_id(status, source_id);
         if (inserted != nullptr) {
@@ -3323,12 +3753,91 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             status.creep_tiles == creep_before;
         creep_probe_stage = receded ? 5 : creep_probe_stage;
         creep_verified = rejected_without_creep && spread && exact_ellipse &&
-                         receded && status.terrain_ready &&
+                         edge_graphics && receded && status.terrain_ready &&
                          status.minimap_ready;
         creep_probe_stage = creep_verified ? 6 : creep_probe_stage;
       }
     }
     bool melee_start_verified = true;
+    bool ai_verified = true;
+    int ai_probe_stage{};
+    if (ai_probe) {
+      ai_verified = false;
+      bool has_enabled_ai = std::any_of(
+          status.ai_players.begin(), status.ai_players.end(),
+          [](const AiPlayerRuntime &ai) { return ai.enabled; });
+      if (!has_enabled_ai && status.scenario.players().size() > 1U) {
+        const std::uint8_t race = status.scenario.players()[1].race;
+        (void)status.scenario.configure_player(1U, 5U, race);
+        status.active_players[1] = true;
+        has_enabled_ai = initialize_ai_players(status);
+      }
+      const bool scripts_started =
+          has_enabled_ai && !status.ai_script_bytes.empty() &&
+          std::any_of(status.ai_players.begin(), status.ai_players.end(),
+                      [](const AiPlayerRuntime &ai) {
+                        return ai.enabled && ai.script_active &&
+                               ai.script_pc != 0U;
+                      });
+      ai_probe_stage = scripts_started ? 1 : 0;
+      for (AiPlayerRuntime &ai : status.ai_players) {
+        if (ai.enabled) {
+          status.player_mineral_stock[ai.owner] = 2000U;
+          status.player_gas_stock[ai.owner] = 2000U;
+        }
+      }
+      for (int tick = 0; scripts_started && tick < 512; ++tick) {
+        advance_probe_frame();
+      }
+      const bool script_requests = std::any_of(
+          status.ai_players.begin(), status.ai_players.end(),
+          [](const AiPlayerRuntime &ai) {
+            return ai.enabled && ai.build_request_count != 0U;
+          });
+      ai_probe_stage = script_requests ? 2 : ai_probe_stage;
+      bool worker_orders{};
+      bool production_buildings{};
+      std::array<bool, 8> production_started{};
+      for (const ScenarioUnitPreview &unit : status.units) {
+        if (!unit.alive || unit.owner == 0U ||
+            unit.owner >= status.ai_players.size() ||
+            !status.ai_players[unit.owner].enabled) {
+          continue;
+        }
+        starcraft::lang::MeleeUnitTypes types{};
+        if (starcraft::lang::melee_unit_types(
+                status.ai_players[unit.owner].race, types) &&
+            unit.unit_type == types.worker &&
+            (unit.active_order == ActiveUnitOrder::gather || unit.moving ||
+             unit.cargo_minerals != 0U || unit.cargo_gas != 0U)) {
+          worker_orders = true;
+        }
+        constexpr std::array<std::uint16_t, 3> first_production_types{{
+            142U,  // Zerg Spawning Pool
+            111U,  // Terran Barracks
+            160U,  // Protoss Gateway
+        }};
+        const std::uint8_t race = status.ai_players[unit.owner].race;
+        if (race < first_production_types.size() &&
+            unit.unit_type == first_production_types[race] &&
+            (unit.construction_complete ||
+             (unit.construction_ticks_total != 0U &&
+              unit.construction_ticks_remaining <
+                  unit.construction_ticks_total))) {
+          production_started[unit.owner] = true;
+        }
+      }
+      ai_probe_stage = worker_orders ? 3 : ai_probe_stage;
+      production_buildings = std::all_of(
+          status.ai_players.begin(), status.ai_players.end(),
+          [&production_started](const AiPlayerRuntime &ai) {
+            return !ai.enabled || production_started[ai.owner];
+          });
+      ai_probe_stage = production_buildings ? 4 : ai_probe_stage;
+      ai_verified = scripts_started && script_requests && worker_orders &&
+                    production_buildings;
+      ai_probe_stage = ai_verified ? 5 : ai_probe_stage;
+    }
     if (melee_start_probe) {
       melee_start_verified = status.local_race < 3U;
       for (std::size_t player = 0; melee_start_verified && player < 8U;
@@ -3481,6 +3990,15 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
     if (race_building_cards_probe && !race_building_cards_verified) {
       return 300 + race_building_cards_probe_stage;
     }
+    if (worker_actions_probe && !worker_actions_verified) {
+      return 340 + worker_actions_probe_stage;
+    }
+    if (harvest_visual_probe && !harvest_visual_verified) {
+      return 130 + harvest_visual_probe_stage;
+    }
+    if (ai_probe && !ai_verified) {
+      return 320 + ai_probe_stage;
+    }
     return rendered && captured && presentation_verified && selection_verified &&
                    command_panel_verified && production_verified &&
                    movement_verified && pathfinding_verified &&
@@ -3500,7 +4018,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                    all_production_verified
                    && worker_build_cards_verified &&
                    race_construction_verified &&
-                   race_building_cards_verified
+                   race_building_cards_verified && ai_verified
                ? 0
                : 11;
   }

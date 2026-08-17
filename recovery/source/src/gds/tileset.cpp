@@ -56,12 +56,14 @@ bool TilesetData::load(
     std::vector<std::uint8_t> vr4;
     std::vector<std::uint8_t> vf4;
     std::vector<std::uint8_t> wpe;
+    std::vector<std::uint8_t> creep_grp;
     failed_asset_.clear();
     if (!load_asset(storm, prefix + ".cv5", cv5, failed_asset_) ||
         !load_asset(storm, prefix + ".vx4", vx4, failed_asset_) ||
         !load_asset(storm, prefix + ".vr4", vr4, failed_asset_) ||
         !load_asset(storm, prefix + ".vf4", vf4, failed_asset_) ||
-        !load_asset(storm, prefix + ".wpe", wpe, failed_asset_)) {
+        !load_asset(storm, prefix + ".wpe", wpe, failed_asset_) ||
+        !load_asset(storm, prefix + ".grp", creep_grp, failed_asset_)) {
       valid_ = false;
       return false;
     }
@@ -70,7 +72,8 @@ bool TilesetData::load(
         std::move(vx4),
         std::move(vr4),
         std::move(vf4),
-        std::move(wpe));
+        std::move(wpe),
+        std::move(creep_grp));
   } catch (...) {
     valid_ = false;
     return false;
@@ -82,7 +85,8 @@ bool TilesetData::assign(
     std::vector<std::uint8_t> vx4,
     std::vector<std::uint8_t> vr4,
     std::vector<std::uint8_t> vf4,
-    std::vector<std::uint8_t> wpe) noexcept {
+    std::vector<std::uint8_t> wpe,
+    std::vector<std::uint8_t> creep_grp) noexcept {
   valid_ = false;
   if (cv5.empty() || cv5.size() % kCv5GroupBytes != 0 || vx4.empty() ||
       vx4.size() % kVx4MegaTileBytes != 0 || vr4.empty() ||
@@ -98,6 +102,7 @@ bool TilesetData::assign(
     vr4_ = std::move(vr4);
     vf4_ = std::move(vf4);
     wpe_ = std::move(wpe);
+    creep_grp_ = std::move(creep_grp);
     valid_ = true;
     return true;
   } catch (...) {
@@ -196,6 +201,20 @@ bool TilesetData::buildable(const std::uint16_t map_tile_id) const noexcept {
   std::array<std::uint16_t, 16> minitile_flags{};
   return terrain_flags(map_tile_id, group_flags, minitile_flags) &&
          (group_flags & kTerrainBlocksBuilding) == 0;
+}
+
+bool TilesetData::creep_edge_frame(
+    const std::uint8_t one_based_frame,
+    DecodedGrpFrame& output) const noexcept {
+  output = {};
+  if (!valid_ || one_based_frame == 0U || creep_grp_.empty()) {
+    return false;
+  }
+  // creep.cpp::sub_4D12F1 indexes descriptor (edge * 8 - 2), exactly the
+  // standard six-byte GRP header followed by zero-based eight-byte frames.
+  return decode_grp_frame(creep_grp_.data(), creep_grp_.size(),
+                          static_cast<std::uint16_t>(one_based_frame - 1U),
+                          output);
 }
 
 bool TilesetData::walkable(

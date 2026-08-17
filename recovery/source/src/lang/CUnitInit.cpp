@@ -8,6 +8,9 @@ bool recover_unit_initialization(
     UnitInitializationData& output) noexcept {
   UnitInitializationData recovered{};
   recovered.unit_type = unit_type;
+  recovered.has_selection_circle = data.unit_selection_circle(
+      unit_type, recovered.selection_circle_image_id,
+      recovered.selection_circle_y_offset);
   std::uint16_t left{};
   std::uint16_t top{};
   std::uint16_t right{};
@@ -16,6 +19,7 @@ bool recover_unit_initialization(
       !data.unit_placement_size(
           unit_type, recovered.placement_width, recovered.placement_height) ||
       !data.unit_collision_extents(unit_type, left, top, right, bottom) ||
+      !data.unit_sprite_elevation(unit_type, recovered.sprite_elevation) ||
       !data.unit_is_building(unit_type, recovered.is_building) ||
       !data.unit_simulation_traits(unit_type, recovered.simulation)) {
     return false;

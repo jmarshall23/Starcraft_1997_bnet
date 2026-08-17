@@ -42,7 +42,8 @@ bool set_camera_position(BootstrapStatus &status, const int requested_x,
   if (!build_terrain_preview(status.terrain_tileset, status.scenario,
                              static_cast<std::uint16_t>(camera_x),
                              static_cast<std::uint16_t>(camera_y), terrain,
-                             &status.creep_tiles, &status.creep_visual_tiles)) {
+                             &status.creep_tiles, &status.creep_visual_tiles,
+                             &status.creep_edge_frames)) {
     return false;
   }
   status.camera_x = static_cast<std::uint16_t>(camera_x);

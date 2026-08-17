@@ -296,6 +296,7 @@ struct UnitRenderAsset {
   std::uint16_t sprite_canvas_height{};
   std::uint16_t image_id{};
   std::uint8_t image_draw_function{};
+  std::uint8_t image_remapping{};
   bool graphics_turns{};
   std::uint16_t iscript_id{};
   starcraft::lang::IScriptState initial_iscript_state{};
@@ -304,6 +305,8 @@ struct UnitRenderAsset {
   std::string overlay_path{};
   std::uint16_t overlay_image_id{};
   std::uint8_t overlay_draw_function{};
+  std::uint8_t overlay_remapping{};
+  bool overlay_graphics_turns{};
   std::uint16_t overlay_iscript_id{};
   starcraft::lang::IScriptState initial_overlay_iscript_state{};
   bool overlay_ready{};
@@ -321,6 +324,7 @@ enum class ActiveUnitOrder : std::uint8_t {
   construct,
   gather,
   return_cargo,
+  protoss_build,
 };
 
 struct ScenarioUnitPreview {
@@ -337,6 +341,8 @@ struct ScenarioUnitPreview {
   std::uint8_t owner{};
   std::uint8_t destroyed_by_owner{0xFFU};
   std::size_t asset_index{};
+  std::size_t selection_circle_asset_index{SIZE_MAX};
+  std::int8_t selection_circle_y_offset{};
   starcraft::lang::IScriptState iscript_state{};
   starcraft::lang::IScriptState overlay_iscript_state{};
   starcraft::lang::IScriptState dynamic_overlay_iscript_state{};
@@ -352,6 +358,7 @@ struct ScenarioUnitPreview {
   std::uint16_t movement_target_x{};
   std::uint16_t movement_target_y{};
   std::uint8_t direction{};
+  std::uint8_t sprite_elevation{};
   std::uint8_t movement_turn_speed{};
   std::uint8_t movement_control{};
   std::vector<starcraft::lang::PathPoint> movement_path{};
@@ -379,6 +386,8 @@ struct ScenarioUnitPreview {
   std::uint16_t construction_ticks_total{};
   std::uint16_t construction_ticks_remaining{};
   std::uint16_t construction_target_type{0xFFFFU};
+  std::uint16_t build_target_x{};
+  std::uint16_t build_target_y{};
   std::uint16_t technology_ticks_total{};
   std::uint16_t technology_ticks_remaining{};
   std::uint8_t armor{};
@@ -415,6 +424,29 @@ struct ScenarioUnitPreview {
   bool has_ground_weapon{};
   bool alive{true};
   bool production_active{};
+  // The original Protoss building CUnit occupies its footprint while image
+  // 189 performs the warp-in entrance ahead of the primary building image.
+  bool construction_visible{true};
+};
+
+struct AiBuildRequest {
+  std::uint16_t unit_type{0xFFFFU};
+  std::uint8_t quantity{};
+  std::uint8_t priority{};
+  std::uint8_t kind{};  // 0 unit/building, 1 upgrade, 2 technology
+};
+
+struct AiPlayerRuntime {
+  std::array<AiBuildRequest, 64> build_requests{};
+  std::uint32_t script_pc{};
+  std::uint16_t sleep_ticks{};
+  std::uint32_t update_counter{};
+  std::size_t build_request_count{};
+  std::uint8_t owner{};
+  std::uint8_t race{};
+  bool enabled{};
+  bool script_active{};
+  bool attack_requested{};
 };
 
 struct CommandControl {
@@ -471,6 +503,7 @@ struct BuildableUnitVisual {
 struct RuntimeUnitType {
   starcraft::lang::UnitInitializationData initialization{};
   std::size_t asset_index{SIZE_MAX};
+  std::size_t selection_circle_asset_index{SIZE_MAX};
   bool ready{};
 };
 
@@ -514,7 +547,12 @@ struct BootstrapStatus {
   std::size_t geyser_asset_index{SIZE_MAX};
   std::size_t mineral_cargo_asset_index{SIZE_MAX};
   std::size_t terran_gas_cargo_asset_index{SIZE_MAX};
+  std::size_t scv_mining_effect_asset_index{SIZE_MAX};
+  std::size_t probe_mining_effect_asset_index{SIZE_MAX};
   std::size_t command_center_working_asset_index{SIZE_MAX};
+  std::size_t protoss_warp_asset_index{SIZE_MAX};
+  std::size_t protoss_materialize_asset_index{SIZE_MAX};
+  std::size_t pylon_power_asset_index{SIZE_MAX};
   std::uint16_t scv_selection_width{};
   std::uint16_t scv_selection_height{};
   std::uint16_t geyser_selection_width{};
@@ -617,10 +655,19 @@ struct BootstrapStatus {
   std::array<starcraft::data::UpgradeResearchTraits, 46> upgrade_traits{};
   std::array<bool, 28> researched_technologies{};
   std::array<std::uint8_t, 46> upgrade_levels{};
+  std::array<std::array<bool, 28>, starcraft::data::chk_player_slot_count>
+      player_researched_technologies{};
+  std::array<std::array<std::uint8_t, 46>,
+             starcraft::data::chk_player_slot_count>
+      player_upgrade_levels{};
   std::uint16_t failed_runtime_unit_type{0xFFFFU};
   std::uint32_t next_unit_id{1};
   std::uint32_t player_minerals{50};
   std::uint32_t player_gas{};
+  std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
+      player_mineral_stock{};
+  std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
+      player_gas_stock{};
   std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
       minerals_gathered{};
   std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
@@ -628,6 +675,12 @@ struct BootstrapStatus {
   std::uint8_t local_race{};
   bool team_colors_ready{};
   std::vector<std::uint8_t> game_palette{};
+  std::array<std::array<std::uint8_t, 8>, 3> selection_color_indices{};
+  bool selection_colors_ready{};
+  // CImage.cpp::sub_410F60 indexes the five 18-byte gColorShifts entries by
+  // images.dat remapping. CImage.cpp::sub_409B00 loads shift.pcx as entry 0;
+  // entries 1..4 are ofire, gfire, bfire, and trans50.
+  std::array<std::vector<std::uint8_t>, 5> image_color_shifts{};
   std::array<std::array<std::uint8_t, 8>, 12> team_color_indices{};
   std::size_t terrain_group_count{};
   std::size_t terrain_megatile_count{};
@@ -649,7 +702,11 @@ struct BootstrapStatus {
   std::array<bool, starcraft::data::chk_player_slot_count> active_players{};
   std::vector<std::uint8_t> creep_tiles{};
   std::vector<std::uint8_t> creep_visual_tiles{};
+  std::vector<std::uint8_t> creep_edge_frames{};
+  std::vector<std::uint8_t> ai_script_bytes{};
+  std::array<AiPlayerRuntime, 8> ai_players{};
   std::vector<ScenarioUnitPreview> units{};
+  std::vector<ScenarioUnitPreview> transient_images{};
 };
 
 struct RecoveryWindowState {
@@ -853,6 +910,12 @@ void draw_team_colored_frame_gl(const BootstrapStatus &status,
                                 bool mirrored = false);
 void draw_scenario_unit_gl(const BootstrapStatus &status,
                            const ScenarioUnitPreview &unit);
+[[nodiscard]] bool sprite_draws_before(
+    const ScenarioUnitPreview &left,
+    const ScenarioUnitPreview &right) noexcept;
+[[nodiscard]] bool pylon_power_display_active(
+    const BootstrapStatus &status) noexcept;
+void draw_pylon_power_fields_gl(const BootstrapStatus &status);
 void draw_building_placement_gl(const BootstrapStatus &status);
 
 [[nodiscard]] constexpr float hud_vertical_scale() noexcept {
@@ -902,6 +965,8 @@ void apply_initialization_traits(
 first_selected_unit(const BootstrapStatus &status) noexcept;
 [[nodiscard]] CommandCardView
 command_card_for(const BootstrapStatus &status) noexcept;
+[[nodiscard]] CommandCardView
+recovered_building_card(std::uint16_t unit_type) noexcept;
 [[nodiscard]] const BuildableUnitVisual *
 find_buildable_unit(const BootstrapStatus &status,
                     std::uint16_t unit_type) noexcept;
@@ -910,7 +975,8 @@ find_buildable_unit(const BootstrapStatus &status,
     const starcraft::game::MultiplayerScenario &scenario,
     std::uint16_t camera_x, std::uint16_t camera_y, SpritePreviewFrame &output,
     const std::vector<std::uint8_t> *creep_tiles = nullptr,
-    const std::vector<std::uint8_t> *creep_visual_tiles = nullptr);
+    const std::vector<std::uint8_t> *creep_visual_tiles = nullptr,
+    const std::vector<std::uint8_t> *creep_edge_frames = nullptr);
 [[nodiscard]] bool build_minimap_preview(
     const starcraft::gds::TilesetData &tileset,
     const starcraft::game::MultiplayerScenario &scenario,
@@ -1003,14 +1069,24 @@ issue_active_scv_target(BootstrapStatus &status, std::uint16_t world_x,
 issue_scv_return_cargo(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool advance_unit_movement(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool advance_unit_actions(BootstrapStatus &status) noexcept;
+[[nodiscard]] bool spawn_worker_mining_effect(
+    BootstrapStatus &status, const ScenarioUnitPreview &worker,
+    std::uint8_t weapon_type) noexcept;
+[[nodiscard]] bool advance_transient_images(BootstrapStatus &status,
+                                            std::uint32_t clock) noexcept;
 [[nodiscard]] bool rebuild_creep_tiles(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool tile_has_creep(const BootstrapStatus &status, int tile_x,
                                   int tile_y) noexcept;
 [[nodiscard]] bool advance_addon_construction(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool advance_protoss_building_construction(
     BootstrapStatus &status) noexcept;
+[[nodiscard]] bool complete_protoss_build_order(
+    BootstrapStatus &status, ScenarioUnitPreview &probe) noexcept;
 [[nodiscard]] bool advance_zerg_building_construction(
     BootstrapStatus &status) noexcept;
+[[nodiscard]] bool initialize_ai_players(BootstrapStatus &status) noexcept;
+[[nodiscard]] bool advance_ai_players(BootstrapStatus &status,
+                                      std::uint32_t now) noexcept;
 [[nodiscard]] bool advance_technology_research(
     BootstrapStatus &status) noexcept;
 [[nodiscard]] bool addon_center_for_parent(const BuildableUnitVisual &addon,
@@ -1020,10 +1096,15 @@ issue_scv_return_cargo(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool placement_is_valid(const BootstrapStatus &status,
                                       const BuildableUnitVisual &buildable,
                                       std::uint16_t center_x,
-                                      std::uint16_t center_y) noexcept;
+                                      std::uint16_t center_y,
+                                      std::uint8_t owner = 0U) noexcept;
 [[nodiscard]] bool update_building_placement(BootstrapStatus &status,
                                              int game_x, int game_y) noexcept;
 [[nodiscard]] bool place_current_building(BootstrapStatus &status) noexcept;
+[[nodiscard]] bool begin_protoss_build_order(
+    BootstrapStatus &status, ScenarioUnitPreview &probe,
+    const BuildableUnitVisual &buildable, std::uint16_t center_x,
+    std::uint16_t center_y, bool charge_resources) noexcept;
 [[nodiscard]] bool configure_preview_type(BootstrapStatus &status,
                                           ScenarioUnitPreview &unit,
                                           std::uint16_t unit_type) noexcept;
@@ -1087,6 +1168,13 @@ void draw_command_target_gl(const RecoveryWindowState &state) noexcept;
                                  RecoveryWindowState &state) noexcept;
 [[nodiscard]] bool capture_opengl_bmp(HWND window, RecoveryWindowState &state,
                                       const char *output_path) noexcept;
+// gameloop.cpp owns the executable's non-blocking message pump and fixed-rate
+// simulation scheduler. A frame can also be advanced directly by regression
+// probes without manufacturing a window-timer message.
+[[nodiscard]] bool advance_game_loop_frame(
+    HWND window, RecoveryWindowState &state, std::uint32_t clock) noexcept;
+[[nodiscard]] int run_game_loop(HWND window,
+                                RecoveryWindowState &state) noexcept;
 [[nodiscard]] bool client_to_game(HWND window, LPARAM lparam, int &game_x,
                                   int &game_y) noexcept;
 [[nodiscard]] bool hud_pixel_opaque(const BootstrapStatus &status, int game_x,

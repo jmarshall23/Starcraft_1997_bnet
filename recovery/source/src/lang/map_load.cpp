@@ -31,7 +31,8 @@ bool build_terrain_preview(
     const std::uint16_t camera_x, const std::uint16_t camera_y,
     SpritePreviewFrame &output,
     const std::vector<std::uint8_t> *const creep_tiles,
-    const std::vector<std::uint8_t> *const creep_visual_tiles) {
+    const std::vector<std::uint8_t> *const creep_visual_tiles,
+    const std::vector<std::uint8_t> *const creep_edge_frames) {
   output = {};
   const std::uint32_t map_width =
       static_cast<std::uint32_t>(scenario.width()) * 32U;
@@ -53,6 +54,10 @@ bool build_terrain_preview(
   output.height = kMapViewportHeight;
   output.bgra.resize(static_cast<std::size_t>(output.width) * output.height,
                      0xFF000000U);
+  output.palette_indices.resize(
+      static_cast<std::size_t>(output.width) * output.height, 0U);
+  output.opacity.resize(static_cast<std::size_t>(output.width) * output.height,
+                        0xFFU);
   const auto &palette = tileset.palette();
   if (!tileset.valid() || palette.size() != 1024) {
     return false;
@@ -108,6 +113,46 @@ bool build_terrain_preview(
               destination_x;
           output.bgra[destination] =
               0xFF000000U | blue | (green << 8U) | (red << 16U);
+          output.palette_indices[destination] = palette_index;
+        }
+      }
+      if (creep_edge_frames != nullptr &&
+          creep_edge_frames->size() == map_tile_count &&
+          (*creep_edge_frames)[map_index] != 0U) {
+        starcraft::gds::DecodedGrpFrame edge{};
+        if (!tileset.creep_edge_frame((*creep_edge_frames)[map_index], edge)) {
+          return false;
+        }
+        // sub_4BE36B draws the selected tileset .grp descriptor at the
+        // current megatile's framebuffer address using its GRP offsets.
+        for (std::size_t y = 0; y < edge.height; ++y) {
+          for (std::size_t x = 0; x < edge.width; ++x) {
+            const std::size_t source = y * edge.width + x;
+            if (source >= edge.opacity.size() || edge.opacity[source] == 0U) {
+              continue;
+            }
+            const int destination_x = static_cast<int>(tile_x * 32U) -
+                                      offset_x + edge.x_offset +
+                                      static_cast<int>(x);
+            const int destination_y = static_cast<int>(tile_y * 32U) -
+                                      offset_y + edge.y_offset +
+                                      static_cast<int>(y);
+            if (destination_x < 0 || destination_y < 0 ||
+                destination_x >= output.width ||
+                destination_y >= output.height) {
+              continue;
+            }
+            const std::uint8_t palette_index = edge.pixels[source];
+            const std::size_t color = 4U * palette_index;
+            const std::size_t destination =
+                static_cast<std::size_t>(destination_y) * output.width +
+                destination_x;
+            output.bgra[destination] =
+                0xFF000000U | palette[color + 2U] |
+                (static_cast<std::uint32_t>(palette[color + 1U]) << 8U) |
+                (static_cast<std::uint32_t>(palette[color]) << 16U);
+            output.palette_indices[destination] = palette_index;
+          }
         }
       }
     }
@@ -191,6 +236,11 @@ BootstrapStatus probe_assets(
 
   starcraft::data::CoreDataSet data{};
   const bool data_loaded = data.load(storm);
+  // SAI_Scripts.cpp::sub_49A010 loads this exact table and walks its
+  // sixteen-byte headers before starting a race-specific script thread.
+  const bool ai_scripts_ready =
+      storm.load_file(R"(scripts\aiscript.bin)", status.ai_script_bytes) &&
+      !status.ai_script_bytes.empty();
   status.unit_traits_ready =
       data_loaded && data.extract_unit_traits(status.unit_traits);
   bool research_data_ready = data_loaded;
@@ -259,9 +309,55 @@ BootstrapStatus probe_assets(
     if (!recovered_tileset_name.empty() &&
         terrain_tileset.load(storm, recovered_tileset_name)) {
       palette = terrain_tileset.palette();
+      status.game_palette = palette;
       status.terrain_ready =
           build_terrain_preview(terrain_tileset, scenario, status.camera_x,
                                 status.camera_y, status.terrain);
+      // CImage.cpp::sub_409B00 first loads the tileset's shift.pcx into
+      // gColorShifts[0]. gamedata.cpp then initializes the remaining four
+      // entries from the names at 0x004F8208. CImage::sub_410F60 stores the
+      // selected row-major lookup pointer for draw function 8/15 images.
+      // sub_46A6F0 sizes each table as (PCX height + 1) * 256 and passes
+      // destination +256 to Storm's PCX decoder. Row zero is deliberately
+      // reserved; GRP source values 1..height select PCX rows 0..height-1.
+      // This matters for pb1Glow.grp, whose valid bfire source range reaches
+      // 40 even though bfire.pcx itself is 256x40.
+      constexpr std::array<const char *, 5> shift_names{{
+          "shift", "ofire", "gfire", "bfire", "trans50",
+      }};
+      for (std::size_t shift = 0; shift < shift_names.size(); ++shift) {
+        std::string path = "Tileset\\";
+        path.append(recovered_tileset_name);
+        path.push_back('\\');
+        path.append(shift_names[shift]);
+        path.append(".pcx");
+        starcraft::runtime::DecodedPcx lookup{};
+        if (storm.load_pcx(path.c_str(), lookup) && lookup.width == 256U &&
+            lookup.height != 0U && lookup.height <= 256U &&
+            lookup.pixels.size() ==
+                static_cast<std::size_t>(lookup.width) * lookup.height) {
+          std::vector<std::uint8_t> table(
+              static_cast<std::size_t>(lookup.width) * (lookup.height + 1U),
+              0U);
+          std::copy(lookup.pixels.begin(), lookup.pixels.end(),
+                    table.begin() + 256U);
+          status.image_color_shifts[shift] = std::move(table);
+        }
+      }
+      // CImage.cpp::sub_40FB60 loads game\tselect.pcx as a 24-byte table.
+      // Renderer 13 (sub_409820) consumes it as three eight-shade outline
+      // rows selected by CUnitColor's local/allied/enemy value 0..2.
+      starcraft::runtime::DecodedPcx selection_colors{};
+      if (storm.load_pcx(R"(game\tselect.pcx)", selection_colors) &&
+          selection_colors.width == 24U && selection_colors.height == 1U &&
+          selection_colors.pixels.size() == 24U) {
+        for (std::size_t relation = 0;
+             relation < status.selection_color_indices.size(); ++relation) {
+          std::copy_n(selection_colors.pixels.begin() + relation * 8U, 8U,
+                      status.selection_color_indices[relation].begin());
+        }
+        status.selection_colors_ready = true;
+      }
     }
     status.terrain_group_count = terrain_tileset.group_count();
     status.terrain_megatile_count = terrain_tileset.megatile_count();
@@ -485,11 +581,14 @@ BootstrapStatus probe_assets(
   bool scv_asset_ready{};
   bool geyser_asset_ready{};
   bool cargo_assets_ready{};
+  bool worker_mining_effects_ready{};
   bool working_overlay_asset_ready{};
+  bool protoss_construction_assets_ready{};
   bool build_assets_ready{};
   bool production_assets_ready{};
   bool portrait_assets_ready{};
   bool melee_start_ready{};
+  std::string protoss_asset_failure;
   if (data_loaded && palette_loaded && scenario.valid()) {
     status.iscript_bytes = data.iscript();
     status.unit_assets.reserve(64);
@@ -529,8 +628,17 @@ BootstrapStatus probe_assets(
       if (asset_index == SIZE_MAX) {
         return nullptr;
       }
+      const std::size_t selection_circle_asset_index =
+          initialization.has_selection_circle
+              ? ensure_asset(initialization.selection_circle_image_id)
+              : SIZE_MAX;
+      if (initialization.has_selection_circle &&
+          selection_circle_asset_index == SIZE_MAX) {
+        return nullptr;
+      }
       runtime.initialization = initialization;
       runtime.asset_index = asset_index;
+      runtime.selection_circle_asset_index = selection_circle_asset_index;
       runtime.ready = true;
       return &runtime;
     };
@@ -576,6 +684,10 @@ BootstrapStatus probe_assets(
       preview.unit_type = unit_type;
       preview.owner = owner;
       preview.asset_index = runtime->asset_index;
+      preview.selection_circle_asset_index =
+          runtime->selection_circle_asset_index;
+      preview.selection_circle_y_offset =
+          initialization.selection_circle_y_offset;
       preview.selection_width = initialization.placement_width;
       preview.selection_height = initialization.placement_height;
       preview.collision_left =
@@ -737,6 +849,17 @@ BootstrapStatus probe_assets(
     status.terran_gas_cargo_asset_index = ensure_asset(222U + 137U);
     cargo_assets_ready = status.mineral_cargo_asset_index != SIZE_MAX &&
                          status.terran_gas_cargo_asset_index != SIZE_MAX;
+    std::uint16_t worker_effect_image{};
+    if (data.weapon_image_id(8U, worker_effect_image)) {
+      status.scv_mining_effect_asset_index = ensure_asset(worker_effect_image);
+    }
+    if (data.weapon_image_id(42U, worker_effect_image)) {
+      status.probe_mining_effect_asset_index =
+          ensure_asset(worker_effect_image);
+    }
+    worker_mining_effects_ready =
+        status.scv_mining_effect_asset_index != SIZE_MAX &&
+        status.probe_mining_effect_asset_index != SIZE_MAX;
 
     // CUnitBuild.cpp::sub_423020 dispatches Working (19) to the producer.
     // The Command Center image-246 script creates image 247 at that point;
@@ -745,6 +868,43 @@ BootstrapStatus probe_assets(
     status.command_center_working_asset_index = ensure_asset(247U);
     working_overlay_asset_ready =
         status.command_center_working_asset_index != SIZE_MAX;
+
+    // CUnitPBuild.cpp::sub_43BBF0 attaches image 189 when the Probe reaches
+    // the accepted footprint. CUnitProtoss.cpp::sub_43CF60 creates sprite
+    // 198 for the same licensed power-field shape used by sub_43C200.
+    std::uint16_t pylon_power_image{};
+    const starcraft::data::DatField *const sprite_images =
+        data.sprites().field(0);
+    status.protoss_warp_asset_index = ensure_asset(189U);
+    // Image 188 is inserted during the later warp-in state transition; keep
+    // it available to restart_unit_animation's dynamic attachment path.
+    status.protoss_materialize_asset_index = ensure_asset(188U);
+    status.pylon_power_asset_index =
+        sprite_images != nullptr &&
+                sprite_images->value(198U, pylon_power_image)
+            ? ensure_asset(pylon_power_image)
+            : SIZE_MAX;
+    protoss_construction_assets_ready =
+        status.protoss_warp_asset_index != SIZE_MAX &&
+        status.protoss_materialize_asset_index != SIZE_MAX &&
+        status.pylon_power_asset_index != SIZE_MAX;
+    if (!protoss_construction_assets_ready) {
+      starcraft::data::ImageRenderTraits warp_traits{};
+      starcraft::data::ImageRenderTraits materialize_traits{};
+      starcraft::data::ImageRenderTraits power_traits{};
+      (void)data.image_render_traits(189U, warp_traits);
+      (void)data.image_render_traits(188U, materialize_traits);
+      (void)data.image_render_traits(pylon_power_image, power_traits);
+      protoss_asset_failure =
+          "Protoss assets 189/188/power: " +
+          std::to_string(status.protoss_warp_asset_index) + "/" +
+          std::to_string(status.protoss_materialize_asset_index) + "/" +
+          std::to_string(status.pylon_power_asset_index) +
+          "; sprite 198 image " + std::to_string(pylon_power_image) +
+          "; draw " + std::to_string(warp_traits.draw_function) + "/" +
+          std::to_string(materialize_traits.draw_function) + "/" +
+          std::to_string(power_traits.draw_function) + ".";
+    }
 
     build_assets_ready = true;
     const starcraft::lang::TerranUnitTypeView terran_buildables =
@@ -798,6 +958,39 @@ BootstrapStatus probe_assets(
     build_assets_ready = cache_buildable_view(terran_buildables) &&
                          cache_buildable_view(zerg_buildables) &&
                          cache_buildable_view(protoss_buildables);
+    // CUnitPBuild.cpp::sub_43BDF0 phase two dispatches action 21 to the
+    // restored primary image. Those scripts create a building-specific child
+    // image (Nexus creates image 160, for example), and that child delivers
+    // the final opcode-0x27 bit-1 signal. Cache every such child while the
+    // read-only MPQs are open so restart_unit_animation can attach it.
+    if (build_assets_ready) {
+      const starcraft::lang::IScriptProgramView program{
+          status.iscript_bytes.data(), status.iscript_bytes.size()};
+      for (std::size_t index = 0; index < protoss_buildables.count; ++index) {
+        const std::uint16_t unit_type = protoss_buildables.unit_types[index];
+        const RuntimeUnitType &runtime = status.runtime_unit_types[unit_type];
+        if (!runtime.ready || runtime.asset_index >= status.unit_assets.size()) {
+          build_assets_ready = false;
+          break;
+        }
+        const std::uint16_t script_id =
+            status.unit_assets[runtime.asset_index].iscript_id;
+        starcraft::lang::IScriptState completion{};
+        if (!program.start(script_id, 21U, completion)) {
+          build_assets_ready = false;
+          break;
+        }
+        const auto result = program.tick(
+            completion, 0U, 256U, nullptr, scenario.tileset_id());
+        if ((result != starcraft::lang::IScriptTickResult::yielded &&
+             result != starcraft::lang::IScriptTickResult::sleeping) ||
+            completion.overlay_event_count == 0U ||
+            ensure_asset(completion.overlay_image) == SIZE_MAX) {
+          build_assets_ready = false;
+          break;
+        }
+      }
+    }
     if (!build_assets_ready) {
       status.buildable_units.clear();
     }
@@ -871,9 +1064,12 @@ BootstrapStatus probe_assets(
     (void)status.pathing_map.build(terrain_tileset, scenario);
     status.scenario = std::move(scenario);
     status.terrain_tileset = std::move(terrain_tileset);
+    status.player_mineral_stock[0] = status.player_minerals;
+    status.player_gas_stock[0] = status.player_gas;
     melee_start_ready =
         settle_melee_starting_workers(status) && melee_start_ready;
     (void)rebuild_creep_tiles(status);
+    (void)initialize_ai_players(status);
   }
 
   const bool patch_closed = storm.close_archive(patch_archive);
@@ -881,9 +1077,11 @@ BootstrapStatus probe_assets(
   status.assets_ready =
       map_loaded && scenario_loaded && data_loaded && focus_unit_found &&
       focus_asset_ready && scv_asset_ready && palette_loaded &&
-      cargo_assets_ready && working_overlay_asset_ready && build_assets_ready &&
+      cargo_assets_ready && worker_mining_effects_ready &&
+      working_overlay_asset_ready && build_assets_ready &&
+      protoss_construction_assets_ready &&
       production_assets_ready && portrait_assets_ready && melee_start_ready &&
-      research_data_ready &&
+      research_data_ready && ai_scripts_ready &&
       status.terrain_ready && status.hud_ready && status.wireframe_ready &&
       status.group_wireframe_ready && status.status_panel_ready &&
       status.resource_panel_ready && status.resource_icons_ready &&
@@ -894,10 +1092,14 @@ BootstrapStatus probe_assets(
       status.music_available && status.command_panel_ready &&
       status.portrait_panel_ready && status.minimap_ready &&
       status.team_colors_ready && status.pathing_map.valid() &&
+      status.selection_colors_ready &&
       status.creep_tiles.size() ==
           static_cast<std::size_t>(status.scenario_width) *
               status.scenario_height &&
       status.creep_visual_tiles.size() ==
+          static_cast<std::size_t>(status.scenario_width) *
+              status.scenario_height &&
+      status.creep_edge_frames.size() ==
           static_cast<std::size_t>(status.scenario_width) *
               status.scenario_height &&
       status.scenario.valid() && status.active_player_count >= 2 &&
@@ -936,8 +1138,12 @@ BootstrapStatus probe_assets(
       status.detail = "The SCV runtime asset did not initialize.";
     } else if (!palette_loaded) {
       status.detail = "The selected ERA palette did not load.";
-    } else if (!cargo_assets_ready || !working_overlay_asset_ready) {
-      status.detail = "A worker cargo or building-working image failed.";
+    } else if (!cargo_assets_ready || !worker_mining_effects_ready ||
+               !working_overlay_asset_ready) {
+      status.detail =
+          "A worker cargo, mining effect, or building-working image failed.";
+    } else if (!protoss_construction_assets_ready) {
+      status.detail = protoss_asset_failure;
     } else if (!build_assets_ready || !production_assets_ready) {
       status.detail = "A production or building runtime asset failed.";
     } else if (!portrait_assets_ready) {
@@ -945,10 +1151,14 @@ BootstrapStatus probe_assets(
     } else if (!melee_start_ready) {
       status.detail =
           "The recovered melee base/worker placement could not settle.";
+    } else if (!ai_scripts_ready) {
+      status.detail = "scripts\\aiscript.bin did not load.";
     } else if (!status.terrain_ready) {
       status.detail = "The selected ERA terrain did not render.";
     } else if (!status.hud_ready) {
       status.detail = "The selected race console PCX did not decode.";
+    } else if (!status.selection_colors_ready) {
+      status.detail = "game\\tselect.pcx did not decode.";
     } else if (!status.wireframe_ready || !status.group_wireframe_ready) {
       status.detail = "A selected-unit wireframe asset did not decode.";
     } else if (!status.status_panel_ready || !status.resource_panel_ready ||
@@ -978,6 +1188,9 @@ BootstrapStatus probe_assets(
                    static_cast<std::size_t>(status.scenario_width) *
                        status.scenario_height ||
                status.creep_visual_tiles.size() !=
+                   static_cast<std::size_t>(status.scenario_width) *
+                       status.scenario_height ||
+               status.creep_edge_frames.size() !=
                    static_cast<std::size_t>(status.scenario_width) *
                        status.scenario_height) {
       status.detail = "The selected map creep grids did not initialize.";

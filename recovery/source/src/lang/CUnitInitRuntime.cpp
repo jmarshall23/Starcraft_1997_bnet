@@ -20,6 +20,8 @@ bool configure_preview_type(BootstrapStatus &status, ScenarioUnitPreview &unit,
   const UnitRenderAsset &asset = status.unit_assets[runtime.asset_index];
   unit.unit_type = unit_type;
   unit.asset_index = runtime.asset_index;
+  unit.selection_circle_asset_index = runtime.selection_circle_asset_index;
+  unit.selection_circle_y_offset = initialization.selection_circle_y_offset;
   unit.selection_width = initialization.placement_width;
   unit.selection_height = initialization.placement_height;
   unit.collision_left =
@@ -69,6 +71,7 @@ void apply_initialization_traits(
     ScenarioUnitPreview &unit,
     const starcraft::lang::UnitInitializationData &initialization) noexcept {
   apply_simulation_traits(unit, initialization.simulation);
+  unit.sprite_elevation = initialization.sprite_elevation;
   unit.movement_top_speed =
       initialization.has_movement ? initialization.movement.top_speed : 0U;
   unit.movement_acceleration =

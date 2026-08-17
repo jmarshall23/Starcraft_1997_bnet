@@ -72,12 +72,5 @@ int WINAPI WinMain(const HINSTANCE instance, HINSTANCE, LPSTR command_line,
 
   ShowWindow(window, show_command);
   UpdateWindow(window);
-  SetTimer(window, 1, kSimulationTickMilliseconds, nullptr);
-
-  MSG message{};
-  while (GetMessageA(&message, nullptr, 0, 0) > 0) {
-    TranslateMessage(&message);
-    DispatchMessageA(&message);
-  }
-  return static_cast<int>(message.wParam);
+  return run_game_loop(window, window_state);
 }

@@ -16,10 +16,16 @@ namespace starcraft::recovery {
 
 bool apply_preview_draw_function(const std::uint8_t draw_function,
                                  std::vector<SpritePreviewFrame> &frames) {
-  if (draw_function == 0 || draw_function == 14) {
+  if (draw_function == 0 || draw_function == 8 || draw_function == 12 ||
+      draw_function == 13 || draw_function == 14) {
     // Renderer 14 is the worker-inventory image path. sub_411280 stores the
     // carried amount on the image; its GRP pixels and attached cargo overlay
     // remain ordinary palette imagery for the bootstrap's true-color pass.
+    // Renderer 12 dispatches to the same sub_4BE449/sub_4BF3CA pair as the
+    // normal renderer. Renderer 8's sub_4BEB5C uses the GRP pixels as the
+    // high byte of a destination-palette lookup; retain those source pixels
+    // and their exact opacity here so the OpenGL composition path has the
+    // recovered warp/power mask instead of rejecting the image.
     return true;
   }
   if (draw_function != 9) {
@@ -90,6 +96,7 @@ bool load_unit_render_asset(starcraft::runtime::StormModule &storm,
     return false;
   }
   asset.image_draw_function = main_traits.draw_function;
+  asset.image_remapping = main_traits.remapping;
   asset.graphics_turns = main_traits.graphics_turns;
   asset.iscript_ready = true;
 
@@ -118,6 +125,8 @@ bool load_unit_render_asset(starcraft::runtime::StormModule &storm,
       return false;
     }
     asset.overlay_draw_function = overlay_traits.draw_function;
+    asset.overlay_remapping = overlay_traits.remapping;
+    asset.overlay_graphics_turns = overlay_traits.graphics_turns;
     asset.overlay_ready = true;
   }
   output = std::move(asset);
@@ -151,6 +160,110 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
                        static_cast<int>(asset.sprite_canvas_width) / 2;
   const int origin_y = unit.y - status.camera_y -
                        static_cast<int>(asset.sprite_canvas_height) / 2;
+  const auto draw_image = [&](const SpritePreviewFrame &frame,
+                              const std::uint8_t draw_function,
+                              const std::uint8_t remapping, const float x,
+                              const float y, const bool mirrored = false) {
+    if (draw_function == 13U) {
+      // CImage.cpp::sub_410260 forces renderer 13 on images 532+N and stores
+      // the selection-set color in CImage+0x38. sub_409820 selects one of the
+      // three eight-shade rows loaded from game\tselect.pcx. This bootstrap's
+      // selected set is local, so it uses the exact row zero palette indices.
+      if (frame.palette_indices.size() == frame.bgra.size() &&
+          frame.opacity.size() == frame.bgra.size() &&
+          status.selection_colors_ready && status.game_palette.size() == 1024U) {
+        try {
+          std::vector<std::uint32_t> translated(frame.bgra.size(), 0U);
+          for (std::size_t pixel = 0; pixel < translated.size(); ++pixel) {
+            const std::uint8_t source = frame.palette_indices[pixel];
+            if (frame.opacity[pixel] != 0U && source >= 1U && source <= 8U) {
+              const std::uint8_t palette_index =
+                  status.selection_color_indices[0][source - 1U];
+              const std::size_t color = 4U * palette_index;
+              const std::uint32_t red = status.game_palette[color];
+              const std::uint32_t green = status.game_palette[color + 1U];
+              const std::uint32_t blue = status.game_palette[color + 2U];
+              translated[pixel] =
+                  0xFF000000U | blue | (green << 8U) | (red << 16U);
+            }
+          }
+          draw_preview_frame_gl(frame, x, y, frame.width, frame.height,
+                                translated.data(), mirrored);
+          return;
+        } catch (...) {
+        }
+      }
+      draw_preview_frame_gl(frame, x, y, frame.width, frame.height, nullptr,
+                            mirrored);
+      return;
+    }
+    if (draw_function != 8U) {
+      draw_preview_frame_gl(frame, x, y, frame.width, frame.height, nullptr,
+                            mirrored);
+      return;
+    }
+    if (remapping >= status.image_color_shifts.size() ||
+        status.image_color_shifts[remapping].size() < 256U ||
+        (status.image_color_shifts[remapping].size() & 0xFFU) != 0U ||
+        status.game_palette.size() != 1024U ||
+        frame.palette_indices.size() != frame.bgra.size() ||
+        frame.opacity.size() != frame.bgra.size() ||
+        status.terrain.bgra.size() !=
+            static_cast<std::size_t>(kMapViewportWidth) * kMapViewportHeight ||
+        status.terrain.palette_indices.size() != status.terrain.bgra.size()) {
+      // Renderer 8 GRPs are lookup masks. Drawing their literal source
+      // palette produces the large blue/lavender rectangles seen around the
+      // Pylon field. If its licensed lookup is unavailable, keep the mask
+      // transparent rather than displaying data that the original never
+      // presented as art.
+      return;
+    }
+    try {
+      std::vector<std::uint32_t> shifted(frame.bgra.size(), 0U);
+      const auto &lookup = status.image_color_shifts[remapping];
+      for (std::size_t source_y = 0; source_y < frame.height; ++source_y) {
+        for (std::size_t source_x = 0; source_x < frame.width; ++source_x) {
+          const std::size_t pixel = source_y * frame.width + source_x;
+          if (frame.opacity[pixel] == 0U) {
+            continue;
+          }
+          const int destination_x = static_cast<int>(x) +
+                                    static_cast<int>(source_x);
+          const int destination_y = static_cast<int>(y) +
+                                    static_cast<int>(source_y);
+          std::uint8_t destination_index{};
+          if (destination_x >= 0 && destination_y >= 0 &&
+              destination_x < kMapViewportWidth &&
+              destination_y < kMapViewportHeight) {
+            destination_index = status.terrain.palette_indices[
+                static_cast<std::size_t>(destination_y) * kMapViewportWidth +
+                destination_x];
+          }
+          const std::size_t lookup_index =
+              (static_cast<std::size_t>(frame.palette_indices[pixel]) << 8U) |
+              destination_index;
+          if (lookup_index >= lookup.size()) {
+            // A draw-function-8 image is a lookup mask, never literal GRP
+            // color art. Corrupt/out-of-range mask rows therefore remain
+            // transparent instead of exposing the raw lavender mask.
+            continue;
+          }
+          const std::uint8_t shifted_index = lookup[lookup_index];
+          const std::size_t color = 4U * shifted_index;
+          shifted[pixel] =
+              0xFF000000U | status.game_palette[color + 2U] |
+              (static_cast<std::uint32_t>(status.game_palette[color + 1U])
+               << 8U) |
+              (static_cast<std::uint32_t>(status.game_palette[color]) << 16U);
+        }
+      }
+      draw_preview_frame_gl(frame, x, y, frame.width, frame.height,
+                            shifted.data(), mirrored);
+    } catch (...) {
+      draw_preview_frame_gl(frame, x, y, frame.width, frame.height, nullptr,
+                            mirrored);
+    }
+  };
   const auto draw_dynamic_overlay = [&](const bool above) {
     if (!unit.dynamic_overlay_ready || unit.dynamic_overlay_above != above ||
         unit.dynamic_overlay_iscript_state.hidden ||
@@ -159,12 +272,21 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
     }
     const UnitRenderAsset &overlay_asset =
         status.unit_assets[unit.dynamic_overlay_asset_index];
-    if (unit.current_dynamic_overlay_frame >=
-        overlay_asset.sprite_frames.size()) {
+    std::size_t overlay_frame = unit.current_dynamic_overlay_frame;
+    bool overlay_mirrored = unit.dynamic_overlay_iscript_state.mirrored;
+    if (overlay_asset.graphics_turns) {
+      const starcraft::game::ImageFacingFrame facing =
+          starcraft::game::image_facing_frame(unit.direction);
+      overlay_mirrored = overlay_mirrored != facing.mirrored;
+      if (overlay_frame + facing.frame < overlay_asset.sprite_frames.size()) {
+        overlay_frame += facing.frame;
+      }
+    }
+    if (overlay_frame >= overlay_asset.sprite_frames.size()) {
       return;
     }
     const SpritePreviewFrame &overlay =
-        overlay_asset.sprite_frames[unit.current_dynamic_overlay_frame];
+        overlay_asset.sprite_frames[overlay_frame];
     const float overlay_x =
         static_cast<float>(origin_x + static_cast<int>(overlay.x_offset) +
                            unit.dynamic_overlay_x_offset +
@@ -175,37 +297,53 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
                            unit.dynamic_overlay_iscript_state.y_offset);
     if (overlay_asset.image_draw_function == 0) {
       draw_team_colored_frame_gl(status, overlay, unit.owner, overlay_x,
-                                 overlay_y, overlay.width, overlay.height);
+                                 overlay_y, overlay.width, overlay.height,
+                                 overlay_mirrored);
     } else {
-      draw_preview_frame_gl(overlay, overlay_x, overlay_y, overlay.width,
-                            overlay.height);
+      draw_image(overlay, overlay_asset.image_draw_function,
+                 overlay_asset.image_remapping, overlay_x, overlay_y,
+                 overlay_mirrored);
     }
   };
-  if (unit.selected) {
-    constexpr float pi = 3.14159265358979323846F;
-    const float center_x = static_cast<float>(unit.x - status.camera_x);
-    const float center_y = static_cast<float>(unit.y - status.camera_y);
-    const float radius_x = static_cast<float>(unit.selection_width) / 2.0F;
-    const float radius_y = static_cast<float>(unit.selection_height) / 2.0F;
-    glDisable(GL_TEXTURE_2D);
-    glColor4ub(32, 255, 32, 255);
-    glLineWidth(2.0F);
-    glBegin(GL_LINE_LOOP);
-    for (int segment = 0; segment < 48; ++segment) {
-      const float angle = 2.0F * pi * static_cast<float>(segment) / 48.0F;
-      glVertex2f(center_x + radius_x * std::cos(angle),
-                 center_y + radius_y * std::sin(angle));
+  if (!unit.construction_visible) {
+    draw_dynamic_overlay(false);
+    draw_dynamic_overlay(true);
+    return;
+  }
+  if (unit.selected &&
+      unit.selection_circle_asset_index < status.unit_assets.size()) {
+    // CSprite::sub_41C550 attaches image 532+sprites.dat[3] below the
+    // primary image and CImage::sub_410260 applies sprites.dat[4] to Y.
+    const UnitRenderAsset &circle_asset =
+        status.unit_assets[unit.selection_circle_asset_index];
+    const std::size_t circle_frame =
+        circle_asset.initial_iscript_state.frame;
+    if (circle_frame < circle_asset.sprite_frames.size()) {
+      const SpritePreviewFrame &circle =
+          circle_asset.sprite_frames[circle_frame];
+      const float circle_x = static_cast<float>(
+          unit.x - status.camera_x - circle_asset.sprite_canvas_width / 2 +
+          static_cast<int>(circle.x_offset));
+      const float circle_y = static_cast<float>(
+          unit.y - status.camera_y - circle_asset.sprite_canvas_height / 2 +
+          static_cast<int>(circle.y_offset) + unit.selection_circle_y_offset);
+      draw_image(circle, 13U, 0U, circle_x, circle_y);
     }
-    glEnd();
-    glLineWidth(1.0F);
-    glColor4ub(255, 255, 255, 255);
-    glEnable(GL_TEXTURE_2D);
   }
   if (unit.overlay_ready && !asset.overlay_above &&
       !unit.overlay_iscript_state.hidden && !asset.overlay_frames.empty() &&
       unit.current_overlay_frame < asset.overlay_frames.size()) {
-    const SpritePreviewFrame &overlay =
-        asset.overlay_frames[unit.current_overlay_frame];
+    std::size_t overlay_frame = unit.current_overlay_frame;
+    bool overlay_mirrored = unit.overlay_iscript_state.mirrored;
+    if (asset.overlay_graphics_turns) {
+      const starcraft::game::ImageFacingFrame facing =
+          starcraft::game::image_facing_frame(unit.direction);
+      overlay_mirrored = overlay_mirrored != facing.mirrored;
+      if (overlay_frame + facing.frame < asset.overlay_frames.size()) {
+        overlay_frame += facing.frame;
+      }
+    }
+    const SpritePreviewFrame &overlay = asset.overlay_frames[overlay_frame];
     const float overlay_x = static_cast<float>(
         origin_x + static_cast<int>(overlay.x_offset) + asset.overlay_x_offset +
         unit.overlay_iscript_state.x_offset);
@@ -214,10 +352,12 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
         unit.overlay_iscript_state.y_offset);
     if (asset.overlay_draw_function == 0) {
       draw_team_colored_frame_gl(status, overlay, unit.owner, overlay_x,
-                                 overlay_y, overlay.width, overlay.height);
+                                 overlay_y, overlay.width, overlay.height,
+                                 overlay_mirrored);
     } else {
-      draw_preview_frame_gl(overlay, overlay_x, overlay_y, overlay.width,
-                            overlay.height);
+      draw_image(overlay, asset.overlay_draw_function,
+                 asset.overlay_remapping, overlay_x, overlay_y,
+                 overlay_mirrored);
     }
   }
   draw_dynamic_overlay(false);
@@ -232,14 +372,23 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
     draw_team_colored_frame_gl(status, frame, unit.owner, frame_x, frame_y,
                                frame.width, frame.height, sprite_mirrored);
   } else {
-    draw_preview_frame_gl(frame, frame_x, frame_y, frame.width, frame.height,
-                          nullptr, sprite_mirrored);
+    draw_image(frame, asset.image_draw_function, asset.image_remapping,
+               frame_x, frame_y, sprite_mirrored);
   }
   if (unit.overlay_ready && asset.overlay_above &&
       !unit.overlay_iscript_state.hidden && !asset.overlay_frames.empty() &&
       unit.current_overlay_frame < asset.overlay_frames.size()) {
-    const SpritePreviewFrame &overlay =
-        asset.overlay_frames[unit.current_overlay_frame];
+    std::size_t overlay_frame = unit.current_overlay_frame;
+    bool overlay_mirrored = unit.overlay_iscript_state.mirrored;
+    if (asset.overlay_graphics_turns) {
+      const starcraft::game::ImageFacingFrame facing =
+          starcraft::game::image_facing_frame(unit.direction);
+      overlay_mirrored = overlay_mirrored != facing.mirrored;
+      if (overlay_frame + facing.frame < asset.overlay_frames.size()) {
+        overlay_frame += facing.frame;
+      }
+    }
+    const SpritePreviewFrame &overlay = asset.overlay_frames[overlay_frame];
     const float overlay_x = static_cast<float>(
         origin_x + static_cast<int>(overlay.x_offset) + asset.overlay_x_offset +
         unit.overlay_iscript_state.x_offset);
@@ -248,10 +397,12 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
         unit.overlay_iscript_state.y_offset);
     if (asset.overlay_draw_function == 0) {
       draw_team_colored_frame_gl(status, overlay, unit.owner, overlay_x,
-                                 overlay_y, overlay.width, overlay.height);
+                                 overlay_y, overlay.width, overlay.height,
+                                 overlay_mirrored);
     } else {
-      draw_preview_frame_gl(overlay, overlay_x, overlay_y, overlay.width,
-                            overlay.height);
+      draw_image(overlay, asset.overlay_draw_function,
+                 asset.overlay_remapping, overlay_x, overlay_y,
+                 overlay_mirrored);
     }
   }
   draw_dynamic_overlay(true);

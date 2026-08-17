@@ -10,13 +10,17 @@ namespace starcraft::lang {
 struct UnitInitializationData {
   std::uint16_t unit_type{};
   std::uint16_t image_id{};
+  std::uint16_t selection_circle_image_id{};
+  std::int8_t selection_circle_y_offset{};
   std::uint16_t placement_width{};
   std::uint16_t placement_height{};
   CollisionExtents collision{};
   data::FlingyMovementTraits movement{};
   data::UnitSimulationTraits simulation{};
+  std::uint8_t sprite_elevation{};
   bool is_building{};
   bool has_movement{};
+  bool has_selection_circle{};
 };
 
 [[nodiscard]] bool recover_unit_initialization(

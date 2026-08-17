@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include "starcraft/gds/grp.hpp"
+
 namespace starcraft::runtime {
 class StormModule;
 }
@@ -33,7 +35,8 @@ class TilesetData final {
       std::vector<std::uint8_t> vx4,
       std::vector<std::uint8_t> vr4,
       std::vector<std::uint8_t> vf4,
-      std::vector<std::uint8_t> wpe) noexcept;
+      std::vector<std::uint8_t> wpe,
+      std::vector<std::uint8_t> creep_grp = {}) noexcept;
 
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] std::size_t group_count() const noexcept;
@@ -57,6 +60,9 @@ class TilesetData final {
       std::uint8_t minitile_x,
       std::uint8_t minitile_y) const noexcept;
   [[nodiscard]] bool buildable(std::uint16_t map_tile_id) const noexcept;
+  [[nodiscard]] bool creep_edge_frame(
+      std::uint8_t one_based_frame,
+      DecodedGrpFrame& output) const noexcept;
 
  private:
   [[nodiscard]] static std::uint16_t read_u16(
@@ -68,6 +74,7 @@ class TilesetData final {
   std::vector<std::uint8_t> vr4_{};
   std::vector<std::uint8_t> vf4_{};
   std::vector<std::uint8_t> wpe_{};
+  std::vector<std::uint8_t> creep_grp_{};
   std::string failed_asset_{};
   bool valid_{};
 };
