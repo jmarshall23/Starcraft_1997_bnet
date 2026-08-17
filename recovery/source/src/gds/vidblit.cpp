@@ -84,7 +84,11 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   if (glue_active(state.glue)) {
     (void)render_glue(state);
   } else if (status != nullptr && status->terrain_ready) {
-    draw_preview_frame_gl(status->terrain, 0.0F, 0.0F,
+    const SpritePreviewFrame &terrain_frame =
+        status->fog_of_war_enabled && status->fog_render_surfaces_ready
+            ? status->fogged_terrain
+            : status->terrain;
+    draw_preview_frame_gl(terrain_frame, 0.0F, 0.0F,
                           static_cast<float>(kMapViewportWidth),
                           static_cast<float>(kMapViewportHeight));
     draw_pylon_power_fields_gl(*status);
@@ -92,12 +96,14 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
       std::vector<const ScenarioUnitPreview *> sprites;
       sprites.reserve(status->units.size() + status->transient_images.size());
       for (const ScenarioUnitPreview &unit : status->units) {
-        if (sprite_intersects_world_viewport(*status, unit)) {
+        if (sprite_intersects_world_viewport(*status, unit) &&
+            fog_unit_visible(*status, unit)) {
           sprites.push_back(&unit);
         }
       }
       for (const ScenarioUnitPreview &effect : status->transient_images) {
-        if (sprite_intersects_world_viewport(*status, effect)) {
+        if (sprite_intersects_world_viewport(*status, effect) &&
+            fog_unit_visible(*status, effect)) {
           sprites.push_back(&effect);
         }
       }
@@ -112,7 +118,9 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
       }
     } catch (...) {
       for (const ScenarioUnitPreview &unit : status->units) {
-        draw_scenario_unit_gl(*status, unit);
+        if (fog_unit_visible(*status, unit)) {
+          draw_scenario_unit_gl(*status, unit);
+        }
       }
     }
     draw_building_placement_gl(*status);

@@ -46,7 +46,8 @@ void complete_selection_drag(RecoveryWindowState &state) noexcept {
     std::uint64_t best_distance = UINT64_MAX;
     for (std::size_t index = 0; index < status->units.size(); ++index) {
       const ScenarioUnitPreview &unit = status->units[index];
-      if (!unit.alive || unit.dying || unit.sprite_hidden) {
+      if (!unit.alive || unit.dying || unit.sprite_hidden ||
+          !fog_unit_visible(*status, unit)) {
         continue;
       }
       const int center_x = unit.x - status->camera_x;
@@ -95,7 +96,8 @@ void complete_selection_drag(RecoveryWindowState &state) noexcept {
       (std::max)(state.selection_start_y, state.selection_current_y);
   std::size_t selected = selection_count(*status);
   for (ScenarioUnitPreview &unit : status->units) {
-    if (!unit.alive || unit.dying || unit.sprite_hidden) {
+    if (!unit.alive || unit.dying || unit.sprite_hidden ||
+        !fog_unit_visible(*status, unit)) {
       continue;
     }
     const int center_x = unit.x - status->camera_x;

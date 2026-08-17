@@ -39,6 +39,12 @@ bool queue_positional_game_sound(BootstrapStatus &status,
                                  const std::uint16_t sound_id,
                                  const std::uint16_t world_x,
                                  const std::uint16_t world_y) noexcept {
+  // gamesnd.cpp::sub_455370 tests the local player bit in the map-mask word
+  // before allocating a positional channel. Sounds in unrevealed/fogged map
+  // space do not leak enemy activity.
+  if (!fog_world_position_visible(status, world_x, world_y)) {
+    return false;
+  }
   return queue_sound_event(
       status, PendingGameSound{sound_id, world_x, world_y, true});
 }

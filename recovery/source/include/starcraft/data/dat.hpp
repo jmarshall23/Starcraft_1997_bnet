@@ -115,6 +115,7 @@ struct UnitSimulationTraits {
   std::uint8_t air_weapon_damage_class{};
   std::uint8_t air_weapon_cooldown{};
   std::uint8_t seek_range{};
+  std::uint8_t sight_range{};
   std::uint8_t cargo_space_required{};
   std::uint8_t cargo_space_provided{};
   bool has_ground_weapon{};

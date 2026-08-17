@@ -1235,7 +1235,8 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
   const ScenarioUnitPreview *hit{};
   std::uint64_t best_distance = UINT64_MAX;
   for (const ScenarioUnitPreview &unit : status.units) {
-    if (!unit.alive || unit.sprite_hidden || unit.selected) {
+    if (!unit.alive || unit.sprite_hidden || unit.selected ||
+        !fog_unit_visible(status, unit)) {
       continue;
     }
     const int half_width = static_cast<int>(unit.selection_width) / 2;
@@ -1383,7 +1384,8 @@ std::size_t issue_scv_smart_order(BootstrapStatus &status,
   const ScenarioUnitPreview *hit{};
   std::uint64_t best_distance = UINT64_MAX;
   for (const ScenarioUnitPreview &unit : status.units) {
-    if (!unit.alive || unit.sprite_hidden || unit.selected) {
+    if (!unit.alive || unit.sprite_hidden || unit.selected ||
+        !fog_unit_visible(status, unit)) {
       continue;
     }
     const int half_width = static_cast<int>(unit.selection_width) / 2;

@@ -52,6 +52,9 @@ bool set_camera_position(BootstrapStatus &status, const int requested_x,
   status.camera_tile_y = static_cast<std::uint16_t>(camera_y / 32);
   status.terrain = std::move(terrain);
   status.terrain_ready = true;
+  if (!status.fog_map_tiles.empty()) {
+    (void)rebuild_fog_render_surfaces(status);
+  }
   return true;
 }
 

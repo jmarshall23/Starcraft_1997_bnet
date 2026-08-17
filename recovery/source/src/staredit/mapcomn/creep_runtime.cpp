@@ -128,6 +128,9 @@ bool rebuild_creep_tiles(BootstrapStatus &status) noexcept {
       }
       status.minimap = std::move(minimap);
       status.minimap_ready = true;
+      if (!status.fog_map_tiles.empty()) {
+        (void)rebuild_fog_render_surfaces(status);
+      }
     }
     const bool complete = status.creep_tiles.size() == tile_count &&
                           status.creep_visual_tiles.size() == tile_count &&

@@ -356,6 +356,17 @@ BootstrapStatus probe_assets(
           status.image_color_shifts[shift] = std::move(table);
         }
       }
+      // light.cpp::sub_46A670 loads this exact 256x32 palette-translation
+      // surface. mask.cpp::sub_46D780 selects level 0 for black shroud, 15
+      // for explored fog, and 31 for fully visible terrain.
+      std::string dark_path = "Tileset\\";
+      dark_path.append(recovered_tileset_name);
+      dark_path += R"(\dark.pcx)";
+      starcraft::runtime::DecodedPcx dark{};
+      if (storm.load_pcx(dark_path.c_str(), dark) && dark.width == 256U &&
+          dark.height == 32U && dark.pixels.size() == 32U * 256U) {
+        status.terrain_dark_levels = std::move(dark.pixels);
+      }
       // CImage.cpp::sub_40FB60 loads game\tselect.pcx as a 24-byte table.
       // Renderer 13 (sub_409820) consumes it as three eight-shade outline
       // rows selected by CUnitColor's local/allied/enemy value 0..2.
@@ -1239,7 +1250,9 @@ BootstrapStatus probe_assets(
     melee_start_ready =
         settle_melee_starting_workers(status) && melee_start_ready;
     (void)rebuild_creep_tiles(status);
+    const bool fog_ready = initialize_fog_of_war(status);
     (void)initialize_ai_players(status);
+    melee_start_ready = melee_start_ready && fog_ready;
   }
 
   const bool patch_closed = storm.close_archive(patch_archive);
@@ -1264,6 +1277,11 @@ BootstrapStatus probe_assets(
       status.portrait_panel_ready && status.minimap_ready &&
       status.team_colors_ready && status.pathing_map.valid() &&
       status.selection_colors_ready &&
+      status.terrain_dark_levels.size() == 32U * 256U &&
+      status.fog_map_tiles.size() ==
+          static_cast<std::size_t>(status.scenario_width) *
+              status.scenario_height &&
+      status.fog_render_surfaces_ready &&
       status.creep_tiles.size() ==
           static_cast<std::size_t>(status.scenario_width) *
               status.scenario_height &&
@@ -1333,6 +1351,9 @@ BootstrapStatus probe_assets(
       status.detail = "The selected race console PCX did not decode.";
     } else if (!status.selection_colors_ready) {
       status.detail = "game\\tselect.pcx did not decode.";
+    } else if (status.terrain_dark_levels.size() != 32U * 256U ||
+               !status.fog_render_surfaces_ready) {
+      status.detail = "The recovered dark.pcx fog mask did not initialize.";
     } else if (!status.wireframe_ready || !status.group_wireframe_ready) {
       status.detail = "A selected-unit wireframe asset did not decode.";
     } else if (!status.status_panel_ready || !status.resource_panel_ready ||

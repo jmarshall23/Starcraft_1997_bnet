@@ -48,6 +48,18 @@ void set_all_gas(BootstrapStatus &status) noexcept {
   status.player_gas_stock.fill(kFullResourceAmount);
 }
 
+bool set_boolean_cvar(const std::string_view value, bool &target) noexcept {
+  if (value == "1" || value == "on" || value == "true") {
+    target = true;
+    return true;
+  }
+  if (value == "0" || value == "off" || value == "false") {
+    target = false;
+    return true;
+  }
+  return false;
+}
+
 } // namespace
 
 bool initialize_debug_console(const HWND window,
@@ -88,6 +100,37 @@ bool execute_debug_console_command(BootstrapStatus &status,
                                    const std::string_view command,
                                    std::string &result) noexcept {
   const std::string normalized = normalized_command(command);
+  std::string_view cvar_command = normalized;
+  if (cvar_command.rfind("set ", 0U) == 0U) {
+    cvar_command.remove_prefix(4U);
+  }
+  const std::size_t separator = cvar_command.find(' ');
+  const std::string_view cvar_name = cvar_command.substr(0U, separator);
+  const std::string_view cvar_value =
+      separator == std::string_view::npos
+          ? std::string_view{}
+          : cvar_command.substr(cvar_command.find_first_not_of(' ', separator));
+  if (cvar_name == "fog_of_war" || cvar_name == "r_fog_of_war" ||
+      cvar_name == "fow") {
+    if (!cvar_value.empty() &&
+        !set_boolean_cvar(cvar_value, status.fog_of_war_enabled)) {
+      result = "fog_of_war expects 0/1, off/on, or false/true";
+      return false;
+    }
+    if (status.fog_of_war_enabled) {
+      // A disabled renderer never mutates the recovered current/explored
+      // masks. Re-enabling can therefore use the live history directly.
+      (void)rebuild_fog_render_surfaces(status);
+      for (ScenarioUnitPreview &unit : status.units) {
+        if (unit.selected && !fog_unit_visible(status, unit)) {
+          unit.selected = false;
+        }
+      }
+    }
+    result = std::string{"fog_of_war = "} +
+             (status.fog_of_war_enabled ? "1" : "0");
+    return true;
+  }
   if (normalized == "fullmoney") {
     set_all_minerals(status);
     set_all_gas(status);
@@ -105,7 +148,8 @@ bool execute_debug_console_command(BootstrapStatus &status,
     return true;
   }
   if (normalized == "help") {
-    result = "commands: fullmoney, fullminerals, fullgas, clear, help";
+    result = "commands: fog_of_war [0|1], fullmoney, fullminerals, "
+             "fullgas, clear, help";
     return true;
   }
   result = normalized.empty() ? "empty command"

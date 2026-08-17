@@ -39,6 +39,7 @@ class MultiplayerScenario final {
   [[nodiscard]] const std::array<ScenarioPlayer, data::chk_player_slot_count>& players()
       const noexcept;
   [[nodiscard]] const std::vector<std::uint16_t>& tiles() const noexcept;
+  [[nodiscard]] const std::vector<std::uint8_t>& fog_mask() const noexcept;
   [[nodiscard]] const std::vector<ScenarioUnit>& units() const noexcept;
   [[nodiscard]] const std::array<ScenarioStartLocation, data::chk_player_slot_count>&
   start_locations() const noexcept;
@@ -56,6 +57,7 @@ class MultiplayerScenario final {
   std::uint16_t tileset_id_{};
   std::array<ScenarioPlayer, data::chk_player_slot_count> players_{};
   std::vector<std::uint16_t> tiles_{};
+  std::vector<std::uint8_t> fog_mask_{};
   std::vector<ScenarioUnit> units_{};
   std::array<ScenarioStartLocation, data::chk_player_slot_count> start_locations_{};
   std::size_t active_player_count_{};

@@ -537,6 +537,7 @@ struct ScenarioUnitPreview {
   std::uint8_t air_weapon_cooldown{};
   std::uint8_t air_weapon_upgrade{46U};
   std::uint8_t seek_range{};
+  std::uint8_t sight_range{};
   std::uint8_t armor_upgrade{46U};
   std::uint8_t cargo_space_provided{};
   std::uint8_t cargo_space_required{};
@@ -603,6 +604,22 @@ struct CreepSourceRuntimeState {
   std::uint16_t placement_height{};
   bool alive{};
   bool complete{};
+};
+
+struct VisionSourceRuntimeState {
+  std::uint32_t unit_id{};
+  std::uint16_t tile_x{};
+  std::uint16_t tile_y{};
+  std::uint8_t owner{};
+  std::uint8_t sight_range{};
+  bool airborne{};
+  bool active{};
+};
+
+enum class FogTileState : std::uint8_t {
+  visible,
+  explored,
+  unexplored,
 };
 
 struct AiBuildRequest {
@@ -924,6 +941,9 @@ struct BootstrapStatus {
   // images.dat remapping. CImage.cpp::sub_409B00 loads shift.pcx as entry 0;
   // entries 1..4 are ofire, gfire, bfire, and trans50.
   std::array<std::vector<std::uint8_t>, 5> image_color_shifts{};
+  // light.cpp::sub_46A670 loads Tileset\\<era>\\dark.pcx as 32 rows of
+  // 256 palette translations. mask.cpp selects rows 0..31.
+  std::vector<std::uint8_t> terrain_dark_levels{};
   std::array<std::array<std::uint8_t, 8>, 12> team_color_indices{};
   std::size_t terrain_group_count{};
   std::size_t terrain_megatile_count{};
@@ -931,6 +951,18 @@ struct BootstrapStatus {
   starcraft::game::MultiplayerScenario scenario{};
   starcraft::gds::TilesetData terrain_tileset{};
   starcraft::lang::PathingMap pathing_map{};
+  // gamemap's 32-bit word per MTXM tile: bits 0..7 are the current mask,
+  // bits 8..15 are the permanent black/unexplored mask, and bits 16..31 are
+  // the recovered CV5 terrain flags used by line of sight.
+  std::vector<std::uint32_t> fog_map_tiles{};
+  SpritePreviewFrame fogged_terrain{};
+  SpritePreviewFrame fogged_minimap{};
+  std::vector<VisionSourceRuntimeState> vision_source_states{};
+  bool vision_source_state_ready{};
+  bool fog_render_surfaces_ready{};
+  bool fog_of_war_enabled{true};
+  std::uint32_t fog_rebuild_count{};
+  std::uint16_t fog_refresh_ticks{};
   std::uint16_t scenario_width{};
   std::uint16_t scenario_height{};
   std::uint16_t camera_x{};
@@ -1253,6 +1285,21 @@ void draw_selected_portrait_gl(const BootstrapStatus &status);
 [[nodiscard]] bool advance_selected_portrait(BootstrapStatus &status,
                                              std::uint32_t now) noexcept;
 void draw_minimap_gl(const BootstrapStatus &status);
+[[nodiscard]] bool initialize_fog_of_war(BootstrapStatus &status) noexcept;
+[[nodiscard]] bool rebuild_fog_of_war(BootstrapStatus &status,
+                                       bool force = false) noexcept;
+[[nodiscard]] bool
+rebuild_fog_render_surfaces(BootstrapStatus &status) noexcept;
+[[nodiscard]] FogTileState fog_tile_state(
+    const BootstrapStatus &status, int tile_x, int tile_y,
+    std::uint8_t player = 0U) noexcept;
+[[nodiscard]] bool fog_world_position_visible(
+    const BootstrapStatus &status, std::uint16_t world_x,
+    std::uint16_t world_y, std::uint8_t player = 0U) noexcept;
+[[nodiscard]] bool fog_unit_visible(
+    const BootstrapStatus &status,
+    const ScenarioUnitPreview &unit,
+    std::uint8_t player = 0U) noexcept;
 void draw_hud_control_frame_gl(const SpritePreviewFrame &frame,
                                const CommandControl &control);
 void draw_selected_command_panel_gl(const RecoveryWindowState &state);

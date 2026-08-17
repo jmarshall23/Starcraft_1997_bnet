@@ -94,6 +94,7 @@ void apply_simulation_traits(
   unit.air_weapon_cooldown = traits.air_weapon_cooldown;
   unit.air_weapon_upgrade = traits.air_weapon_upgrade;
   unit.seek_range = traits.seek_range;
+  unit.sight_range = traits.sight_range;
   unit.cargo_space_required = traits.cargo_space_required;
   unit.cargo_space_provided = traits.cargo_space_provided;
   unit.has_ground_weapon = traits.has_ground_weapon;

@@ -15,6 +15,7 @@ bool MultiplayerScenario::load(const data::ChkView& chk) noexcept {
   tileset_id_ = 0;
   players_ = {};
   tiles_.clear();
+  fog_mask_.clear();
   units_.clear();
   start_locations_ = {};
   active_player_count_ = 0;
@@ -50,6 +51,20 @@ bool MultiplayerScenario::load(const data::ChkView& chk) noexcept {
       }
     }
 
+    // StarCraft.exe's maphdr.cpp::sub_46C070 requires MASK to contain one
+    // byte per map tile. Each bit is a player's initial shroud state. Keep
+    // the fully-masked initialization from mask.cpp::sub_46CB50 when an old
+    // beta map omits the optional section.
+    const std::size_t tile_count = static_cast<std::size_t>(width) * height;
+    std::vector<std::uint8_t> fog_mask(tile_count, 0xFFU);
+    data::ChkSection mask{};
+    if (chk.section(data::chk_section_fog_mask, 0U, mask)) {
+      if (mask.size != tile_count) {
+        return false;
+      }
+      fog_mask.assign(mask.bytes, mask.bytes + mask.size);
+    }
+
     std::vector<ScenarioUnit> units;
     std::array<ScenarioStartLocation, data::chk_player_slot_count> start_locations{};
     units.reserve(chk.unit_count());
@@ -78,6 +93,7 @@ bool MultiplayerScenario::load(const data::ChkView& chk) noexcept {
     tileset_id_ = tileset;
     players_ = players;
     tiles_ = std::move(tiles);
+    fog_mask_ = std::move(fog_mask);
     units_ = std::move(units);
     start_locations_ = start_locations;
     active_player_count_ = active_players;
@@ -100,6 +116,9 @@ const std::array<ScenarioPlayer, data::chk_player_slot_count>& MultiplayerScenar
   return players_;
 }
 const std::vector<std::uint16_t>& MultiplayerScenario::tiles() const noexcept { return tiles_; }
+const std::vector<std::uint8_t>& MultiplayerScenario::fog_mask() const noexcept {
+  return fog_mask_;
+}
 const std::vector<ScenarioUnit>& MultiplayerScenario::units() const noexcept { return units_; }
 const std::array<ScenarioStartLocation, data::chk_player_slot_count>&
 MultiplayerScenario::start_locations() const noexcept {

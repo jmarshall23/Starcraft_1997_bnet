@@ -136,6 +136,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
   const bool minimap_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-minimap") != nullptr;
+  const bool fog_probe =
+      command_line != nullptr &&
+      std::strstr(command_line, "--probe-fog-of-war") != nullptr;
   const bool command_target_probe =
       command_line != nullptr &&
       std::strstr(command_line, "--probe-command-targets") != nullptr;
@@ -257,7 +260,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       building_placement_probe || construction_probe || addon_probe ||
       creep_probe || melee_start_probe || unit_avoidance_probe ||
       ai_probe || terran_air_probe || protoss_abilities_probe ||
-      minimap_probe || camera_probe || status_panel_probe ||
+      minimap_probe || fog_probe || camera_probe || status_panel_probe ||
       multi_status_probe || construction_status_probe ||
       capture_path != nullptr || title_capture_path != nullptr ||
       popup_capture_path != nullptr ||
@@ -1098,6 +1101,14 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                  : glue_failure_code;
     }
     window_state.glue.screen = GlueScreen::gameplay;
+    // Legacy gameplay probes synthesize units and targets without running
+    // the sight-mask placement path. Keep those tests focused on their own
+    // subsystem; the dedicated multiplayer fog probe below exercises every
+    // visibility gate with fog enabled.
+    if (!fog_probe && command_line != nullptr &&
+        std::strstr(command_line, "--probe-") != nullptr) {
+      status.fog_of_war_enabled = false;
+    }
     bool selection_verified = true;
     if (selection_probe) {
       selection_verified = false;
@@ -3061,6 +3072,117 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       }
     }
 
+    bool fog_verified = true;
+    int fog_probe_stage{};
+    if (fog_probe) {
+      fog_verified =
+          status.assets_ready && status.fog_of_war_enabled &&
+          status.fog_render_surfaces_ready &&
+          status.terrain_dark_levels.size() == 32U * 256U &&
+          status.fog_map_tiles.size() ==
+              static_cast<std::size_t>(status.scenario_width) *
+                  status.scenario_height &&
+          status.fogged_terrain.bgra.size() == status.terrain.bgra.size() &&
+          status.fogged_minimap.bgra.size() == status.minimap.bgra.size();
+      fog_probe_stage = fog_verified ? 1 : 0;
+
+      ScenarioUnitPreview *source{};
+      if (fog_verified) {
+        const auto local_source = std::find_if(
+            status.units.begin(), status.units.end(),
+            [](ScenarioUnitPreview &unit) {
+              return unit.alive && !unit.dying && !unit.sprite_hidden &&
+                     !unit.in_transport && !unit.is_projectile &&
+                     unit.owner == 0U && unit.sight_range != 0U;
+            });
+        source = local_source == status.units.end() ? nullptr : &*local_source;
+        fog_verified = source != nullptr &&
+                       fog_world_position_visible(status, source->x,
+                                                  source->y, 0U);
+        fog_probe_stage = fog_verified ? 2 : fog_probe_stage;
+      }
+
+      std::uint16_t test_tile_x{};
+      std::uint16_t test_tile_y{};
+      if (fog_verified) {
+        bool found_unexplored{};
+        for (std::uint16_t y = 1U;
+             !found_unexplored && y + 1U < status.scenario_height; ++y) {
+          for (std::uint16_t x = 1U; x + 1U < status.scenario_width; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) * status.scenario_width + x;
+            const std::uint32_t tile = status.fog_map_tiles[index];
+            if ((tile & 0x00000101U) == 0x00000101U) {
+              test_tile_x = x;
+              test_tile_y = y;
+              found_unexplored = true;
+              break;
+            }
+          }
+        }
+        fog_verified = found_unexplored;
+        fog_probe_stage = fog_verified ? 3 : fog_probe_stage;
+      }
+
+      std::uint16_t original_x{};
+      std::uint16_t original_y{};
+      std::int32_t original_x_fixed{};
+      std::int32_t original_y_fixed{};
+      if (fog_verified) {
+        original_x = source->x;
+        original_y = source->y;
+        original_x_fixed = source->x_fixed;
+        original_y_fixed = source->y_fixed;
+        source->x = static_cast<std::uint16_t>(test_tile_x * 32U + 16U);
+        source->y = static_cast<std::uint16_t>(test_tile_y * 32U + 16U);
+        source->x_fixed = static_cast<std::int32_t>(source->x) << 8U;
+        source->y_fixed = static_cast<std::int32_t>(source->y) << 8U;
+        fog_verified = rebuild_fog_of_war(status, true) &&
+                       fog_tile_state(status, test_tile_x, test_tile_y, 0U) ==
+                           FogTileState::visible;
+        fog_probe_stage = fog_verified ? 4 : fog_probe_stage;
+
+        source->x = original_x;
+        source->y = original_y;
+        source->x_fixed = original_x_fixed;
+        source->y_fixed = original_y_fixed;
+        fog_verified = fog_verified && rebuild_fog_of_war(status, true) &&
+                       fog_tile_state(status, test_tile_x, test_tile_y, 0U) ==
+                           FogTileState::explored;
+        fog_probe_stage = fog_verified ? 5 : fog_probe_stage;
+      }
+
+      if (fog_verified) {
+        const std::vector<std::uint32_t> history = status.fog_map_tiles;
+        std::string response;
+        const bool disabled = execute_debug_console_command(
+            status, "fog_of_war 0", response);
+        fog_verified = disabled && !status.fog_of_war_enabled &&
+                       response == "fog_of_war = 0" &&
+                       fog_tile_state(status, test_tile_x, test_tile_y, 0U) ==
+                           FogTileState::visible &&
+                       status.fog_map_tiles == history;
+        fog_probe_stage = fog_verified ? 6 : fog_probe_stage;
+
+        const bool enabled = execute_debug_console_command(
+            status, "set fog_of_war on", response);
+        fog_verified = fog_verified && enabled && status.fog_of_war_enabled &&
+                       response == "fog_of_war = 1" &&
+                       fog_tile_state(status, test_tile_x, test_tile_y, 0U) ==
+                           FogTileState::explored &&
+                       status.fog_map_tiles == history &&
+                       status.fog_render_surfaces_ready;
+        fog_probe_stage = fog_verified ? 7 : fog_probe_stage;
+      }
+
+      if (fog_verified && !status.minimap.bgra.empty()) {
+        fog_verified = !std::equal(status.minimap.bgra.begin(),
+                                   status.minimap.bgra.end(),
+                                   status.fogged_minimap.bgra.begin());
+        fog_probe_stage = fog_verified ? 8 : fog_probe_stage;
+      }
+    }
+
     const bool needs_scv = production_probe || movement_probe ||
                            pathfinding_probe || worker_actions_probe ||
                            harvest_visual_probe || smart_orders_probe ||
@@ -3454,7 +3576,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         const bool offscreen_queued =
             queue_positional_game_sound(status, first_sound, far_x, far_y);
         const bool offscreen_rejected =
-            offscreen_queued && !play_pending_game_sound(window_state);
+            !offscreen_queued || !play_pending_game_sound(window_state);
         std::size_t playing_sources{};
         for (const ALuint source : window_state.audio_sources) {
           ALint source_state{};
@@ -6640,6 +6762,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
     if (protoss_abilities_probe && !protoss_abilities_verified) {
       return 500 + protoss_abilities_probe_stage;
     }
+    if (fog_probe && !fog_verified) {
+      return 600 + fog_probe_stage;
+    }
     if (production_probe && !production_verified) {
       return 400 + production_probe_stage;
     }
@@ -6671,6 +6796,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                    melee_start_verified && construction_animation_verified &&
                    building_idle_animation_verified &&
                    unit_avoidance_verified && minimap_verified &&
+                   fog_verified &&
                    camera_verified && status_panel_verified &&
                    multi_status_verified && construction_status_verified &&
                    resource_feedback_verified && resource_strip_verified &&

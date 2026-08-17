@@ -103,6 +103,7 @@ add_library(starcraft_core STATIC
   src/lang/damage.cpp
   src/lang/flingy.cpp
   src/lang/iscript.cpp
+  src/lang/los.cpp
   src/lang/pathfinding.cpp
   src/lang/place_unit.cpp
   src/lang/tile2.cpp
@@ -179,6 +180,7 @@ add_executable(StarCraftRecovery WIN32
   src/lang/gluScore.cpp
   src/lang/glues.cpp
   src/lang/map_load.cpp
+  src/lang/mask.cpp
   src/lang/minimap.cpp
   src/lang/Music.cpp
   src/lang/placebox.cpp
@@ -606,6 +608,10 @@ if(BUILD_TESTING)
   )
   add_test(NAME bootstrap_camera_probe COMMAND StarCraftRecovery --probe-camera)
   add_test(NAME bootstrap_minimap_probe COMMAND StarCraftRecovery --probe-minimap)
+  add_test(
+    NAME bootstrap_fog_of_war_probe
+    COMMAND StarCraftRecovery --probe-fog-of-war
+  )
   add_test(
     NAME bootstrap_unit_avoidance_probe
     COMMAND StarCraftRecovery --probe-unit-avoidance

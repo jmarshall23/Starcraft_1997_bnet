@@ -23,6 +23,9 @@ constexpr std::uint32_t chk_section_tiles = chk_fourcc('M', 'T', 'X', 'M');
 constexpr std::uint32_t chk_section_ownership = chk_fourcc('O', 'W', 'N', 'R');
 constexpr std::uint32_t chk_section_races = chk_fourcc('S', 'I', 'D', 'E');
 constexpr std::uint32_t chk_section_units = chk_fourcc('U', 'N', 'I', 'T');
+// maphdr.cpp::sub_46C070 copies one MASK byte per MTXM tile into both the
+// current-mask and black-mask bytes of the live map word.
+constexpr std::uint32_t chk_section_fog_mask = chk_fourcc('M', 'A', 'S', 'K');
 // StarCraft.exe's beta CHK dispatch table names this section THGY. The later
 // starshare.exe variant uses THG2 instead and is not the recovery target.
 constexpr std::uint32_t chk_section_sprites = chk_fourcc('T', 'H', 'G', 'Y');

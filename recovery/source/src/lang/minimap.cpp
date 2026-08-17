@@ -41,6 +41,8 @@ bool build_minimap_preview(
     output.width = 128;
     output.height = 128;
     output.bgra.assign(128U * 128U, 0xFF020202U);
+    output.palette_indices.assign(128U * 128U, 0U);
+    output.opacity.assign(128U * 128U, 0xFFU);
     const auto &palette = tileset.palette();
     for (std::uint16_t minimap_y = 0; minimap_y < content_height; ++minimap_y) {
       const std::uint16_t tile_y = static_cast<std::uint16_t>(
@@ -81,8 +83,11 @@ bool build_minimap_preview(
         const std::uint32_t red = palette[color];
         const std::uint32_t green = palette[color + 1U];
         const std::uint32_t blue = palette[color + 2U];
-        output.bgra[static_cast<std::size_t>(content_y + minimap_y) * 128U +
-                    content_x + minimap_x] =
+        const std::size_t output_index =
+            static_cast<std::size_t>(content_y + minimap_y) * 128U +
+            content_x + minimap_x;
+        output.palette_indices[output_index] = palette_index;
+        output.bgra[output_index] =
             0xFF000000U | blue | (green << 8U) | (red << 16U);
       }
     }
@@ -108,7 +113,11 @@ void draw_minimap_gl(const BootstrapStatus &status) {
   const float height = static_cast<float>(status.minimap_control.bottom -
                                           status.minimap_control.top + 1) *
                        vertical_scale;
-  draw_preview_frame_gl(status.minimap, left, top, width, height);
+  const SpritePreviewFrame &map_frame =
+      status.fog_of_war_enabled && status.fog_render_surfaces_ready
+          ? status.fogged_minimap
+          : status.minimap;
+  draw_preview_frame_gl(map_frame, left, top, width, height);
 
   const float content_left = left + status.minimap_content_x * width / 128.0F;
   const float content_top = top + status.minimap_content_y * height / 128.0F;
@@ -118,7 +127,7 @@ void draw_minimap_gl(const BootstrapStatus &status) {
   const float map_height = static_cast<float>(status.scenario_height) * 32.0F;
   glDisable(GL_TEXTURE_2D);
   for (const ScenarioUnitPreview &unit : status.units) {
-    if (!unit.alive || unit.sprite_hidden) {
+    if (!unit.alive || unit.sprite_hidden || !fog_unit_visible(status, unit)) {
       continue;
     }
     std::uint8_t red{224};

@@ -118,6 +118,10 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
   // and minimap reconstruction occurs only when a source appears, completes,
   // moves, changes footprint, or dies.
   (void)rebuild_creep_tiles(*status);
+  // CUnitPath sets the original visibility-dirty flag only when a sight
+  // source crosses an MTXM tile. The recovered source snapshot preserves
+  // that scheduling and leaves explored history intact between rebuilds.
+  (void)rebuild_fog_of_war(*status);
   (void)advance_selected_portrait(*status, clock);
 
   for (std::size_t index = 0; index < status->units.size(); ++index) {

@@ -676,6 +676,7 @@ bool CoreDataSet::unit_simulation_traits(
   traits.seek_range = static_cast<std::uint8_t>((std::min)(
       static_cast<unsigned>(raw_seek_range),
       sight_range == 0U ? 0U : static_cast<unsigned>(sight_range - 1U)));
+  traits.sight_range = sight_range;
   if (!traits.has_ground_weapon && !traits.has_air_weapon) {
     return true;
   }
