@@ -347,11 +347,19 @@ bool begin_protoss_build_order(BootstrapStatus &status,
       status.player_gas_stock[0] = gas;
     }
   }
+  // CUnitPBuild's order handler does not create image 189 when the order is
+  // issued. sub_43BBF0 phases 0/1 start the move-to-build-site order, and
+  // phase 2 waits for CUnit+44 bit 1 (movement active) to clear before it
+  // validates placement and creates the building. plan_scv_path only prepares
+  // the path, so explicitly perform the same stationary-to-moving handoff.
+  probe.movement_speed = 0U;
+  (void)restart_unit_animation(status, probe, 11U);
+  probe.moving = true;
   probe.active_order = ActiveUnitOrder::protoss_build;
   probe.construction_target_type = buildable.unit_type;
   probe.build_target_x = center_x;
   probe.build_target_y = center_y;
-  probe.action_phase = 0U;
+  probe.action_phase = 2U;
   return true;
 }
 

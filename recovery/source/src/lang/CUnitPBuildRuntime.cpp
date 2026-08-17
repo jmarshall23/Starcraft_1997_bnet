@@ -56,17 +56,36 @@ bool complete_protoss_build_order(BootstrapStatus &status,
     cancel_unit_order(status, probe);
     (void)restart_unit_animation(status, probe, 12U);
   };
-  if (buildable == nullptr ||
-      !placement_is_valid(status, *buildable, probe.build_target_x,
-                          probe.build_target_y, probe.owner)) {
+  const auto refund_probe_order = [&] {
+    if (buildable == nullptr) {
+      return;
+    }
     std::uint32_t &minerals =
         probe.owner == 0U ? status.player_minerals
                           : status.player_mineral_stock[probe.owner];
     std::uint32_t &gas = probe.owner == 0U
                              ? status.player_gas
                              : status.player_gas_stock[probe.owner];
-    minerals += buildable == nullptr ? 0U : buildable->simulation.mineral_cost;
-    gas += buildable == nullptr ? 0U : buildable->simulation.gas_cost;
+    minerals += buildable->simulation.mineral_cost;
+    gas += buildable->simulation.gas_cost;
+    if (probe.owner == 0U) {
+      status.player_mineral_stock[0] = minerals;
+      status.player_gas_stock[0] = gas;
+    }
+  };
+  // A stopped path is not by itself proof that the Probe reached the build
+  // site: collision/path failure can also stop a unit. sub_43BBF0 reaches its
+  // creation branch only after the move order has completed at the requested
+  // approach point. Never permit a remote warp when a replan stopped early.
+  if (probe.x != probe.movement_final_x || probe.y != probe.movement_final_y) {
+    refund_probe_order();
+    finish_probe_order();
+    return false;
+  }
+  if (buildable == nullptr ||
+      !placement_is_valid(status, *buildable, probe.build_target_x,
+                          probe.build_target_y, probe.owner)) {
+    refund_probe_order();
     finish_probe_order();
     return false;
   }

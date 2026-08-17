@@ -5075,7 +5075,8 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       };
       const auto place_for_worker =
           [&](const std::uint32_t worker_id,
-              const std::uint16_t building_type) -> bool {
+              const std::uint16_t building_type,
+              const int minimum_worker_distance = 0) -> bool {
         ScenarioUnitPreview *const worker = find_unit_by_id(status, worker_id);
         const BuildableUnitVisual *const buildable =
             find_buildable_unit(status, building_type);
@@ -5092,6 +5093,13 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
              y + half_height <= status.pathing_map.pixel_height(); y += 32) {
           for (int x = half_width;
                x + half_width <= status.pathing_map.pixel_width(); x += 32) {
+            const std::int64_t distance_x = x - worker->x;
+            const std::int64_t distance_y = y - worker->y;
+            if (distance_x * distance_x + distance_y * distance_y <
+                static_cast<std::int64_t>(minimum_worker_distance) *
+                    minimum_worker_distance) {
+              continue;
+            }
             status.placement_x = static_cast<std::uint16_t>(x);
             status.placement_y = static_cast<std::uint16_t>(y);
             if (!placement_is_valid(status, *buildable, status.placement_x,
@@ -5158,13 +5166,15 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           status.game_sound_play_counts[245U];
       const std::size_t before_probe_build = status.units.size();
       const bool nexus_placed =
-          probe_id != 0U && place_for_worker(probe_id, 154U);
+          probe_id != 0U && place_for_worker(probe_id, 154U, 384);
       ScenarioUnitPreview *probe = find_unit_by_id(status, probe_id);
       const bool probe_order_started =
           nexus_placed && status.units.size() == before_probe_build &&
           probe != nullptr &&
           probe->active_order == ActiveUnitOrder::protoss_build &&
-          probe->construction_target_type == 154U;
+          probe->construction_target_type == 154U && probe->moving &&
+          (probe->x != probe->movement_final_x ||
+           probe->y != probe->movement_final_y);
       if (probe_order_started) {
         (void)set_camera_position(
             status,
@@ -5172,6 +5182,23 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             static_cast<int>(probe->build_target_y) - kMapViewportHeight / 2);
       }
       ScenarioUnitPreview *nexus{};
+      bool warp_deferred_until_arrival{};
+      if (probe_order_started) {
+        advance_probe_frame();
+        probe = find_unit_by_id(status, probe_id);
+        const auto early_nexus = std::find_if(
+            status.units.begin(), status.units.end(),
+            [](const ScenarioUnitPreview &unit) {
+              return unit.alive && unit.owner == 0U &&
+                     unit.unit_type == 154U && !unit.construction_complete;
+            });
+        warp_deferred_until_arrival =
+            probe != nullptr && probe->moving &&
+            probe->active_order == ActiveUnitOrder::protoss_build &&
+            early_nexus == status.units.end() &&
+            status.units.size() == before_probe_build &&
+            status.game_sound_play_counts[245U] == portal_sound_before;
+      }
       for (int tick = 0; probe_order_started && tick < 4096 && nexus == nullptr;
            ++tick) {
         advance_probe_frame();
@@ -5409,6 +5436,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       }
       race_construction_verified = zerg_completed && zerg_idle_animated &&
                                    probe_order_started &&
+                                   warp_deferred_until_arrival &&
                                    probe_released && hidden_for_build_time &&
                                    materialize_started && protoss_completed &&
                                    protoss_idle_animated &&
@@ -5422,6 +5450,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                  zerg_building->construction_animation_phase)
           : !zerg_idle_animated ? 28
           : !probe_order_started ? 2
+          : !warp_deferred_until_arrival ? 3
           : !probe_released ? race_construction_probe_stage
           : !hidden_for_build_time ? 5
           : !materialize_started ? 6
