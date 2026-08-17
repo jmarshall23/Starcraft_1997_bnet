@@ -40,6 +40,7 @@ bool configure_preview_type(BootstrapStatus &status, ScenarioUnitPreview &unit,
   unit.is_building = initialization.is_building;
   unit.construction_complete = true;
   apply_initialization_traits(unit, initialization);
+  initialize_unit_energy(status, unit);
   return true;
 }
 
@@ -48,14 +49,31 @@ void apply_simulation_traits(
     const starcraft::data::UnitSimulationTraits &traits) noexcept {
   unit.max_hit_points = traits.max_hit_points;
   unit.hit_points = traits.max_hit_points;
+  unit.max_shield_points = traits.max_shield_points;
+  unit.shield_points = traits.max_shield_points;
   unit.dat_flags = traits.dat_flags;
   unit.armor = traits.armor;
   unit.armor_class = traits.armor_class;
+  unit.armor_upgrade = traits.armor_upgrade;
   unit.weapon_range = traits.ground_weapon_range;
+  unit.ground_weapon = traits.ground_weapon;
   unit.weapon_damage = traits.ground_weapon_damage;
+  unit.weapon_damage_factor = traits.ground_weapon_damage_factor;
   unit.weapon_damage_class = traits.ground_weapon_damage_class;
   unit.weapon_cooldown = traits.ground_weapon_cooldown;
+  unit.weapon_upgrade = traits.ground_weapon_upgrade;
+  unit.air_weapon_range = traits.air_weapon_range;
+  unit.air_weapon = traits.air_weapon;
+  unit.air_weapon_damage = traits.air_weapon_damage;
+  unit.air_weapon_damage_factor = traits.air_weapon_damage_factor;
+  unit.air_weapon_damage_class = traits.air_weapon_damage_class;
+  unit.air_weapon_cooldown = traits.air_weapon_cooldown;
+  unit.air_weapon_upgrade = traits.air_weapon_upgrade;
+  unit.seek_range = traits.seek_range;
+  unit.cargo_space_required = traits.cargo_space_required;
+  unit.cargo_space_provided = traits.cargo_space_provided;
   unit.has_ground_weapon = traits.has_ground_weapon;
+  unit.has_air_weapon = traits.has_air_weapon;
   unit.mineral_cost = traits.mineral_cost;
   unit.gas_cost = traits.gas_cost;
   const std::uint32_t build_ticks =
@@ -65,6 +83,11 @@ void apply_simulation_traits(
                  (traits.max_hit_points + build_ticks - 1U) / build_ticks));
   unit.resource_amount =
       starcraft::lang::initial_resource_amount(unit.unit_type);
+  // CUnitInit.cpp::sub_42E400 installs the permanent-cloak state while it
+  // constructs an Observer. Temporary Ghost/Wraith cloak reaches the same
+  // CUnitColor draw state later through the cloak orders.
+  unit.permanently_cloaked = unit.unit_type == 84U;
+  unit.cloaked = unit.permanently_cloaked;
 }
 
 void apply_initialization_traits(

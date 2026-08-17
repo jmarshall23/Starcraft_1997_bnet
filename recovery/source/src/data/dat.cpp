@@ -72,6 +72,15 @@ constexpr std::array<DatFieldShape, 9> kTechnologyShapes{{
     {2, 28}, {2, 28}, {2, 28}, {1, 28},
 }};
 
+// StarCraft.exe descriptor table 0x004FAA00: one word field, twelve byte
+// fields, then two word fields. Fields 10/11/12 are byte_732988 (weapon),
+// byte_732670 (technology), and byte_733058 (IScript action).
+constexpr std::array<DatFieldShape, 15> kOrderShapes{{
+    {2, 156}, {1, 156}, {1, 156}, {1, 156}, {1, 156},
+    {1, 156}, {1, 156}, {1, 156}, {1, 156}, {1, 156},
+    {1, 156}, {1, 156}, {1, 156}, {2, 156}, {2, 156},
+}};
+
 constexpr std::array<DatFieldShape, 11> kUpgradeShapes{{
     {2, 46}, {2, 46}, {2, 46}, {2, 46}, {2, 46}, {2, 46},
     {2, 46}, {2, 46}, {2, 46}, {1, 46}, {1, 46},
@@ -241,6 +250,8 @@ bool CoreDataSet::load(runtime::StormModule &storm) noexcept {
                 total_payload_bytes_, failed_asset_) ||
       !load_dat(storm, R"(arr\techdata.dat)", kTechnologyShapes,
                 technologies_, total_payload_bytes_, failed_asset_) ||
+      !load_dat(storm, R"(arr\orders.dat)", kOrderShapes, orders_,
+                total_payload_bytes_, failed_asset_) ||
       !load_dat(storm, R"(arr\upgrades.dat)", kUpgradeShapes, upgrades_,
                 total_payload_bytes_, failed_asset_) ||
       !load_dat(storm, R"(arr\mapdata.dat)", kMapDataShapes, mapdata_,
@@ -296,6 +307,7 @@ const DatTable &CoreDataSet::images() const noexcept { return images_; }
 const DatTable &CoreDataSet::technologies() const noexcept {
   return technologies_;
 }
+const DatTable &CoreDataSet::orders() const noexcept { return orders_; }
 const DatTable &CoreDataSet::upgrades() const noexcept { return upgrades_; }
 const DatTable &CoreDataSet::mapdata() const noexcept { return mapdata_; }
 const DatTable &CoreDataSet::portraits() const noexcept { return portraits_; }
@@ -354,6 +366,24 @@ std::string CoreDataSet::image_grp_path(const std::uint16_t image_id) const {
     return {};
   }
   return std::string{"unit\\"} + std::string{relative};
+}
+
+std::string
+CoreDataSet::image_special_overlay_path(const std::uint16_t image_id) const {
+  // images.dat field 12 backs dword_55A918 in CImage.cpp. Opcode 0x40 uses
+  // that per-image LO table to position resource-source plume images.
+  const DatField *const locations = images_.field(12U);
+  std::uint32_t string_id{};
+  if (locations == nullptr || !locations->value(image_id, string_id) ||
+      string_id == 0U || string_id > 0xFFFFU) {
+    return {};
+  }
+  const StringTableView strings{image_strings_.data(), image_strings_.size()};
+  const std::string_view relative =
+      strings.one_based(static_cast<std::uint16_t>(string_id));
+  return relative.empty()
+             ? std::string{}
+             : std::string{"unit\\"} + std::string{relative};
 }
 
 bool CoreDataSet::image_iscript_id(const std::uint16_t image_id,
@@ -453,6 +483,7 @@ bool CoreDataSet::weapon_image_id(const std::uint16_t weapon_type,
   return weapon_graphics != nullptr && flingy_sprite != nullptr &&
          sprite_image != nullptr &&
          weapon_graphics->value(weapon_type, flingy_id) && flingy_id < 175U &&
+         flingy_id != 0U &&
          flingy_sprite->value(flingy_id, sprite_id) &&
          sprite_image->value(sprite_id, image_id) && image_id < 590U;
 }
@@ -571,50 +602,116 @@ bool CoreDataSet::unit_simulation_traits(
   // CUnitCombat.cpp::sub_4267E0 reads word_8E8578 as weapon damage; and
   // sub_427870 reads dword_8E83A0/byte_8E7F50 as range/cooldown.
   const DatField *const maximum_life = units_.field(8);
+  const DatField *const shields_enabled = units_.field(6);
+  const DatField *const maximum_shields = units_.field(7);
   const DatField *const ground_weapons = units_.field(17);
+  const DatField *const air_weapons = units_.field(18);
   const DatField *const flags = units_.field(19);
+  const DatField *const seek_ranges = units_.field(20);
+  const DatField *const sight_ranges = units_.field(21);
+  const DatField *const armor_upgrades = units_.field(22);
   const DatField *const armor_classes = units_.field(23);
   const DatField *const armor = units_.field(24);
+  const DatField *const cargo_required = units_.field(44);
+  const DatField *const cargo_provided = units_.field(45);
   const DatField *const mineral_costs = units_.field(37);
   const DatField *const gas_costs = units_.field(38);
   const DatField *const build_times = units_.field(39);
-  if (maximum_life == nullptr || ground_weapons == nullptr ||
-      flags == nullptr || armor_classes == nullptr || armor == nullptr ||
+  std::uint16_t raw_shields{};
+  std::uint8_t shield_enable{};
+  std::uint8_t raw_seek_range{};
+  std::uint8_t sight_range{};
+  if (maximum_life == nullptr || shields_enabled == nullptr ||
+      maximum_shields == nullptr ||
+      ground_weapons == nullptr ||
+      air_weapons == nullptr ||
+      flags == nullptr || seek_ranges == nullptr || sight_ranges == nullptr ||
+      armor_upgrades == nullptr ||
+      armor_classes == nullptr || armor == nullptr ||
+      cargo_required == nullptr || cargo_provided == nullptr ||
       mineral_costs == nullptr || gas_costs == nullptr ||
       build_times == nullptr ||
       !maximum_life->value(unit_type, traits.max_hit_points) ||
+      !shields_enabled->value(unit_type, shield_enable) ||
+      !maximum_shields->value(unit_type, raw_shields) ||
       !ground_weapons->value(unit_type, traits.ground_weapon) ||
+      !air_weapons->value(unit_type, traits.air_weapon) ||
       !flags->value(unit_type, traits.dat_flags) ||
+      !seek_ranges->value(unit_type, raw_seek_range) ||
+      !sight_ranges->value(unit_type, sight_range) ||
+      !armor_upgrades->value(unit_type, traits.armor_upgrade) ||
       !armor_classes->value(unit_type, traits.armor_class) ||
       !armor->value(unit_type, traits.armor) ||
+      !cargo_required->value(unit_type, traits.cargo_space_required) ||
+      !cargo_provided->value(unit_type, traits.cargo_space_provided) ||
       !mineral_costs->value(unit_type, traits.mineral_cost) ||
       !gas_costs->value(unit_type, traits.gas_cost) ||
       !build_times->value(unit_type, traits.build_time) ||
       traits.max_hit_points == 0) {
     return false;
   }
+  traits.max_shield_points =
+      shield_enable != 0U ? static_cast<std::uint32_t>(raw_shields) << 8U : 0U;
   traits.has_ground_weapon = traits.ground_weapon < 66U;
-  if (!traits.has_ground_weapon) {
-    traits.ground_weapon_range = 0;
-    traits.ground_weapon_damage = 0;
-    traits.ground_weapon_damage_class = 0;
-    traits.ground_weapon_cooldown = 0;
+  traits.has_air_weapon = traits.air_weapon < 66U;
+  // CUnitInit.cpp::sub_42DD70 raises units.dat's acquisition range to each
+  // weapon's range in tiles, then clamps it below the unit sight radius.
+  traits.seek_range = static_cast<std::uint8_t>((std::min)(
+      static_cast<unsigned>(raw_seek_range),
+      sight_range == 0U ? 0U : static_cast<unsigned>(sight_range - 1U)));
+  if (!traits.has_ground_weapon && !traits.has_air_weapon) {
     return true;
   }
   const DatField *const maximum_ranges = weapons_.field(5);
+  const DatField *const weapon_upgrades = weapons_.field(6);
   const DatField *const damage_classes = weapons_.field(7);
   const DatField *const damages = weapons_.field(14);
+  const DatField *const damage_factors = weapons_.field(15);
   const DatField *const cooldowns = weapons_.field(16);
-  return maximum_ranges != nullptr && damage_classes != nullptr &&
-         damages != nullptr && cooldowns != nullptr &&
-         maximum_ranges->value(traits.ground_weapon,
-                               traits.ground_weapon_range) &&
-         damage_classes->value(traits.ground_weapon,
-                               traits.ground_weapon_damage_class) &&
-         damages->value(traits.ground_weapon, traits.ground_weapon_damage) &&
-         cooldowns->value(traits.ground_weapon,
-                          traits.ground_weapon_cooldown) &&
-         traits.ground_weapon_damage != 0 && traits.ground_weapon_cooldown != 0;
+  if (maximum_ranges == nullptr || weapon_upgrades == nullptr ||
+      damage_classes == nullptr || damages == nullptr ||
+      damage_factors == nullptr || cooldowns == nullptr) {
+    return false;
+  }
+  const auto decode_weapon = [&](const std::uint8_t weapon,
+                                 std::uint32_t &range,
+                                 std::uint8_t &upgrade,
+                                 std::uint8_t &damage_class,
+                                 std::uint16_t &damage,
+                                 std::uint16_t &factor,
+                                 std::uint8_t &cooldown) noexcept {
+    return maximum_ranges->value(weapon, range) &&
+           weapon_upgrades->value(weapon, upgrade) &&
+           damage_classes->value(weapon, damage_class) &&
+           damages->value(weapon, damage) &&
+           damage_factors->value(weapon, factor) &&
+           cooldowns->value(weapon, cooldown) && damage != 0U &&
+           cooldown != 0U;
+  };
+  if (traits.has_ground_weapon &&
+      !decode_weapon(traits.ground_weapon, traits.ground_weapon_range,
+                     traits.ground_weapon_upgrade,
+                     traits.ground_weapon_damage_class,
+                     traits.ground_weapon_damage,
+                     traits.ground_weapon_damage_factor,
+                     traits.ground_weapon_cooldown)) {
+    return false;
+  }
+  if (traits.has_air_weapon &&
+      !decode_weapon(traits.air_weapon, traits.air_weapon_range,
+                       traits.air_weapon_upgrade,
+                       traits.air_weapon_damage_class,
+                       traits.air_weapon_damage,
+                       traits.air_weapon_damage_factor,
+                       traits.air_weapon_cooldown)) {
+    return false;
+  }
+  const std::uint32_t weapon_tiles = (std::max)(traits.ground_weapon_range,
+                                                traits.air_weapon_range) >> 5U;
+  traits.seek_range = static_cast<std::uint8_t>((std::min)(
+      (std::max)(static_cast<unsigned>(traits.seek_range), weapon_tiles),
+      sight_range == 0U ? 0U : static_cast<unsigned>(sight_range - 1U)));
+  return true;
 }
 
 bool CoreDataSet::technology_research_traits(
@@ -625,10 +722,91 @@ bool CoreDataSet::technology_research_traits(
   const DatField *const minerals = technologies_.field(0);
   const DatField *const gas = technologies_.field(1);
   const DatField *const time = technologies_.field(2);
+  const DatField *const energy = technologies_.field(3);
   return minerals != nullptr && gas != nullptr && time != nullptr &&
+         energy != nullptr &&
          minerals->value(technology, traits.mineral_cost) &&
          gas->value(technology, traits.gas_cost) &&
-         time->value(technology, traits.research_time);
+         time->value(technology, traits.research_time) &&
+         energy->value(technology, traits.energy_cost);
+}
+
+bool CoreDataSet::weapon_simulation_traits(
+    const std::uint16_t weapon,
+    WeaponSimulationTraits &traits) const noexcept {
+  const DatField *const graphics = weapons_.field(1);
+  const DatField *const range = weapons_.field(5);
+  const DatField *const upgrade = weapons_.field(6);
+  const DatField *const damage_class = weapons_.field(7);
+  const DatField *const behavior = weapons_.field(8);
+  const DatField *const removal_timer = weapons_.field(9);
+  const DatField *const explosion_type = weapons_.field(10);
+  const DatField *const inner = weapons_.field(11);
+  const DatField *const median = weapons_.field(12);
+  const DatField *const outer = weapons_.field(13);
+  const DatField *const damage = weapons_.field(14);
+  const DatField *const factor = weapons_.field(15);
+  const DatField *const cooldown = weapons_.field(16);
+  const DatField *const projectile_count = weapons_.field(17);
+  const DatField *const forward_offset = weapons_.field(20);
+  const DatField *const vertical_offset = weapons_.field(21);
+  const DatField *const flingy_speeds = flingy_.field(1);
+  std::uint32_t flingy_id{};
+  std::uint32_t raw_top_speed{};
+  const bool base_ready =
+      weapon < 66U && graphics != nullptr && range != nullptr &&
+      upgrade != nullptr &&
+         damage_class != nullptr && inner != nullptr && median != nullptr &&
+         outer != nullptr && damage != nullptr && factor != nullptr &&
+         cooldown != nullptr && behavior != nullptr && removal_timer != nullptr &&
+         explosion_type != nullptr && projectile_count != nullptr &&
+         forward_offset != nullptr && vertical_offset != nullptr &&
+         graphics->value(weapon, flingy_id) &&
+         range->value(weapon, traits.maximum_range) &&
+         upgrade->value(weapon, traits.upgrade) &&
+         damage_class->value(weapon, traits.damage_class) &&
+         behavior->value(weapon, traits.behavior) &&
+         removal_timer->value(weapon, traits.removal_timer) &&
+         explosion_type->value(weapon, traits.explosion_type) &&
+         inner->value(weapon, traits.inner_splash_radius) &&
+         median->value(weapon, traits.median_splash_radius) &&
+         outer->value(weapon, traits.outer_splash_radius) &&
+         damage->value(weapon, traits.damage) &&
+         factor->value(weapon, traits.damage_factor) &&
+         cooldown->value(weapon, traits.cooldown) &&
+         projectile_count->value(weapon, traits.projectile_count) &&
+         forward_offset->value(weapon, traits.forward_offset) &&
+         vertical_offset->value(weapon, traits.vertical_offset);
+  if (!base_ready || flingy_id >= 175U) {
+    return false;
+  }
+  // weapons.dat field 1 is the CFlingy type passed to sub_41D8B0 by
+  // CBullet::sub_402940. Zero is the original no-projectile sentinel used by
+  // melee weapons. Nonzero projectile flingies use the same doubled fixed
+  // speed conversion as ordinary unit flingies in sub_405FB0.
+  traits.has_projectile_graphic = flingy_id != 0U;
+  if (traits.has_projectile_graphic) {
+    if (flingy_speeds == nullptr ||
+        !flingy_speeds->value(flingy_id, raw_top_speed) ||
+        raw_top_speed > UINT32_MAX / 2U) {
+      return false;
+    }
+    traits.projectile_top_speed = raw_top_speed * 2U;
+  }
+  return traits.projectile_count == 1U || traits.projectile_count == 2U;
+}
+
+bool CoreDataSet::order_spell_traits(const std::uint16_t order,
+                                     std::uint8_t &weapon,
+                                     std::uint8_t &technology,
+                                     std::uint8_t &animation) const noexcept {
+  const DatField *const weapons = orders_.field(10);
+  const DatField *const technologies = orders_.field(11);
+  const DatField *const animations = orders_.field(12);
+  return order < 156U && weapons != nullptr && technologies != nullptr &&
+         animations != nullptr && weapons->value(order, weapon) &&
+         technologies->value(order, technology) &&
+         animations->value(order, animation);
 }
 
 bool CoreDataSet::upgrade_research_traits(

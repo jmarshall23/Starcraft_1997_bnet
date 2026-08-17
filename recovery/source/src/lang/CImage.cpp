@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -13,6 +14,56 @@
 #include <vector>
 
 namespace starcraft::recovery {
+
+namespace {
+
+[[nodiscard]] std::uint32_t read_location_u32(
+    const std::uint8_t *const bytes) noexcept {
+  return static_cast<std::uint32_t>(bytes[0]) |
+         (static_cast<std::uint32_t>(bytes[1]) << 8U) |
+         (static_cast<std::uint32_t>(bytes[2]) << 16U) |
+         (static_cast<std::uint32_t>(bytes[3]) << 24U);
+}
+
+[[nodiscard]] bool decode_special_overlay_locations(
+    const std::vector<std::uint8_t> &bytes, UnitRenderAsset &asset) {
+  if (bytes.size() < 8U) {
+    return false;
+  }
+  const std::uint32_t frame_count = read_location_u32(bytes.data());
+  const std::uint32_t point_count = read_location_u32(bytes.data() + 4U);
+  if (frame_count == 0U || point_count == 0U ||
+      frame_count > (bytes.size() - 8U) / 4U ||
+      point_count > SIZE_MAX / 2U / frame_count) {
+    return false;
+  }
+  try {
+    std::vector<std::int8_t> points(
+        static_cast<std::size_t>(frame_count) * point_count * 2U);
+    for (std::uint32_t frame = 0; frame < frame_count; ++frame) {
+      const std::uint32_t offset =
+          read_location_u32(bytes.data() + 8U + 4U * frame);
+      const std::size_t payload = static_cast<std::size_t>(point_count) * 2U;
+      if (offset > bytes.size() || payload > bytes.size() - offset) {
+        return false;
+      }
+      const std::size_t destination =
+          static_cast<std::size_t>(frame) * payload;
+      for (std::size_t index = 0; index < payload; ++index) {
+        points[destination + index] =
+            static_cast<std::int8_t>(bytes[offset + index]);
+      }
+    }
+    asset.special_overlay_frame_count = frame_count;
+    asset.special_overlay_point_count = point_count;
+    asset.special_overlay_points = std::move(points);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+} // namespace
 
 bool apply_preview_draw_function(const std::uint8_t draw_function,
                                  std::vector<SpritePreviewFrame> &frames) {
@@ -100,6 +151,15 @@ bool load_unit_render_asset(starcraft::runtime::StormModule &storm,
   asset.graphics_turns = main_traits.graphics_turns;
   asset.iscript_ready = true;
 
+  asset.special_overlay_path = data.image_special_overlay_path(image_id);
+  if (!asset.special_overlay_path.empty()) {
+    std::vector<std::uint8_t> locations;
+    if (!storm.load_file(asset.special_overlay_path.c_str(), locations) ||
+        !decode_special_overlay_locations(locations, asset)) {
+      return false;
+    }
+  }
+
   if (asset.initial_iscript_state.overlay_event_count != 0) {
     asset.overlay_image_id = asset.initial_iscript_state.overlay_image;
     asset.overlay_above = asset.initial_iscript_state.overlay_above;
@@ -133,14 +193,138 @@ bool load_unit_render_asset(starcraft::runtime::StormModule &storm,
   return true;
 }
 
+bool spawn_resource_overlay_effect(BootstrapStatus &status,
+                                   const ScenarioUnitPreview &source,
+                                   const std::uint8_t point) noexcept {
+  if (source.asset_index >= status.unit_assets.size()) {
+    return false;
+  }
+  const UnitRenderAsset &source_asset =
+      status.unit_assets[source.asset_index];
+  if (source.current_sprite_frame >=
+          source_asset.special_overlay_frame_count ||
+      point >= source_asset.special_overlay_point_count) {
+    return false;
+  }
+  const std::size_t location =
+      (static_cast<std::size_t>(source.current_sprite_frame) *
+           source_asset.special_overlay_point_count +
+       point) *
+      2U;
+  if (location + 1U >= source_asset.special_overlay_points.size()) {
+    return false;
+  }
+  int x_offset = source_asset.special_overlay_points[location];
+  const int y_offset = source_asset.special_overlay_points[location + 1U];
+  if (source.iscript_state.mirrored) {
+    x_offset = -x_offset;
+  }
+
+  // CImage.cpp::sub_415210 case 0x40 creates image 402+point while the
+  // source has resources and 407+point after depletion, at the signed point
+  // from dword_55A918[image][display-frame].
+  const std::uint16_t image_id = static_cast<std::uint16_t>(
+      (source.resource_amount != 0U ? 402U : 407U) + point);
+  const auto effect_asset =
+      std::find_if(status.unit_assets.begin(), status.unit_assets.end(),
+                   [image_id](const UnitRenderAsset &candidate) {
+                     return candidate.image_id == image_id;
+                   });
+  if (effect_asset == status.unit_assets.end()) {
+    return false;
+  }
+  const std::size_t asset_index = static_cast<std::size_t>(
+      effect_asset - status.unit_assets.begin());
+  ScenarioUnitPreview effect{};
+  effect.unit_id = status.next_unit_id++;
+  effect.x = static_cast<std::uint16_t>((std::clamp)(
+      static_cast<int>(source.x) + x_offset + source.iscript_state.x_offset,
+      0, static_cast<int>(UINT16_MAX)));
+  effect.y = static_cast<std::uint16_t>((std::clamp)(
+      static_cast<int>(source.y) + y_offset + source.iscript_state.y_offset,
+      0, static_cast<int>(UINT16_MAX)));
+  effect.owner = source.owner;
+  effect.sprite_elevation = static_cast<std::uint8_t>(
+      (std::min)(255U, static_cast<unsigned>(source.sprite_elevation) + 1U));
+  effect.asset_index = asset_index;
+  effect.iscript_state = effect_asset->initial_iscript_state;
+  effect.overlay_iscript_state = effect_asset->initial_overlay_iscript_state;
+  effect.current_sprite_frame = effect_asset->initial_iscript_state.frame;
+  effect.current_overlay_frame =
+      effect_asset->initial_overlay_iscript_state.frame;
+  effect.iscript_ready = effect_asset->iscript_ready;
+  effect.overlay_ready = effect_asset->overlay_ready;
+  try {
+    status.transient_images.push_back(std::move(effect));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool spawn_iscript_sprite_effect(
+    BootstrapStatus &status, const ScenarioUnitPreview &source,
+    const starcraft::lang::IScriptState &event) noexcept {
+  if (event.sprite_event_count == 0U ||
+      event.sprite_id >= status.sprite_image_ids.size()) {
+    return false;
+  }
+  const std::uint16_t image_id = status.sprite_image_ids[event.sprite_id];
+  const auto asset =
+      std::find_if(status.unit_assets.begin(), status.unit_assets.end(),
+                   [image_id](const UnitRenderAsset &candidate) {
+                     return candidate.image_id == image_id;
+                   });
+  if (asset == status.unit_assets.end()) {
+    return false;
+  }
+  const int effect_x = static_cast<int>(source.x) +
+                       source.iscript_state.x_offset;
+  const int effect_y = static_cast<int>(source.y) +
+                       source.iscript_state.y_offset +
+                       event.sprite_y_offset;
+  ScenarioUnitPreview effect{};
+  effect.unit_id = status.next_unit_id++;
+  effect.x = static_cast<std::uint16_t>(
+      (std::clamp)(effect_x, 0, static_cast<int>(UINT16_MAX)));
+  effect.y = static_cast<std::uint16_t>(
+      (std::clamp)(effect_y, 0, static_cast<int>(UINT16_MAX)));
+  effect.x_fixed = static_cast<std::int32_t>(effect.x) << 8U;
+  effect.y_fixed = static_cast<std::int32_t>(effect.y) << 8U;
+  effect.owner = source.owner;
+  effect.sprite_elevation = event.sprite_elevation;
+  effect.asset_index =
+      static_cast<std::size_t>(asset - status.unit_assets.begin());
+  effect.iscript_state = asset->initial_iscript_state;
+  effect.overlay_iscript_state = asset->initial_overlay_iscript_state;
+  effect.current_sprite_frame = asset->initial_iscript_state.frame;
+  effect.current_overlay_frame = asset->initial_overlay_iscript_state.frame;
+  effect.iscript_ready = asset->iscript_ready;
+  effect.overlay_ready = asset->overlay_ready;
+  if (effect.iscript_state.sound_event_count != 0U) {
+    (void)queue_positional_game_sound(status, effect.iscript_state.sound_event,
+                                      effect.x, effect.y);
+  }
+  try {
+    status.transient_images.push_back(std::move(effect));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 void draw_scenario_unit_gl(const BootstrapStatus &status,
                            const ScenarioUnitPreview &unit) {
-  if (!unit.alive || unit.asset_index >= status.unit_assets.size()) {
+  if (!unit.alive || unit.sprite_hidden ||
+      unit.asset_index >= status.unit_assets.size()) {
     return;
   }
   const UnitRenderAsset &asset = status.unit_assets[unit.asset_index];
-  if (!unit.iscript_ready || unit.iscript_state.hidden ||
-      asset.sprite_frames.empty()) {
+  if ((!unit.iscript_ready || unit.iscript_state.hidden) &&
+      !unit.dynamic_overlay_ready) {
+    return;
+  }
+  if (asset.sprite_frames.empty()) {
     return;
   }
   std::size_t sprite_frame = unit.current_sprite_frame;
@@ -160,10 +344,16 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
                        static_cast<int>(asset.sprite_canvas_width) / 2;
   const int origin_y = unit.y - status.camera_y -
                        static_cast<int>(asset.sprite_canvas_height) / 2;
+  const SpritePreviewFrame &primary_frame = asset.sprite_frames[sprite_frame];
+  const int primary_x = origin_x + static_cast<int>(primary_frame.x_offset) +
+                        unit.iscript_state.x_offset;
+  const int primary_y = origin_y + static_cast<int>(primary_frame.y_offset) +
+                        unit.iscript_state.y_offset;
   const auto draw_image = [&](const SpritePreviewFrame &frame,
                               const std::uint8_t draw_function,
                               const std::uint8_t remapping, const float x,
-                              const float y, const bool mirrored = false) {
+                              const float y, const bool mirrored = false,
+                              const bool composite_primary = false) {
     if (draw_function == 13U) {
       // CImage.cpp::sub_410260 forces renderer 13 on images 532+N and stores
       // the selection-set color in CImage+0x38. sub_409820 selects one of the
@@ -239,6 +429,32 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
                 static_cast<std::size_t>(destination_y) * kMapViewportWidth +
                 destination_x];
           }
+          // sub_4BEB5C reads the byte already present in the destination
+          // framebuffer. For an above-building warp image that byte is the
+          // building's primary palette pixel, not merely terrain. Compose the
+          // two licensed CPU palette layers directly; this preserves the
+          // lookup exactly without a synchronous glReadPixels stall.
+          if (composite_primary && destination_x >= primary_x &&
+              destination_y >= primary_y &&
+              destination_x < primary_x + primary_frame.width &&
+              destination_y < primary_y + primary_frame.height &&
+              primary_frame.palette_indices.size() ==
+                  primary_frame.bgra.size() &&
+              primary_frame.opacity.size() == primary_frame.bgra.size()) {
+            const std::size_t local_y =
+                static_cast<std::size_t>(destination_y - primary_y);
+            std::size_t local_x =
+                static_cast<std::size_t>(destination_x - primary_x);
+            if (sprite_mirrored) {
+              local_x = primary_frame.width - 1U - local_x;
+            }
+            const std::size_t primary_pixel =
+                local_y * primary_frame.width + local_x;
+            if (primary_frame.opacity[primary_pixel] != 0U) {
+              destination_index =
+                  primary_frame.palette_indices[primary_pixel];
+            }
+          }
           const std::size_t lookup_index =
               (static_cast<std::size_t>(frame.palette_indices[pixel]) << 8U) |
               destination_index;
@@ -302,12 +518,14 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
     } else {
       draw_image(overlay, overlay_asset.image_draw_function,
                  overlay_asset.image_remapping, overlay_x, overlay_y,
-                 overlay_mirrored);
+                 overlay_mirrored, above);
     }
   };
   if (!unit.construction_visible) {
+    glColor4ub(255, 255, 255, unit.cloaked ? 96 : 255);
     draw_dynamic_overlay(false);
     draw_dynamic_overlay(true);
+    glColor4ub(255, 255, 255, 255);
     return;
   }
   if (unit.selected &&
@@ -330,6 +548,9 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
       draw_image(circle, 13U, 0U, circle_x, circle_y);
     }
   }
+  // The cloak order installs the original translucent draw state while the
+  // selection circle remains fully visible to the owning player.
+  glColor4ub(255, 255, 255, unit.cloaked ? 96 : 255);
   if (unit.overlay_ready && !asset.overlay_above &&
       !unit.overlay_iscript_state.hidden && !asset.overlay_frames.empty() &&
       unit.current_overlay_frame < asset.overlay_frames.size()) {
@@ -361,7 +582,7 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
     }
   }
   draw_dynamic_overlay(false);
-  const SpritePreviewFrame &frame = asset.sprite_frames[sprite_frame];
+  const SpritePreviewFrame &frame = primary_frame;
   const float frame_x =
       static_cast<float>(origin_x + static_cast<int>(frame.x_offset) +
                          unit.iscript_state.x_offset);
@@ -402,10 +623,11 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
     } else {
       draw_image(overlay, asset.overlay_draw_function,
                  asset.overlay_remapping, overlay_x, overlay_y,
-                 overlay_mirrored);
+                 overlay_mirrored, true);
     }
   }
   draw_dynamic_overlay(true);
+  glColor4ub(255, 255, 255, 255);
   const std::size_t cargo_asset_index =
       unit.cargo_minerals != 0U ? status.mineral_cargo_asset_index
       : unit.cargo_gas != 0U    ? status.terran_gas_cargo_asset_index

@@ -31,6 +31,7 @@ class UnitProductionQueue final {
 enum class UnitProductionKind : std::uint8_t {
   train,
   zerg_larva_morph,
+  carrier_hangar,
 };
 
 struct UnitProductionButton {

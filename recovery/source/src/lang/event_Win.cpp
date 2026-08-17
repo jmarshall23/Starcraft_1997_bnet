@@ -1,10 +1,39 @@
 #include "../platform/bootstrap_runtime.hpp"
 
+#include "imgui.h"
+
 #include <cstddef>
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 
 namespace starcraft::recovery {
 
 namespace {
+
+bool console_input_message(const UINT message) noexcept {
+  switch (message) {
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYDOWN:
+    case WM_SYSKEYUP:
+    case WM_CHAR:
+      return true;
+    default:
+      return false;
+  }
+}
 
 void apply_glue_action(const HWND window, RecoveryWindowState *const state,
                        const GlueAction action) noexcept {
@@ -34,10 +63,7 @@ void apply_game_dialog_action(const HWND window,
     state->game_dialog.match_active = false;
     state->game_dialog.paused = false;
     state->game_dialog.observer_mode = false;
-    state->glue.screen = GlueScreen::main_menu;
-    state->glue.screen_entered_tick = GetTickCount();
-    state->glue.hovered_control = -1;
-    state->glue.pressed_control = -1;
+    glues_enter_screen(state->glue, GlueScreen::main_menu, GetTickCount());
     if (state->music_playing) {
       alSourceStop(state->music_source);
       state->music_playing = false;
@@ -92,6 +118,34 @@ bool hud_pixel_opaque(const BootstrapStatus &status, const int game_x,
 LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
                                       const WPARAM wparam,
                                       const LPARAM lparam) {
+  auto *const console_state = reinterpret_cast<RecoveryWindowState *>(
+      GetWindowLongPtrA(window, GWLP_USERDATA));
+  if (console_state != nullptr && console_state->imgui_ready) {
+    // The original executable has no developer console. This recovery-only
+    // overlay deliberately uses the Quake convention and is isolated from
+    // simulation input while visible.
+    if (message == WM_KEYDOWN && wparam == VK_OEM_3) {
+      console_state->debug_console_open =
+          !console_state->debug_console_open;
+      console_state->debug_console_focus =
+          console_state->debug_console_open;
+      console_state->keys_down.fill(false);
+      console_state->camera_scroll_ramp = 0U;
+      InvalidateRect(window, nullptr, FALSE);
+      return 0;
+    }
+    // TranslateMessage emits this character after the toggle keydown. Do not
+    // insert the console key itself into the newly focused input line.
+    if (message == WM_CHAR && wparam == static_cast<WPARAM>('`')) {
+      return 0;
+    }
+    if (console_state->debug_console_open) {
+      (void)ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam);
+      if (console_input_message(message)) {
+        return 0;
+      }
+    }
+  }
   switch (message) {
   case WM_NCCREATE: {
     const auto *const create = reinterpret_cast<const CREATESTRUCTA *>(lparam);

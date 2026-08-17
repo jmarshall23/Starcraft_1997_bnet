@@ -12,11 +12,15 @@ namespace starcraft::recovery {
 
 bool parse_resource_panel_controls(const std::vector<std::uint8_t> &layout,
                                    BootstrapStatus &status) noexcept {
-  // statres.cpp::sub_4ABA90 at 0x004ABA90 walks controls 1, 2, and 3 for
-  // race indices 0 (Zerg), 2 (Protoss), and 1 (Terran), then advances to
-  // control 4 for gas and control 5 for minerals. The bootstrap's local slot
-  // is Terran, so its exact supply rectangle is control 3.
-  return parse_dialog_control(layout, 3, status.resource_supply_control) &&
+  // statres.cpp::sub_4ABA90 at 0x004ABA90 selects supply controls 1, 2, and 3
+  // for CHK races 0 (Zerg), 2 (Protoss), and 1 (Terran), then uses control 4
+  // for gas and control 5 for minerals. Preserve that non-linear association.
+  return parse_dialog_control(layout, 1,
+                              status.resource_supply_controls[0]) &&
+         parse_dialog_control(layout, 3,
+                              status.resource_supply_controls[1]) &&
+         parse_dialog_control(layout, 2,
+                              status.resource_supply_controls[2]) &&
          parse_dialog_control(layout, 4, status.resource_gas_control) &&
          parse_dialog_control(layout, 5, status.resource_mineral_control);
 }
@@ -124,14 +128,22 @@ local_supply(const BootstrapStatus &status) noexcept {
   }};
 }
 
+std::size_t resource_supply_icon_frame(const std::uint8_t race) noexcept {
+  // statres.cpp::sub_4ABA90 passes frame 4 at 0x004ABAD8 for Zerg, frame 5 at
+  // 0x004ABB0E for Protoss, and frame 6 at 0x004ABB3C for Terran. CHK race
+  // order is Zerg, Terran, Protoss, hence the intentionally non-linear table.
+  constexpr std::array<std::size_t, 3> frames{{4U, 6U, 5U}};
+  return race < frames.size() ? frames[race] : 0U;
+}
+
 void draw_resource_strip_gl(const RecoveryWindowState &state) {
   const BootstrapStatus *const status = state.status;
   if (status == nullptr || !status->resource_panel_ready) {
     return;
   }
   // game\icons.grp is the raw-frame group loaded by statres.cpp::sub_4AB900.
-  // Frame 0 is minerals; frames 1..3 are Zerg/Terran/Protoss gas; frames
-  // 4..6 are the matching supply icons. CHK race values use the same order.
+  // Frame 0 is minerals. The call at 0x004ABB51 passes CHK race + 1 for gas;
+  // supply is frame 4 Zerg, frame 5 Protoss, and frame 6 Terran.
   if (status->resource_icons_ready && status->local_race < 3U &&
       status->resource_icon_frames.size() >= 7U) {
     const auto draw_icon = [](const SpritePreviewFrame &frame,
@@ -147,8 +159,9 @@ void draw_resource_strip_gl(const RecoveryWindowState &state) {
               status->resource_mineral_control);
     draw_icon(status->resource_icon_frames[1U + status->local_race],
               status->resource_gas_control);
-    draw_icon(status->resource_icon_frames[4U + status->local_race],
-              status->resource_supply_control);
+    draw_icon(status->resource_icon_frames[resource_supply_icon_frame(
+                  status->local_race)],
+              status->resource_supply_controls[status->local_race]);
   }
   const auto draw_right_aligned =
       [&state](const CommandControl &source, const std::string &text,
@@ -165,7 +178,11 @@ void draw_resource_strip_gl(const RecoveryWindowState &state) {
   const std::array<std::uint32_t, 2> supply = local_supply(*status);
   std::snprintf(value, sizeof(value), "%u/%u", (supply[0] + 1U) >> 1U,
                 (supply[1] + 1U) >> 1U);
-  draw_right_aligned(status->resource_supply_control, value,
+  const CommandControl &supply_control =
+      status->resource_supply_controls[status->local_race < 3U
+                                           ? status->local_race
+                                           : 0U];
+  draw_right_aligned(supply_control, value,
                      supply[0] <= supply[1] ? 220 : 255,
                      supply[0] <= supply[1] ? 220 : 72,
                      supply[0] <= supply[1] ? 220 : 48);

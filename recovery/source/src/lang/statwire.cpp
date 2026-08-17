@@ -154,6 +154,8 @@ const char *active_order_text(const ActiveUnitOrder order) noexcept {
     return "Gathering";
   case ActiveUnitOrder::return_cargo:
     return "Returning Cargo";
+  case ActiveUnitOrder::return_hangar:
+    return "Returning";
   default:
     return "Idle";
   }
@@ -216,7 +218,21 @@ void draw_selected_status_panel_gl(const RecoveryWindowState &state,
                       high_life ? 230 : (medium_life ? 205 : 64), 48);
 
   char auxiliary[64]{};
-  if (unit.unit_type >= 176U && unit.unit_type <= 178U) {
+  if (unit.unit_type == 72U || unit.unit_type == 82U ||
+      unit.unit_type == 83U) {
+    const std::size_t count = static_cast<std::size_t>(std::count_if(
+        unit.hangar_unit_ids.begin(), unit.hangar_unit_ids.end(),
+        [](const std::uint32_t id) { return id != 0U; }));
+    const bool expanded =
+        unit.owner < status->player_upgrade_levels.size() &&
+        ((unit.unit_type == 83U &&
+          status->player_upgrade_levels[unit.owner][36U] != 0U) ||
+         (unit.unit_type != 83U &&
+          status->player_upgrade_levels[unit.owner][43U] != 0U));
+    std::snprintf(auxiliary, sizeof(auxiliary), "%s: %zu/%u",
+                  unit.unit_type == 83U ? "Scarabs" : "Interceptors", count,
+                  expanded ? 10U : 5U);
+  } else if (unit.unit_type >= 176U && unit.unit_type <= 178U) {
     std::snprintf(auxiliary, sizeof(auxiliary), "Minerals: %u",
                   unit.resource_amount);
   } else if (unit.unit_type == 188U || unit.unit_type == 110U) {
@@ -234,9 +250,37 @@ void draw_selected_status_panel_gl(const RecoveryWindowState &state,
   draw_status_text_gl(state, status->status_aux_control, auxiliary, 96, 170,
                       255);
 
+  // statdraw.cpp::sub_4A89B0/sub_4A9B00 copy the eight compact CUnit cargo
+  // IDs, then place occupants in three exact statdata.bin layouts. Four-space
+  // passengers start at control 18/20, two-space at 21/22, and one-space at
+  // 25/27 depending on whether the transport capacity is greater than four.
+  if (unit.cargo_space_provided != 0U) {
+    std::array<CargoStatusSlot, 8> slots{};
+    const std::size_t slot_count = cargo_status_slots(*status, unit, slots);
+    for (std::size_t index = 0U; index < slot_count; ++index) {
+      const ScenarioUnitPreview *const cargo =
+          find_unit_by_id(*status, slots[index].unit_id);
+      if (cargo == nullptr || slots[index].control_id < 18U ||
+          slots[index].control_id > 32U) {
+        continue;
+      }
+      const CommandControl &control =
+          status->status_cargo_controls[slots[index].control_id - 18U];
+      draw_status_slot_background_gl(*status, control);
+      if (status->group_wireframe_ready &&
+          cargo->unit_type < status->group_wireframe_frames.size()) {
+        draw_wireframe_in_control_gl(
+            *status, *cargo,
+            status->group_wireframe_frames[cargo->unit_type], control);
+      }
+    }
+  }
+
   if (!unit.construction_complete && unit.construction_ticks_total != 0U) {
     draw_status_text_gl(state, status->status_construction_label_control,
-                        status_text(*status, 750), 240, 210, 96);
+                        unit.archon_merging ? std::string_view{"Warping"}
+                                            : status_text(*status, 750),
+                        240, 210, 96);
     const float complete =
         1.0F - static_cast<float>(unit.construction_ticks_remaining) /
                    unit.construction_ticks_total;
@@ -300,6 +344,36 @@ void draw_selected_status_panel_gl(const RecoveryWindowState &state,
 
   draw_status_text_gl(state, status->status_action_label_control,
                       active_order_text(unit.active_order), 175, 175, 175);
+}
+
+std::size_t cargo_status_slots(
+    const BootstrapStatus &status, const ScenarioUnitPreview &transport,
+    std::array<CargoStatusSlot, 8> &slots) noexcept {
+  slots.fill({});
+  if (transport.cargo_space_provided == 0U) {
+    return 0U;
+  }
+  std::size_t count{};
+  const bool large_transport = transport.cargo_space_provided > 4U;
+  const auto append_size = [&](const std::uint8_t cargo_size,
+                               const std::uint16_t first_control) {
+    std::uint16_t control_id = first_control;
+    for (const std::uint32_t cargo_id : transport.cargo_unit_ids) {
+      const ScenarioUnitPreview *const cargo =
+          find_unit_by_id(status, cargo_id);
+      if (cargo == nullptr || cargo->cargo_space_required != cargo_size) {
+        continue;
+      }
+      if (count < slots.size() && control_id >= 18U && control_id <= 32U) {
+        slots[count++] = {cargo_id, control_id};
+      }
+      ++control_id;
+    }
+  };
+  append_size(4U, large_transport ? 18U : 20U);
+  append_size(2U, large_transport ? 21U : 22U);
+  append_size(1U, large_transport ? 25U : 27U);
+  return count;
 }
 
 } // namespace starcraft::recovery

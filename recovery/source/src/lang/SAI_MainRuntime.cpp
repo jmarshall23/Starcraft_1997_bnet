@@ -679,7 +679,8 @@ bool issue_ai_attack(BootstrapStatus &status, AiPlayerRuntime &ai) noexcept {
   for (std::size_t index = 0; index < status.units.size(); ++index) {
     ScenarioUnitPreview &attacker = status.units[index];
     if (!attacker.alive || attacker.owner != ai.owner || attacker.is_building ||
-        !attacker.has_ground_weapon || attacker.active_order != ActiveUnitOrder::none) {
+        (!attacker.has_ground_weapon && !attacker.has_air_weapon) ||
+        attacker.active_order != ActiveUnitOrder::none) {
       continue;
     }
     const ScenarioUnitPreview *nearest{};
@@ -742,19 +743,37 @@ bool advance_ai_players(BootstrapStatus &status,
   for (AiPlayerRuntime &ai : status.ai_players) {
     if (!ai.enabled) continue;
     changed = advance_ai_script(status, ai) || changed;
-    ++ai.update_counter;
-    if ((ai.update_counter & 15U) == 0U) {
+    // SAI_Main.cpp::sub_492070 runs scripts every turn but gates the heavier
+    // town/build/harvest pass behind a byte down-counter. It reloads 12 for
+    // the first twenty elapsed seconds and 62 afterward, producing passes
+    // every 13/63 simulation turns. The previous fixed 32-turn gate delayed
+    // the opening build order by more than twice the recovered cadence.
+    if (ai.macro_update_ticks != 0U) {
+      --ai.macro_update_ticks;
+    } else {
+      const std::uint64_t elapsed_milliseconds =
+          static_cast<std::uint64_t>(ai.update_counter) *
+          kSimulationTickMilliseconds;
+      ai.macro_update_ticks = elapsed_milliseconds < 20000U ? 12U : 62U;
       changed = assign_ai_harvest(status, ai) || changed;
-    }
-    if ((ai.update_counter & 31U) == 0U) {
-      changed = satisfy_ai_build_request(status, ai, now) || changed;
+
+      // SAI_Build.cpp::sub_486650 walks the complete priority request list
+      // and can service independent towns/producers in one heavy pass. Keep
+      // asking until no additional request can advance, bounded by the fixed
+      // 64-entry recovered request table.
+      for (std::size_t request = 0U;
+           request < ai.build_requests.size() &&
+           satisfy_ai_build_request(status, ai, now);
+           ++request) {
+        changed = true;
+      }
       changed = satisfy_ai_research_request(status, ai) || changed;
+      if (ai.attack_requested && issue_ai_attack(status, ai)) {
+        ai.attack_requested = false;
+        changed = true;
+      }
     }
-    if (ai.attack_requested && (ai.update_counter & 31U) == 0U &&
-        issue_ai_attack(status, ai)) {
-      ai.attack_requested = false;
-      changed = true;
-    }
+    ++ai.update_counter;
   }
   return changed;
 }

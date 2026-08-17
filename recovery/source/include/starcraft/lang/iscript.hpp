@@ -39,11 +39,24 @@ struct IScriptState {
   std::uint16_t flingy_velocity{};
   std::uint32_t flingy_speed_event_count{};
   std::uint16_t flingy_speed{};
+  std::uint32_t resource_overlay_event_count{};
+  std::uint8_t resource_overlay_point{};
+  std::uint32_t sprite_event_count{};
+  std::uint16_t sprite_id{};
+  std::int8_t sprite_y_offset{};
+  std::uint8_t sprite_elevation{};
   std::uint8_t image_target_flags{};
   bool overlay_above{};
   bool alternate_unit_event{};
   bool mirrored{};
   bool hidden{};
+  // CImage opcode 0x33 marks the owning unit/sprite as being inside an
+  // uninterruptible image sequence; opcode 0x34 clears both flags again.
+  bool uninterruptible{};
+  // Opcode 0x35 holds an attack image at the end of its repeat sequence
+  // while CUnit+100 still names a target. The CUnit runtime clears this and
+  // dispatches the attack-to-idle animation after the target disappears.
+  bool waiting_for_attack_target{};
   bool active{};
 };
 

@@ -11,6 +11,18 @@ namespace {
 constexpr int kMaximumCatchUpFrames = 3;
 constexpr std::int32_t kClockResyncThresholdMilliseconds = 200;
 
+void drain_pending_game_sounds(RecoveryWindowState &state) noexcept {
+  if (state.status == nullptr) {
+    return;
+  }
+  for (std::size_t slot = 0U; slot < kDigitalSoundSourceCount &&
+                              state.status->pending_game_sound.sound_id !=
+                                  0xFFFFU;
+       ++slot) {
+    (void)play_pending_game_sound(state);
+  }
+}
+
 [[nodiscard]] std::int32_t tick_delta(const std::uint32_t left,
                                       const std::uint32_t right) noexcept {
   return static_cast<std::int32_t>(left - right);
@@ -55,10 +67,7 @@ constexpr std::int32_t kClockResyncThresholdMilliseconds = 200;
     state.game_dialog.match_active = false;
     state.game_dialog.paused = false;
     state.game_dialog.observer_mode = false;
-    state.glue.screen = GlueScreen::main_menu;
-    state.glue.screen_entered_tick = clock;
-    state.glue.hovered_control = -1;
-    state.glue.pressed_control = -1;
+    glues_enter_screen(state.glue, GlueScreen::main_menu, clock);
     if (state.music_playing) {
       alSourceStop(state.music_source);
       state.music_playing = false;
@@ -92,24 +101,23 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
       status->iscript_bytes.data(), status->iscript_bytes.size()};
   (void)advance_camera_scroll(state);
   (void)advance_zerg_larvae(*status);
-  const bool ai_changed = advance_ai_players(*status, clock);
+  (void)advance_ai_players(*status, clock);
   (void)advance_unit_production(*status, clock);
   (void)advance_technology_research(*status);
   advance_resource_display(*status);
   (void)advance_unit_movement(*status);
-  const bool unit_actions_changed = advance_unit_actions(*status);
-  const bool addon_construction_changed = advance_addon_construction(*status);
-  const bool protoss_construction_changed =
-      advance_protoss_building_construction(*status);
-  const bool zerg_construction_changed =
-      advance_zerg_building_construction(*status);
+  (void)advance_unit_actions(*status);
+  (void)advance_unit_energy(*status);
+  (void)advance_protoss_spell_effects(*status);
+  (void)advance_addon_construction(*status);
+  (void)advance_protoss_building_construction(*status);
+  (void)advance_zerg_building_construction(*status);
   (void)play_pending_resource_error(state);
-  (void)play_pending_game_sound(state);
   evaluate_melee_outcome(state);
-  if (ai_changed || unit_actions_changed || addon_construction_changed ||
-      protoss_construction_changed || zerg_construction_changed) {
-    (void)rebuild_creep_tiles(*status);
-  }
+  // This is an O(creep-source-count) state check on ordinary turns. Terrain
+  // and minimap reconstruction occurs only when a source appears, completes,
+  // moves, changes footprint, or dies.
+  (void)rebuild_creep_tiles(*status);
   (void)advance_selected_portrait(*status, clock);
 
   for (std::size_t index = 0; index < status->units.size(); ++index) {
@@ -118,15 +126,45 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
         unit.asset_index >= status->unit_assets.size()) {
       continue;
     }
+    if (unit.iscript_state.waiting_for_attack_target) {
+      const ScenarioUnitPreview *const target =
+          find_unit_by_id(*status, unit.order_target_id);
+      if (unit.active_order != ActiveUnitOrder::attack || target == nullptr ||
+          !target->alive) {
+        // Opcode 0x35 calls CUnitCombat.cpp::sub_425670 once CUnit+100 is
+        // null; CSprite.cpp::sub_41C0B0 then maps ground attack init/repeat
+        // (2/5) to action 8. Do that handoff before the held script can retry.
+        unit.iscript_state.waiting_for_attack_target = false;
+        (void)restart_unit_animation(*status, unit, 8U);
+      }
+    }
     const UnitRenderAsset &asset = status->unit_assets[unit.asset_index];
     const std::uint32_t previous_weapon_events =
         unit.iscript_state.weapon_event_count;
+    const std::uint32_t previous_sound_events =
+        unit.iscript_state.sound_event_count;
+    const std::uint32_t previous_overlay_events =
+        unit.iscript_state.overlay_event_count;
     const std::uint32_t previous_velocity_events =
         unit.iscript_state.flingy_velocity_event_count;
+    const std::uint32_t previous_resource_overlay_events =
+        unit.iscript_state.resource_overlay_event_count;
+    const std::uint32_t previous_sprite_events =
+        unit.iscript_state.sprite_event_count;
     const auto result = program.tick(
         unit.iscript_state,
         clock ^ static_cast<std::uint32_t>(index * 0x9E3779B9U), 256,
         nullptr, status->scenario.tileset_id());
+    if (unit.iscript_state.sound_event_count != previous_sound_events) {
+      (void)queue_positional_game_sound(
+          *status, unit.iscript_state.sound_event, unit.x, unit.y);
+    }
+    if (unit.iscript_state.overlay_event_count != previous_overlay_events) {
+      (void)materialize_unit_overlay(*status, unit, unit.iscript_state);
+    }
+    if (unit.iscript_state.sprite_event_count != previous_sprite_events) {
+      (void)spawn_iscript_sprite_effect(*status, unit, unit.iscript_state);
+    }
     if (result == starcraft::lang::IScriptTickResult::malformed_program ||
         result == starcraft::lang::IScriptTickResult::unsupported_opcode ||
         result == starcraft::lang::IScriptTickResult::instruction_limit ||
@@ -145,14 +183,26 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
         (void)spawn_worker_mining_effect(*status, unit,
                                          unit.iscript_state.weapon_event);
       }
+      if (unit.iscript_state.resource_overlay_event_count !=
+          previous_resource_overlay_events) {
+        (void)spawn_resource_overlay_effect(
+            *status, unit, unit.iscript_state.resource_overlay_point);
+      }
     }
 
     if (unit.overlay_ready && !asset.overlay_frames.empty()) {
+      const std::uint32_t previous_overlay_sound_events =
+          unit.overlay_iscript_state.sound_event_count;
       const auto overlay_result = program.tick(
           unit.overlay_iscript_state,
           clock ^ static_cast<std::uint32_t>(index * 0x85EBCA6BU) ^
               0x5A5A5A5AU,
           256, &unit.iscript_state, status->scenario.tileset_id());
+      if (unit.overlay_iscript_state.sound_event_count !=
+          previous_overlay_sound_events) {
+        (void)queue_positional_game_sound(
+            *status, unit.overlay_iscript_state.sound_event, unit.x, unit.y);
+      }
       unit.iscript_state.image_target_flags |=
           unit.overlay_iscript_state.image_target_flags;
       unit.overlay_iscript_state.image_target_flags = 0U;
@@ -174,11 +224,19 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
         unit.dynamic_overlay_asset_index < status->unit_assets.size()) {
       const UnitRenderAsset &dynamic_asset =
           status->unit_assets[unit.dynamic_overlay_asset_index];
+      const std::uint32_t previous_dynamic_sound_events =
+          unit.dynamic_overlay_iscript_state.sound_event_count;
       const auto dynamic_result = program.tick(
           unit.dynamic_overlay_iscript_state,
           clock ^ static_cast<std::uint32_t>(index * 0xC2B2AE35U) ^
               0x3C3C3C3CU,
           256, &unit.iscript_state, status->scenario.tileset_id());
+      if (unit.dynamic_overlay_iscript_state.sound_event_count !=
+          previous_dynamic_sound_events) {
+        (void)queue_positional_game_sound(
+            *status, unit.dynamic_overlay_iscript_state.sound_event, unit.x,
+            unit.y);
+      }
       unit.iscript_state.image_target_flags |=
           unit.dynamic_overlay_iscript_state.image_target_flags;
       unit.dynamic_overlay_iscript_state.image_target_flags = 0U;
@@ -192,13 +250,24 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
           unit.dynamic_overlay_iscript_state.frame >=
               dynamic_asset.sprite_frames.size()) {
         unit.dynamic_overlay_ready = false;
+        if (unit.dying) {
+          unit.alive = false;
+          unit.dying = false;
+        }
       } else {
         unit.current_dynamic_overlay_frame =
             unit.dynamic_overlay_iscript_state.frame;
       }
     }
+    if (unit.dying && !unit.dynamic_overlay_ready &&
+        (result == starcraft::lang::IScriptTickResult::ended ||
+         !unit.iscript_ready)) {
+      unit.alive = false;
+      unit.dying = false;
+    }
   }
   (void)advance_transient_images(*status, clock);
+  drain_pending_game_sounds(state);
   return true;
 }
 

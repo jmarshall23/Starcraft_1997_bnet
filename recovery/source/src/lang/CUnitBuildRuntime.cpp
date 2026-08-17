@@ -27,8 +27,10 @@ bool advance_unit_production(BootstrapStatus &status,
           product.initialization.simulation.build_time);
       const std::uint32_t duration =
           static_cast<std::uint32_t>(total_ticks) * kSimulationTickMilliseconds;
-      if (!product.ready || total_ticks == 0U ||
-          now - source.production_started < duration) {
+      const std::int32_t elapsed =
+          static_cast<std::int32_t>(now - source.production_started);
+      if (!product.ready || total_ticks == 0U || elapsed < 0 ||
+          static_cast<std::uint32_t>(elapsed) < duration) {
         continue;
       }
 
@@ -41,6 +43,51 @@ bool advance_unit_production(BootstrapStatus &status,
         // sub_447820 completes the egg's queued morph by changing its CUnit
         // type and dispatching the completion/idle transition.
         (void)restart_unit_animation(status, source, 13U);
+        (void)queue_unit_ready_sound(status, source);
+        changed = true;
+        continue;
+      }
+
+      if (source.production_kind ==
+          starcraft::lang::UnitProductionKind::carrier_hangar) {
+        auto free_slot = std::find(source.hangar_unit_ids.begin(),
+                                   source.hangar_unit_ids.end(), 0U);
+        const std::size_t maximum =
+            source.owner < status.player_upgrade_levels.size() &&
+                    ((source.unit_type == 83U &&
+                      status.player_upgrade_levels[source.owner][36U] != 0U) ||
+                     ((source.unit_type == 72U || source.unit_type == 82U) &&
+                      status.player_upgrade_levels[source.owner][43U] != 0U))
+                ? 10U
+                : 5U;
+        const std::size_t current = static_cast<std::size_t>(std::count_if(
+            source.hangar_unit_ids.begin(), source.hangar_unit_ids.end(),
+            [](const std::uint32_t id) { return id != 0U; }));
+        if (free_slot == source.hangar_unit_ids.end() || current >= maximum) {
+          source.production_queue.advance();
+          source.production_active = !source.production_queue.empty();
+          source.production_started = source.production_active ? now : 0U;
+          changed = true;
+          continue;
+        }
+        ScenarioUnitPreview fighter{};
+        fighter.unit_id = status.next_unit_id++;
+        fighter.owner = source.owner;
+        if (!configure_preview_type(status, fighter, product_type)) {
+          --status.next_unit_id;
+          continue;
+        }
+        fighter.x = source.x;
+        fighter.y = source.y;
+        fighter.x_fixed = static_cast<std::int32_t>(fighter.x) << 8U;
+        fighter.y_fixed = static_cast<std::int32_t>(fighter.y) << 8U;
+        fighter.hangar_parent_id = source.unit_id;
+        fighter.sprite_hidden = true;
+        *free_slot = fighter.unit_id;
+        source.production_queue.advance();
+        source.production_active = !source.production_queue.empty();
+        source.production_started = source.production_active ? now : 0U;
+        status.units.push_back(std::move(fighter));
         changed = true;
         continue;
       }
@@ -79,6 +126,7 @@ bool advance_unit_production(BootstrapStatus &status,
         source.production_started = now;
       }
       status.units.push_back(std::move(produced));
+      (void)queue_unit_ready_sound(status, status.units.back());
       changed = true;
     }
     return changed;

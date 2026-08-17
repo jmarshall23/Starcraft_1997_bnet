@@ -129,7 +129,7 @@ bool complete_protoss_build_order(BootstrapStatus &status,
     }
     status.units.push_back(std::move(building));
     // gamesnd.cpp ID 245 is the exact sub_43BBF0 materialization sound.
-    status.pending_game_sound = 245U;
+    (void)queue_positional_game_sound(status, 245U, building.x, building.y);
     finish_probe_order();
     return true;
   } catch (...) {
@@ -199,7 +199,7 @@ bool advance_protoss_building_construction(BootstrapStatus &status) noexcept {
         building.dynamic_overlay_above = true;
         building.dynamic_overlay_ready = materialize.iscript_ready;
       }
-      status.pending_game_sound = 246U;
+      (void)queue_positional_game_sound(status, 246U, building.x, building.y);
       building.construction_animation_phase = 2U;
     } else if (building.construction_animation_phase == 2U &&
                (building.iscript_state.image_target_flags & 1U) != 0U) {

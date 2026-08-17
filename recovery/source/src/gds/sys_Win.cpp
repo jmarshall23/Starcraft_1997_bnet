@@ -58,7 +58,11 @@ bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   glEnable(GL_TEXTURE_2D);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+  // CImage's cloak draw function modulates the image instead of replacing
+  // the incoming fragment color. GL_REPLACE discarded the per-CUnit alpha,
+  // making Wraiths, Ghosts, and the permanently cloaked Observer fully
+  // opaque even though CImage.cpp selected the recovered cloak state.
+  glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
   state.font_display_lists = glGenLists(96);
   const HFONT font =
       CreateFontA(-10, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -119,11 +123,12 @@ bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   }
   SelectObject(state.device_context, previous_glue);
   DeleteObject(glue_font);
-  return glue_font_ready;
+  return glue_font_ready && initialize_debug_console(window, state);
 }
 
 void shutdown_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   if (state.rendering_context != nullptr) {
+    shutdown_debug_console(state);
     if (state.font_display_lists != 0) {
       glDeleteLists(state.font_display_lists, 96);
       state.font_display_lists = 0;

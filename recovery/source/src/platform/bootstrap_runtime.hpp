@@ -34,6 +34,7 @@ namespace starcraft::recovery {
 inline constexpr std::uint16_t kMapViewportWidth = 640;
 inline constexpr std::uint16_t kMapViewportHeight = 400;
 inline constexpr std::uint32_t kSimulationTickMilliseconds = 42;
+inline constexpr std::size_t kDigitalSoundSourceCount = 128U;
 inline constexpr GLenum kGlBgra = 0x80E1;
 
 struct PresentationViewport {
@@ -51,6 +52,58 @@ struct SpritePreviewFrame {
   std::vector<std::uint32_t> bgra{};
   std::vector<std::uint8_t> palette_indices{};
   std::vector<std::uint8_t> opacity{};
+};
+
+// playflic.cpp owns the decoder lifetime used by both glue-control movies and
+// the unit portrait surface.  The retail BIN files point at SMK descriptors;
+// keeping the decoder with the decoded frame mirrors that ownership without
+// leaving video state in the Win32 bootstrapper.
+struct SmackerAnimation {
+  smk decoder{};
+  std::vector<std::uint8_t> encoded{};
+  SpritePreviewFrame frame{};
+  std::string path{};
+  std::uint32_t frame_count{};
+  std::uint32_t last_frame_tick{};
+  std::uint32_t frame_delay_ms{1};
+  bool transparent_zero{};
+  bool ready{};
+
+  SmackerAnimation() = default;
+  ~SmackerAnimation() {
+    if (decoder != nullptr) {
+      smk_close(decoder);
+    }
+  }
+  SmackerAnimation(const SmackerAnimation &) = delete;
+  SmackerAnimation &operator=(const SmackerAnimation &) = delete;
+  SmackerAnimation(SmackerAnimation &&other) noexcept
+      : decoder(std::exchange(other.decoder, nullptr)),
+        encoded(std::move(other.encoded)), frame(std::move(other.frame)),
+        path(std::move(other.path)),
+        frame_count(other.frame_count), last_frame_tick(other.last_frame_tick),
+        frame_delay_ms(other.frame_delay_ms),
+        transparent_zero(other.transparent_zero), ready(other.ready) {
+    other.ready = false;
+  }
+  SmackerAnimation &operator=(SmackerAnimation &&other) noexcept {
+    if (this != &other) {
+      if (decoder != nullptr) {
+        smk_close(decoder);
+      }
+      decoder = std::exchange(other.decoder, nullptr);
+      encoded = std::move(other.encoded);
+      frame = std::move(other.frame);
+      path = std::move(other.path);
+      frame_count = other.frame_count;
+      last_frame_tick = other.last_frame_tick;
+      frame_delay_ms = other.frame_delay_ms;
+      transparent_zero = other.transparent_zero;
+      ready = other.ready;
+      other.ready = false;
+    }
+    return *this;
+  }
 };
 
 enum class GlueScreen : std::uint8_t {
@@ -78,8 +131,24 @@ struct GlueControl {
   std::int16_t right{};
   std::int16_t bottom{};
   std::uint32_t flags{};
+  std::uint32_t visual_offset{};
   std::string text{};
 };
+
+struct GlueVideo {
+  std::int16_t control_identifier{};
+  std::uint32_t descriptor_flags{};
+  std::int16_t x_offset{};
+  std::int16_t y_offset{};
+  SmackerAnimation animation{};
+};
+
+struct GlueTransformControl {
+  std::int16_t identifier{};
+  std::int16_t direction{};
+};
+
+enum class GlueTransformPhase : std::uint8_t { none, entering, leaving };
 
 struct GlueImage {
   std::int16_t control_identifier{};
@@ -115,6 +184,9 @@ struct GlueRuntime {
   std::vector<GlueImage> main_images{};
   std::vector<GlueImage> connection_images{};
   std::vector<GlueImage> lobby_images{};
+  std::vector<GlueVideo> main_videos{};
+  std::vector<SpritePreviewFrame> main_dialog_frames{};
+  std::vector<SpritePreviewFrame> network_dialog_frames{};
   std::vector<GlueMapEntry> maps{};
   std::array<GlueLobbySlot, starcraft::data::chk_player_slot_count>
       lobby_slots{};
@@ -133,10 +205,18 @@ struct GlueRuntime {
   std::uint32_t screen_entered_tick{};
   std::uint32_t message_until{};
   std::uint32_t ready_deadline{};
+  std::uint32_t clock_tick{};
+  std::uint32_t transform_started_tick{};
   std::int16_t hovered_control{-1};
   std::int16_t pressed_control{-1};
+  std::int16_t popup_control{-1};
+  std::int16_t popup_row{-1};
   std::size_t selected_provider{};
   std::size_t selected_map{};
+  GlueTransformPhase transform_phase{GlueTransformPhase::none};
+  GlueScreen transform_target{GlueScreen::gameplay};
+  GlueAction transform_action{GlueAction::none};
+  std::vector<GlueTransformControl> transform_controls{};
   bool assets_ready{};
 };
 
@@ -242,47 +322,7 @@ struct GameDialogRuntime {
   bool observer_mode{};
 };
 
-struct SmackerPortrait {
-  smk decoder{};
-  SpritePreviewFrame frame{};
-  std::string path{};
-  std::uint32_t frame_count{};
-  std::uint32_t last_frame_tick{};
-  std::uint32_t frame_delay_ms{1};
-  bool ready{};
-
-  SmackerPortrait() = default;
-  ~SmackerPortrait() {
-    if (decoder != nullptr) {
-      smk_close(decoder);
-    }
-  }
-  SmackerPortrait(const SmackerPortrait &) = delete;
-  SmackerPortrait &operator=(const SmackerPortrait &) = delete;
-  SmackerPortrait(SmackerPortrait &&other) noexcept
-      : decoder(std::exchange(other.decoder, nullptr)),
-        frame(std::move(other.frame)), path(std::move(other.path)),
-        frame_count(other.frame_count), last_frame_tick(other.last_frame_tick),
-        frame_delay_ms(other.frame_delay_ms), ready(other.ready) {
-    other.ready = false;
-  }
-  SmackerPortrait &operator=(SmackerPortrait &&other) noexcept {
-    if (this != &other) {
-      if (decoder != nullptr) {
-        smk_close(decoder);
-      }
-      decoder = std::exchange(other.decoder, nullptr);
-      frame = std::move(other.frame);
-      path = std::move(other.path);
-      frame_count = other.frame_count;
-      last_frame_tick = other.last_frame_tick;
-      frame_delay_ms = other.frame_delay_ms;
-      ready = other.ready;
-      other.ready = false;
-    }
-    return *this;
-  }
-};
+using SmackerPortrait = SmackerAnimation;
 
 struct UnitPortraitAsset {
   std::uint16_t unit_type{};
@@ -314,6 +354,11 @@ struct UnitRenderAsset {
   std::int8_t overlay_x_offset{};
   std::int8_t overlay_y_offset{};
   std::vector<SpritePreviewFrame> overlay_frames{};
+  std::string special_overlay_path{};
+  std::uint32_t special_overlay_frame_count{};
+  std::uint32_t special_overlay_point_count{};
+  // Signed x/y pairs, indexed as (frame * point_count + point) * 2.
+  std::vector<std::int8_t> special_overlay_points{};
 };
 
 enum class ActiveUnitOrder : std::uint8_t {
@@ -325,6 +370,19 @@ enum class ActiveUnitOrder : std::uint8_t {
   gather,
   return_cargo,
   protoss_build,
+  enter_transport,
+  pickup_transport,
+  return_hangar,
+  cast_technology,
+  cast_technology_position,
+  archon_warp,
+};
+
+struct PendingGameSound {
+  std::uint16_t sound_id{0xFFFFU};
+  std::uint16_t world_x{};
+  std::uint16_t world_y{};
+  bool positional{};
 };
 
 struct ScenarioUnitPreview {
@@ -367,8 +425,11 @@ struct ScenarioUnitPreview {
   std::uint16_t movement_final_y{};
   std::uint32_t max_hit_points{};
   std::uint32_t hit_points{};
+  std::uint32_t max_shield_points{};
+  std::uint32_t shield_points{};
   std::uint32_t dat_flags{};
   std::uint32_t weapon_range{};
+  std::uint32_t air_weapon_range{};
   std::uint32_t order_target_id{};
   std::uint32_t harvest_source_id{};
   std::uint32_t repair_mineral_accumulator{};
@@ -377,7 +438,22 @@ struct ScenarioUnitPreview {
   std::uint32_t addon_parent_id{};
   std::uint32_t attached_addon_id{};
   std::uint32_t larva_parent_id{};
+  std::uint32_t transport_parent_id{};
+  std::array<std::uint32_t, 8> cargo_unit_ids{};
+  std::array<std::uint32_t, 10> hangar_unit_ids{};
+  std::uint32_t hangar_parent_id{};
   std::uint16_t weapon_damage{};
+  std::uint16_t weapon_damage_factor{};
+  std::uint16_t air_weapon_damage{};
+  std::uint16_t air_weapon_damage_factor{};
+  std::uint32_t projectile_damage{};
+  std::uint32_t projectile_source_id{};
+  std::uint32_t projectile_target_id{};
+  std::uint16_t energy{};
+  std::uint16_t max_energy{};
+  std::uint16_t defensive_matrix_points{};
+  std::uint16_t defensive_matrix_ticks{};
+  std::uint16_t irradiate_ticks{};
   std::uint16_t repair_step{};
   std::uint16_t resource_amount{};
   std::uint16_t mineral_cost{};
@@ -390,21 +466,41 @@ struct ScenarioUnitPreview {
   std::uint16_t build_target_y{};
   std::uint16_t technology_ticks_total{};
   std::uint16_t technology_ticks_remaining{};
+  std::uint16_t stasis_ticks{};
+  std::uint16_t hallucination_ticks{};
+  std::uint16_t pending_technology_x{};
+  std::uint16_t pending_technology_y{};
   std::uint8_t armor{};
   std::uint8_t armor_class{};
+  std::uint8_t ground_weapon{66U};
+  std::uint8_t air_weapon{66U};
+  std::uint8_t projectile_weapon{66U};
   std::uint8_t weapon_damage_class{};
   std::uint8_t weapon_cooldown{};
+  std::uint8_t weapon_upgrade{46U};
+  std::uint8_t air_weapon_damage_class{};
+  std::uint8_t air_weapon_cooldown{};
+  std::uint8_t air_weapon_upgrade{46U};
+  std::uint8_t seek_range{};
+  std::uint8_t armor_upgrade{46U};
+  std::uint8_t cargo_space_provided{};
+  std::uint8_t cargo_space_required{};
   std::uint8_t cargo_minerals{};
   std::uint8_t cargo_gas{};
   std::uint8_t action_phase{};
   std::uint8_t construction_animation_phase{};
   std::uint8_t active_technology{28U};
+  std::uint8_t pending_technology{28U};
+  std::uint8_t irradiate_owner{0xFFU};
   std::uint8_t active_upgrade{46U};
   std::uint8_t last_animation{};
   std::int8_t dynamic_overlay_x_offset{};
   std::int8_t dynamic_overlay_y_offset{};
   std::uint8_t avoidance_ticks{};
   std::uint8_t collision_wait_ticks{};
+  // sai_path.cpp path object +17. sub_4926E0 counts this down before another
+  // blocked-path search and the recovered transition reloads it with 25.
+  std::uint8_t path_recheck_ticks{};
   std::int8_t avoidance_turn{};
   starcraft::lang::UnitProductionQueue production_queue{};
   starcraft::lang::UnitHarvestQueue harvest_queue{};
@@ -417,16 +513,41 @@ struct ScenarioUnitPreview {
   bool dynamic_overlay_ready{};
   bool dynamic_overlay_above{};
   bool overlay_ready{};
+  // CSprite+0x12 bit 0x10 in the original. Refinery harvesting keeps the
+  // CUnit alive while removing its sprite from drawing and spatial queries.
+  bool sprite_hidden{};
   bool selected{};
   bool moving{};
   bool is_building{};
   bool construction_complete{true};
   bool has_ground_weapon{};
+  bool has_air_weapon{};
+  bool cloaked{};
+  bool permanently_cloaked{};
+  bool hallucination{};
   bool alive{true};
   bool production_active{};
+  bool dying{};
+  bool in_transport{};
+  bool is_projectile{};
+  bool hangar_launched{};
+  bool archon_merging{};
   // The original Protoss building CUnit occupies its footprint while image
   // 189 performs the warp-in entrance ahead of the primary building image.
   bool construction_visible{true};
+};
+
+// Only these CUnit fields can change the tile2 creep coverage recovered from
+// sub_4B2A10. Keeping the last applied source state prevents unrelated unit
+// activity from rebuilding the terrain and minimap.
+struct CreepSourceRuntimeState {
+  std::uint16_t unit_type{};
+  std::uint16_t x{};
+  std::uint16_t y{};
+  std::uint16_t placement_width{};
+  std::uint16_t placement_height{};
+  bool alive{};
+  bool complete{};
 };
 
 struct AiBuildRequest {
@@ -436,11 +557,30 @@ struct AiBuildRequest {
   std::uint8_t kind{};  // 0 unit/building, 1 upgrade, 2 technology
 };
 
+enum class ProtossSpellEffectKind : std::uint8_t {
+  psionic_storm,
+  recall,
+};
+
+struct ProtossSpellEffect {
+  ProtossSpellEffectKind kind{};
+  std::uint32_t caster_id{};
+  std::uint16_t x{};
+  std::uint16_t y{};
+  std::uint16_t ticks_remaining{};
+  std::uint16_t radius{};
+  std::uint16_t damage{};
+  std::uint8_t owner{};
+  std::uint8_t pulse_timer{};
+  std::uint8_t pulses_remaining{};
+};
+
 struct AiPlayerRuntime {
   std::array<AiBuildRequest, 64> build_requests{};
   std::uint32_t script_pc{};
   std::uint16_t sleep_ticks{};
   std::uint32_t update_counter{};
+  std::uint8_t macro_update_ticks{};
   std::size_t build_request_count{};
   std::uint8_t owner{};
   std::uint8_t race{};
@@ -455,6 +595,11 @@ struct CommandControl {
   std::int16_t top{};
   std::int16_t right{};
   std::int16_t bottom{};
+};
+
+struct CargoStatusSlot {
+  std::uint32_t unit_id{};
+  std::uint16_t control_id{};
 };
 
 struct CommandButtonVisual {
@@ -480,6 +625,13 @@ struct CommandButtonVisual {
     place_nydus_exit,
     cancel_research,
     cancel_upgrade,
+    begin_patrol_target,
+    hold_position,
+    toggle_cloak,
+    begin_load_target,
+    begin_technology_target,
+    archon_warp,
+    unload_all,
     close_card,
   } action{};
 };
@@ -553,6 +705,10 @@ struct BootstrapStatus {
   std::size_t protoss_warp_asset_index{SIZE_MAX};
   std::size_t protoss_materialize_asset_index{SIZE_MAX};
   std::size_t pylon_power_asset_index{SIZE_MAX};
+  std::size_t psionic_storm_asset_index{SIZE_MAX};
+  std::size_t stasis_field_asset_index{SIZE_MAX};
+  std::size_t recall_asset_index{SIZE_MAX};
+  std::size_t hallucination_asset_index{SIZE_MAX};
   std::uint16_t scv_selection_width{};
   std::uint16_t scv_selection_height{};
   std::uint16_t geyser_selection_width{};
@@ -592,6 +748,9 @@ struct BootstrapStatus {
   CommandControl status_construction_label_control{};
   CommandControl status_construction_progress_control{};
   std::array<CommandControl, 5> status_queue_controls{};
+  // statdata.bin controls 18..32 are the three layouts selected by
+  // statdraw.cpp::sub_4A89B0/sub_4A9B00 for 4-, 2-, and 1-space cargo.
+  std::array<CommandControl, 15> status_cargo_controls{};
   std::array<CommandControl, 12> status_selection_controls{};
   bool status_progress_art_ready{};
   SpritePreviewFrame status_progress_empty{};
@@ -602,7 +761,9 @@ struct BootstrapStatus {
   std::uint16_t resource_icon_canvas_width{};
   std::uint16_t resource_icon_canvas_height{};
   std::vector<SpritePreviewFrame> resource_icon_frames{};
-  CommandControl resource_supply_control{};
+  // statres.bin has one supply slot per CHK race. Indexed Zerg, Terran,
+  // Protoss even though the controls are numbered 1, 3, 2 respectively.
+  std::array<CommandControl, 3> resource_supply_controls{};
   CommandControl resource_gas_control{};
   CommandControl resource_mineral_control{};
   std::uint32_t displayed_minerals{};
@@ -614,8 +775,12 @@ struct BootstrapStatus {
   std::array<UnitSoundRanges, starcraft::lang::kUnitTypeCount>
       unit_sound_ranges{};
   std::vector<ArchivedSoundAsset> archived_sounds{};
-  std::uint16_t pending_game_sound{0xFFFFU};
+  PendingGameSound pending_game_sound{};
+  std::array<PendingGameSound, kDigitalSoundSourceCount - 1U>
+      pending_game_sound_backlog{};
+  std::uint16_t pending_game_sound_count{};
   std::uint16_t last_game_sound{0xFFFFU};
+  std::array<std::uint32_t, 944> game_sound_play_counts{};
   std::uint32_t last_voice_unit_id{};
   std::uint8_t voice_repeat_count{};
   std::uint32_t sound_choice_counter{};
@@ -652,6 +817,11 @@ struct BootstrapStatus {
       runtime_unit_types{};
   std::array<starcraft::data::TechnologyResearchTraits, 28>
       technology_traits{};
+  std::array<starcraft::data::WeaponSimulationTraits, 66> weapon_traits{};
+  std::array<std::size_t, 66> weapon_asset_indices{};
+  std::array<std::uint8_t, 156> order_weapons{};
+  std::array<std::uint8_t, 156> order_technologies{};
+  std::array<std::uint8_t, 156> order_animations{};
   std::array<starcraft::data::UpgradeResearchTraits, 46> upgrade_traits{};
   std::array<bool, 28> researched_technologies{};
   std::array<std::uint8_t, 46> upgrade_levels{};
@@ -677,6 +847,10 @@ struct BootstrapStatus {
   std::vector<std::uint8_t> game_palette{};
   std::array<std::array<std::uint8_t, 8>, 3> selection_color_indices{};
   bool selection_colors_ready{};
+  // sprites.dat field 0 has 267 u16 image IDs in this executable revision.
+  // CImage opcodes 0x0E..0x11 select through this table when they create a
+  // separately owned CSprite rather than an attached CImage.
+  std::array<std::uint16_t, 267> sprite_image_ids{};
   // CImage.cpp::sub_410F60 indexes the five 18-byte gColorShifts entries by
   // images.dat remapping. CImage.cpp::sub_409B00 loads shift.pcx as entry 0;
   // entries 1..4 are ofire, gfire, bfire, and trans50.
@@ -703,10 +877,14 @@ struct BootstrapStatus {
   std::vector<std::uint8_t> creep_tiles{};
   std::vector<std::uint8_t> creep_visual_tiles{};
   std::vector<std::uint8_t> creep_edge_frames{};
+  std::vector<CreepSourceRuntimeState> creep_source_states{};
+  bool creep_source_state_ready{};
+  std::uint32_t creep_rebuild_count{};
   std::vector<std::uint8_t> ai_script_bytes{};
   std::array<AiPlayerRuntime, 8> ai_players{};
   std::vector<ScenarioUnitPreview> units{};
   std::vector<ScenarioUnitPreview> transient_images{};
+  std::vector<ProtossSpellEffect> protoss_spell_effects{};
 };
 
 struct RecoveryWindowState {
@@ -726,6 +904,9 @@ struct RecoveryWindowState {
   std::uint8_t camera_scroll_ramp{};
   std::array<bool, 256> keys_down{};
   bool mouse_in_client{};
+  // Expensive synchronous back-buffer sampling is reserved for the OpenGL
+  // regression probe and never enabled during ordinary gameplay.
+  bool validate_render_pixels{};
   std::uint16_t pressed_command_position{};
   GLuint font_display_lists{};
   GLuint glue_font_display_lists{};
@@ -735,7 +916,8 @@ struct RecoveryWindowState {
   float glue_font_outline_scale{20.0F};
   ALCdevice *audio_device{};
   ALCcontext *audio_context{};
-  ALuint audio_source{};
+  std::array<ALuint, kDigitalSoundSourceCount> audio_sources{};
+  std::uint16_t audio_source_cursor{};
   std::array<ALuint, 2> resource_error_buffers{};
   std::vector<ALuint> archived_sound_buffers{};
   ALuint music_source{};
@@ -743,6 +925,11 @@ struct RecoveryWindowState {
   std::uint32_t audio_play_count{};
   bool audio_ready{};
   bool music_playing{};
+  bool imgui_ready{};
+  bool debug_console_open{};
+  bool debug_console_focus{};
+  std::array<char, 256> debug_console_input{};
+  std::vector<std::string> debug_console_lines{};
 };
 
 // Shared recovered runtime services. Implementations live in source files
@@ -757,6 +944,9 @@ struct RecoveryWindowState {
 [[nodiscard]] bool
 parse_command_controls(const std::vector<std::uint8_t> &layout,
                        std::array<CommandControl, 9> &controls) noexcept;
+[[nodiscard]] std::size_t cargo_status_slots(
+    const BootstrapStatus &status, const ScenarioUnitPreview &transport,
+    std::array<CargoStatusSlot, 8> &slots) noexcept;
 [[nodiscard]] bool parse_dialog_control(const std::vector<std::uint8_t> &layout,
                                         std::int16_t identifier,
                                         CommandControl &output) noexcept;
@@ -799,6 +989,15 @@ void configure_lobby_slots(GlueRuntime &glue) noexcept;
                                        std::uint32_t now) noexcept;
 [[nodiscard]] GlueAction advance_glue(GlueRuntime &glue,
                                       std::uint32_t now) noexcept;
+void glues_enter_screen(GlueRuntime &glue, GlueScreen screen,
+                        std::uint32_t now) noexcept;
+[[nodiscard]] GlueAction glues_leave_screen(GlueRuntime &glue,
+                                            GlueScreen target,
+                                            GlueAction action,
+                                            std::uint32_t now) noexcept;
+void glues_control_rect(const GlueRuntime &glue, const GlueControl &control,
+                        std::int16_t &left, std::int16_t &top,
+                        std::int16_t &right, std::int16_t &bottom) noexcept;
 void draw_glue_text_gl(const RecoveryWindowState &state, std::string_view text,
                        float x, float y, std::uint8_t red = 220U,
                        std::uint8_t green = 220U,
@@ -874,6 +1073,11 @@ void build_match_scores(RecoveryWindowState &state) noexcept;
 void draw_score_screen_gl(const RecoveryWindowState &state,
                           std::uint32_t now) noexcept;
 [[nodiscard]] bool decode_smacker_frame(SmackerPortrait &portrait) noexcept;
+[[nodiscard]] bool load_smacker_animation(
+    starcraft::runtime::StormModule &storm, const char *path,
+    bool transparent_zero, SmackerAnimation &output) noexcept;
+[[nodiscard]] bool advance_smacker_animation(SmackerAnimation &animation,
+                                              std::uint32_t now) noexcept;
 [[nodiscard]] bool load_unit_portrait(starcraft::runtime::StormModule &storm,
                                       const starcraft::data::CoreDataSet &data,
                                       std::uint16_t unit_type,
@@ -913,6 +1117,9 @@ void draw_scenario_unit_gl(const BootstrapStatus &status,
 [[nodiscard]] bool sprite_draws_before(
     const ScenarioUnitPreview &left,
     const ScenarioUnitPreview &right) noexcept;
+[[nodiscard]] bool sprite_intersects_world_viewport(
+    const BootstrapStatus &status,
+    const ScenarioUnitPreview &unit) noexcept;
 [[nodiscard]] bool pylon_power_display_active(
     const BootstrapStatus &status) noexcept;
 void draw_pylon_power_fields_gl(const BootstrapStatus &status);
@@ -933,6 +1140,8 @@ void draw_system_message_gl(const RecoveryWindowState &state,
 void advance_resource_display(BootstrapStatus &status) noexcept;
 [[nodiscard]] std::array<std::uint32_t, 2>
 local_supply(const BootstrapStatus &status) noexcept;
+[[nodiscard]] std::size_t
+resource_supply_icon_frame(std::uint8_t race) noexcept;
 void draw_resource_strip_gl(const RecoveryWindowState &state);
 [[nodiscard]] std::vector<std::uint32_t>
 translated_wireframe(const BootstrapStatus &status,
@@ -996,11 +1205,14 @@ void post_resource_error(BootstrapStatus &status, bool gas) noexcept;
                                            std::uint32_t mineral_cost,
                                            std::uint32_t gas_cost) noexcept;
 
-[[nodiscard]] bool restart_unit_animation(const BootstrapStatus &status,
-                                          ScenarioUnitPreview &unit,
-                                          std::uint8_t animation) noexcept;
+[[nodiscard]] bool restart_unit_animation(BootstrapStatus &status,
+                                           ScenarioUnitPreview &unit,
+                                           std::uint8_t animation) noexcept;
+[[nodiscard]] bool materialize_unit_overlay(
+    const BootstrapStatus &status, ScenarioUnitPreview &unit,
+    const starcraft::lang::IScriptState &source) noexcept;
 [[nodiscard]] bool
-advance_building_construction_animation(const BootstrapStatus &status,
+advance_building_construction_animation(BootstrapStatus &status,
                                         ScenarioUnitPreview &building) noexcept;
 [[nodiscard]] bool collect_building_obstacles(
     const BootstrapStatus &status, const ScenarioUnitPreview *ignored_unit,
@@ -1021,6 +1233,7 @@ find_live_unit_collision(const BootstrapStatus &status,
 find_live_unit_footprint_collision(const BootstrapStatus &status,
                                    const ScenarioUnitPreview &mover,
                                    int proposed_x, int proposed_y) noexcept;
+[[nodiscard]] bool is_airborne(const ScenarioUnitPreview &unit) noexcept;
 [[nodiscard]] bool creation_position_passable(const BootstrapStatus &status,
                                               const ScenarioUnitPreview &unit,
                                               int x, int y) noexcept;
@@ -1034,7 +1247,7 @@ settle_melee_starting_workers(BootstrapStatus &status) noexcept;
                                  ScenarioUnitPreview &unit,
                                  std::uint16_t target_x,
                                  std::uint16_t target_y) noexcept;
-void stop_unit_movement(const BootstrapStatus &status,
+void stop_unit_movement(BootstrapStatus &status,
                         ScenarioUnitPreview &unit) noexcept;
 void cancel_unit_order(BootstrapStatus &status,
                        ScenarioUnitPreview &unit) noexcept;
@@ -1042,7 +1255,17 @@ void cancel_unit_order(BootstrapStatus &status,
                                                std::uint16_t target_x,
                                                std::uint16_t target_y) noexcept;
 [[nodiscard]] std::uint32_t
-effective_unit_top_speed(const ScenarioUnitPreview &unit) noexcept;
+effective_unit_top_speed(const BootstrapStatus &status,
+                         const ScenarioUnitPreview &unit) noexcept;
+[[nodiscard]] std::uint32_t
+effective_unit_weapon_range(const BootstrapStatus &status,
+                            const ScenarioUnitPreview &unit) noexcept;
+[[nodiscard]] std::uint32_t
+effective_unit_weapon_cooldown(const BootstrapStatus &status,
+                               const ScenarioUnitPreview &unit) noexcept;
+[[nodiscard]] bool unit_has_weapon_against(
+    const ScenarioUnitPreview &unit,
+    const ScenarioUnitPreview &target) noexcept;
 [[nodiscard]] ScenarioUnitPreview *
 find_unit_by_id(BootstrapStatus &status, std::uint32_t unit_id) noexcept;
 [[nodiscard]] const ScenarioUnitPreview *
@@ -1056,6 +1279,38 @@ plan_scv_interaction_path(BootstrapStatus &status, ScenarioUnitPreview &worker,
                                          ScenarioUnitPreview &worker,
                                          const ScenarioUnitPreview &target,
                                          ActiveUnitOrder order) noexcept;
+[[nodiscard]] bool transport_accepts_unit(
+    const BootstrapStatus &status, const ScenarioUnitPreview &transport,
+    const ScenarioUnitPreview &passenger) noexcept;
+[[nodiscard]] std::size_t unload_transport_units(
+    BootstrapStatus &status, ScenarioUnitPreview &transport) noexcept;
+[[nodiscard]] bool toggle_unit_cloak(BootstrapStatus &status,
+                                     ScenarioUnitPreview &unit,
+                                     bool cloak) noexcept;
+[[nodiscard]] std::uint8_t technology_target_order(
+    std::uint8_t technology) noexcept;
+[[nodiscard]] bool cast_unit_technology(BootstrapStatus &status,
+                                        ScenarioUnitPreview &caster,
+                                        ScenarioUnitPreview &target,
+                                        std::uint8_t technology) noexcept;
+[[nodiscard]] bool cast_unit_technology_at(BootstrapStatus &status,
+                                           ScenarioUnitPreview &caster,
+                                           std::uint16_t target_x,
+                                           std::uint16_t target_y,
+                                           std::uint8_t technology) noexcept;
+[[nodiscard]] bool cast_protoss_technology(
+    BootstrapStatus &status, ScenarioUnitPreview &caster,
+    ScenarioUnitPreview *target, std::uint16_t target_x,
+    std::uint16_t target_y, std::uint8_t technology) noexcept;
+[[nodiscard]] bool advance_protoss_spell_effects(
+    BootstrapStatus &status) noexcept;
+[[nodiscard]] bool advance_unit_energy(BootstrapStatus &status) noexcept;
+void initialize_unit_energy(const BootstrapStatus &status,
+                            ScenarioUnitPreview &unit) noexcept;
+void apply_fixed_unit_damage(ScenarioUnitPreview &target,
+                             std::uint32_t damage) noexcept;
+void destroy_unit(BootstrapStatus &status, ScenarioUnitPreview &target,
+                  std::uint8_t attacking_owner) noexcept;
 void cancel_command_target(BootstrapStatus &status) noexcept;
 void begin_command_target(BootstrapStatus &status, std::uint8_t unit_order,
                           std::uint8_t terrain_order) noexcept;
@@ -1072,6 +1327,16 @@ issue_scv_return_cargo(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool spawn_worker_mining_effect(
     BootstrapStatus &status, const ScenarioUnitPreview &worker,
     std::uint8_t weapon_type) noexcept;
+[[nodiscard]] bool spawn_weapon_projectile(
+    BootstrapStatus &status, const ScenarioUnitPreview &source,
+    const ScenarioUnitPreview &target, std::uint8_t weapon_type,
+    std::uint32_t damage) noexcept;
+[[nodiscard]] bool spawn_resource_overlay_effect(
+    BootstrapStatus &status, const ScenarioUnitPreview &source,
+    std::uint8_t point) noexcept;
+[[nodiscard]] bool spawn_iscript_sprite_effect(
+    BootstrapStatus &status, const ScenarioUnitPreview &source,
+    const starcraft::lang::IScriptState &event) noexcept;
 [[nodiscard]] bool advance_transient_images(BootstrapStatus &status,
                                             std::uint32_t clock) noexcept;
 [[nodiscard]] bool rebuild_creep_tiles(BootstrapStatus &status) noexcept;
@@ -1118,6 +1383,26 @@ void shutdown_audio(RecoveryWindowState &state) noexcept;
 [[nodiscard]] bool
 play_pending_resource_error(RecoveryWindowState &state) noexcept;
 [[nodiscard]] bool play_pending_game_sound(RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool play_digital_sound_buffer(RecoveryWindowState &state,
+                                             ALuint buffer,
+                                             const PendingGameSound &event = {}) noexcept;
+[[nodiscard]] bool queue_game_sound(BootstrapStatus &status,
+                                    std::uint16_t sound_id) noexcept;
+[[nodiscard]] bool queue_positional_game_sound(
+    BootstrapStatus &status, std::uint16_t sound_id, std::uint16_t world_x,
+    std::uint16_t world_y) noexcept;
+[[nodiscard]] bool queue_unit_ready_sound(
+    BootstrapStatus &status, const ScenarioUnitPreview &unit) noexcept;
+[[nodiscard]] bool initialize_debug_console(HWND window,
+                                            RecoveryWindowState &state) noexcept;
+void shutdown_debug_console(RecoveryWindowState &state) noexcept;
+void draw_debug_console(RecoveryWindowState &state,
+                        const PresentationViewport &viewport) noexcept;
+[[nodiscard]] bool debug_console_wants_mouse() noexcept;
+[[nodiscard]] bool debug_console_wants_keyboard() noexcept;
+[[nodiscard]] bool execute_debug_console_command(BootstrapStatus &status,
+                                                 std::string_view command,
+                                                 std::string &result) noexcept;
 [[nodiscard]] std::uint16_t choose_unit_sound(BootstrapStatus &status,
                                               std::uint16_t first,
                                               std::uint16_t last) noexcept;

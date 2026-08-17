@@ -10,6 +10,7 @@ namespace {
 
 constexpr std::int16_t kSlotNameBase = 100;
 constexpr std::int16_t kSlotRaceBase = 200;
+constexpr std::int16_t kPopupRowBase = 300;
 
 const GlueControl *control_with_id(const std::vector<GlueControl> &controls,
                                    const std::int16_t identifier) noexcept {
@@ -19,16 +20,6 @@ const GlueControl *control_with_id(const std::vector<GlueControl> &controls,
     }
   }
   return nullptr;
-}
-
-void enter_screen(GlueRuntime &glue, const GlueScreen screen,
-                  const std::uint32_t now) noexcept {
-  glue.screen = screen;
-  glue.screen_entered_tick = now;
-  glue.hovered_control = -1;
-  glue.pressed_control = -1;
-  glue.message.clear();
-  glue.message_until = 0U;
 }
 
 void set_message(GlueRuntime &glue, const char *const message,
@@ -49,12 +40,16 @@ void draw_control_image(const RecoveryWindowState &state,
   if (control == nullptr) {
     return;
   }
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  glues_control_rect(state.glue, *control, left, top, right, bottom);
   draw_preview_frame_gl(
-      image.frame, static_cast<float>(control->left),
-      static_cast<float>(control->top) * hud_vertical_scale(),
-      static_cast<float>(control->right - control->left + 1),
-      static_cast<float>(control->bottom - control->top + 1) *
-          hud_vertical_scale());
+      image.frame, static_cast<float>(left),
+      static_cast<float>(top) * hud_vertical_scale(),
+      static_cast<float>(right - left + 1),
+      static_cast<float>(bottom - top + 1) * hud_vertical_scale());
 }
 
 std::size_t active_slot_count(const GlueRuntime &glue) noexcept {
@@ -70,31 +65,56 @@ std::size_t active_slot_count(const GlueRuntime &glue) noexcept {
 GlueAction activate_lobby_control(GlueRuntime &glue,
                                   const std::int16_t identifier, const int,
                                   const int, const std::uint32_t now) noexcept {
-  if (identifier == 7) {
-    enter_screen(glue, GlueScreen::map_selection, now);
+  if (identifier >= kPopupRowBase && identifier < kPopupRowBase + 3 &&
+      glue.popup_control != -1) {
+    const std::int16_t owner = glue.popup_control;
+    const std::uint8_t choice =
+        static_cast<std::uint8_t>(identifier - kPopupRowBase);
+    glue.popup_control = -1;
+    glue.popup_row = -1;
+    if (owner >= kSlotNameBase && owner < kSlotNameBase + 12 && choice < 2U) {
+      GlueLobbySlot &slot = glue.lobby_slots[static_cast<std::size_t>(
+          owner - kSlotNameBase)];
+      if (!slot.local) {
+        if (choice == 0U) {
+          slot.ownership = 5U;
+          slot.name = "Computer";
+          if (slot.race >= 3U) {
+            slot.race = 0U;
+          }
+        } else {
+          slot.ownership = 0U;
+          slot.name.clear();
+        }
+      }
+    } else if (owner >= kSlotRaceBase && owner < kSlotRaceBase + 12 &&
+               choice < 3U) {
+      GlueLobbySlot &slot = glue.lobby_slots[static_cast<std::size_t>(
+          owner - kSlotRaceBase)];
+      if (slot.ownership != 0U) {
+        slot.race = choice;
+      }
+    }
     return GlueAction::redraw;
   }
+  if (identifier == 7) {
+    return glues_leave_screen(glue, GlueScreen::map_selection,
+                              GlueAction::none, now);
+  }
   if (identifier == 15) {
-    enter_screen(glue, GlueScreen::map_selection, now);
-    return GlueAction::redraw;
+    return glues_leave_screen(glue, GlueScreen::map_selection,
+                              GlueAction::none, now);
   }
   if (identifier >= kSlotNameBase &&
       identifier < kSlotNameBase +
                        static_cast<std::int16_t>(glue.lobby_slots.size())) {
     GlueLobbySlot &slot =
         glue.lobby_slots[static_cast<std::size_t>(identifier - kSlotNameBase)];
-    if (!slot.local) {
-      if (slot.ownership == 0U) {
-        slot.ownership = 5U;
-        slot.name = "Computer";
-        if (slot.race >= 3U) {
-          slot.race = 0U;
-        }
-      } else {
-        slot.ownership = 0U;
-        slot.name.clear();
-      }
+    if (slot.local) {
+      glue.popup_control = -1;
+      return GlueAction::redraw;
     }
+    glue.popup_control = glue.popup_control == identifier ? -1 : identifier;
     return GlueAction::redraw;
   }
   if (identifier >= kSlotRaceBase &&
@@ -103,7 +123,9 @@ GlueAction activate_lobby_control(GlueRuntime &glue,
     GlueLobbySlot &slot =
         glue.lobby_slots[static_cast<std::size_t>(identifier - kSlotRaceBase)];
     if (slot.ownership != 0U) {
-      slot.race = static_cast<std::uint8_t>((slot.race + 1U) % 3U);
+      glue.popup_control = glue.popup_control == identifier ? -1 : identifier;
+    } else {
+      glue.popup_control = -1;
     }
     return GlueAction::redraw;
   }
@@ -117,9 +139,8 @@ GlueAction activate_lobby_control(GlueRuntime &glue,
     set_message(glue, "At least two player slots are required.", now);
     return GlueAction::redraw;
   }
-  enter_screen(glue, GlueScreen::ready, now);
-  glue.ready_deadline = now + 3000U;
-  return GlueAction::redraw;
+  glue.ready_deadline = now + 3000U + 240U;
+  return glues_leave_screen(glue, GlueScreen::ready, GlueAction::none, now);
 }
 
 void draw_lobby_gl(const RecoveryWindowState &state) noexcept {

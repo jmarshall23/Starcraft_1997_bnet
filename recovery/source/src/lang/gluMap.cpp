@@ -35,16 +35,6 @@ bool point_in_control(const GlueControl &control, const int x,
          y <= control.bottom;
 }
 
-void enter_screen(GlueRuntime &glue, const GlueScreen screen,
-                  const std::uint32_t now) noexcept {
-  glue.screen = screen;
-  glue.screen_entered_tick = now;
-  glue.hovered_control = -1;
-  glue.pressed_control = -1;
-  glue.message.clear();
-  glue.message_until = 0U;
-}
-
 void draw_lobby_image(const RecoveryWindowState &state,
                       const GlueImage &image) noexcept {
   const GlueControl *const control =
@@ -52,12 +42,16 @@ void draw_lobby_image(const RecoveryWindowState &state,
   if (control == nullptr) {
     return;
   }
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  glues_control_rect(state.glue, *control, left, top, right, bottom);
   draw_preview_frame_gl(
-      image.frame, static_cast<float>(control->left),
-      static_cast<float>(control->top) * hud_vertical_scale(),
-      static_cast<float>(control->right - control->left + 1),
-      static_cast<float>(control->bottom - control->top + 1) *
-          hud_vertical_scale());
+      image.frame, static_cast<float>(left),
+      static_cast<float>(top) * hud_vertical_scale(),
+      static_cast<float>(right - left + 1),
+      static_cast<float>(bottom - top + 1) * hud_vertical_scale());
 }
 
 std::string map_display_name(const std::filesystem::path &path) {
@@ -185,8 +179,8 @@ GlueAction activate_map_selection_control(GlueRuntime &glue,
                                           const int, const int,
                                           const std::uint32_t now) noexcept {
   if (identifier == 7) {
-    enter_screen(glue, GlueScreen::connection, now);
-    return GlueAction::redraw;
+    return glues_leave_screen(glue, GlueScreen::connection,
+                              GlueAction::none, now);
   }
   if (identifier >= kMapRowBase && identifier < kMapRowBase + 6) {
     const std::size_t map = static_cast<std::size_t>(identifier - kMapRowBase);
@@ -197,8 +191,8 @@ GlueAction activate_map_selection_control(GlueRuntime &glue,
   }
   if (identifier == 6 && glue.selected_map < glue.maps.size()) {
     configure_lobby_slots(glue);
-    enter_screen(glue, GlueScreen::lobby, now);
-    return GlueAction::redraw;
+    return glues_leave_screen(glue, GlueScreen::lobby, GlueAction::none,
+                              now);
   }
   return GlueAction::none;
 }
@@ -219,7 +213,7 @@ bool start_selected_glue_map(RecoveryWindowState &state) noexcept {
                                              .path},
                    &ownership, &races);
   if (!replacement.assets_ready) {
-    state.glue.screen = GlueScreen::lobby;
+    glues_enter_screen(state.glue, GlueScreen::lobby, GetTickCount());
     state.glue.message = replacement.detail.empty()
                              ? "The selected map could not be started."
                              : replacement.detail;

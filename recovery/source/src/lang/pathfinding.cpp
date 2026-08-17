@@ -126,15 +126,39 @@ bool PathingMap::assign(
   for (std::uint8_t& cell : walkable) {
     cell = cell == 0 ? 0U : 1U;
   }
-  width_ = minitile_width;
-  height_ = minitile_height;
-  walkable_ = std::move(walkable);
-  return true;
+  try {
+    const std::size_t prefix_width =
+        static_cast<std::size_t>(minitile_width) + 1U;
+    std::vector<std::uint32_t> blocked_prefix(
+        prefix_width * (static_cast<std::size_t>(minitile_height) + 1U));
+    for (std::size_t y = 0; y < minitile_height; ++y) {
+      std::uint32_t row_blocked{};
+      for (std::size_t x = 0; x < minitile_width; ++x) {
+        row_blocked += walkable[y * minitile_width + x] == 0U ? 1U : 0U;
+        blocked_prefix[(y + 1U) * prefix_width + x + 1U] =
+            blocked_prefix[y * prefix_width + x + 1U] + row_blocked;
+      }
+    }
+    width_ = minitile_width;
+    height_ = minitile_height;
+    walkable_ = std::move(walkable);
+    blocked_prefix_ = std::move(blocked_prefix);
+    return true;
+  } catch (...) {
+    width_ = 0U;
+    height_ = 0U;
+    walkable_.clear();
+    blocked_prefix_.clear();
+    return false;
+  }
 }
 
 bool PathingMap::valid() const noexcept {
   return width_ != 0 && height_ != 0 &&
-         walkable_.size() == static_cast<std::size_t>(width_) * height_;
+         walkable_.size() == static_cast<std::size_t>(width_) * height_ &&
+         blocked_prefix_.size() ==
+             (static_cast<std::size_t>(width_) + 1U) *
+                 (static_cast<std::size_t>(height_) + 1U);
 }
 
 std::uint16_t PathingMap::minitile_width() const noexcept { return width_; }
@@ -149,6 +173,26 @@ std::uint16_t PathingMap::pixel_height() const noexcept {
 bool PathingMap::walkable(const std::uint16_t x, const std::uint16_t y) const noexcept {
   return valid() && x < width_ && y < height_ &&
          walkable_[static_cast<std::size_t>(y) * width_ + x] != 0;
+}
+
+bool PathingMap::walkable_rectangle(const int first_x, const int first_y,
+                                    const int last_x,
+                                    const int last_y) const noexcept {
+  if (!valid() || first_x < 0 || first_y < 0 || last_x < first_x ||
+      last_y < first_y || last_x >= width_ || last_y >= height_) {
+    return false;
+  }
+  const std::size_t prefix_width = static_cast<std::size_t>(width_) + 1U;
+  const std::size_t left = static_cast<std::size_t>(first_x);
+  const std::size_t top = static_cast<std::size_t>(first_y);
+  const std::size_t right = static_cast<std::size_t>(last_x) + 1U;
+  const std::size_t bottom = static_cast<std::size_t>(last_y) + 1U;
+  const std::uint32_t blocked =
+      blocked_prefix_[bottom * prefix_width + right] -
+      blocked_prefix_[top * prefix_width + right] -
+      blocked_prefix_[bottom * prefix_width + left] +
+      blocked_prefix_[top * prefix_width + left];
+  return blocked == 0U;
 }
 
 bool path_position_passable(
@@ -173,14 +217,8 @@ bool path_position_passable(
   const int first_y = floor_divide(top, kMinitilePixels);
   const int last_x = floor_divide(right - 1, kMinitilePixels);
   const int last_y = floor_divide(bottom - 1, kMinitilePixels);
-  for (int y = first_y; y <= last_y; ++y) {
-    for (int x = first_x; x <= last_x; ++x) {
-      if (x < 0 || y < 0 || !map.walkable(
-                                static_cast<std::uint16_t>(x),
-                                static_cast<std::uint16_t>(y))) {
-        return false;
-      }
-    }
+  if (!map.walkable_rectangle(first_x, first_y, last_x, last_y)) {
+    return false;
   }
   for (const PathObstacle& obstacle : obstacles) {
     if (left < obstacle.right && right > obstacle.left && top < obstacle.bottom &&
@@ -225,19 +263,25 @@ bool find_unit_path(
     const int grid_width = map.minitile_width();
     const int grid_height = map.minitile_height();
     const int node_count = grid_width * grid_height;
+    std::vector<std::int8_t> passability_cache(
+        static_cast<std::size_t>(node_count), -1);
     auto node_x = [grid_width](const int index) { return index % grid_width; };
     auto node_y = [grid_width](const int index) { return index / grid_width; };
     auto center_x = [](const int x) { return x * kMinitilePixels + kMinitilePixels / 2; };
     auto center_y = [](const int y) { return y * kMinitilePixels + kMinitilePixels / 2; };
     const auto cell_passable = [&](const int x, const int y) {
-      return x >= 0 && y >= 0 && x < grid_width && y < grid_height &&
-             path_position_passable(
-                 map,
-                 center_x(x),
-                 center_y(y),
-                 mover_width,
-                 mover_height,
-                 obstacles);
+      if (x < 0 || y < 0 || x >= grid_width || y >= grid_height) {
+        return false;
+      }
+      std::int8_t &cached = passability_cache[static_cast<std::size_t>(
+          y * grid_width + x)];
+      if (cached < 0) {
+        cached = path_position_passable(map, center_x(x), center_y(y),
+                                        mover_width, mover_height, obstacles)
+                     ? 1
+                     : 0;
+      }
+      return cached != 0;
     };
 
     int start_cell_x = start_x / kMinitilePixels;

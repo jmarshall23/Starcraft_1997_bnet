@@ -9,12 +9,59 @@
 
 namespace starcraft::recovery {
 
-bool play_pending_game_sound(RecoveryWindowState &state) noexcept {
-  if (state.status == nullptr || state.status->pending_game_sound == 0xFFFFU) {
+namespace {
+
+bool queue_sound_event(BootstrapStatus &status,
+                       const PendingGameSound &event) noexcept {
+  if (event.sound_id == 0U || event.sound_id == 0xFFFFU) {
     return false;
   }
-  const std::uint16_t sound_id = state.status->pending_game_sound;
-  state.status->pending_game_sound = 0xFFFFU;
+  if (status.pending_game_sound.sound_id == 0xFFFFU) {
+    status.pending_game_sound = event;
+    return true;
+  }
+  if (status.pending_game_sound_count >=
+      status.pending_game_sound_backlog.size()) {
+    return false;
+  }
+  status.pending_game_sound_backlog[status.pending_game_sound_count++] = event;
+  return true;
+}
+
+} // namespace
+
+bool queue_game_sound(BootstrapStatus &status,
+                      const std::uint16_t sound_id) noexcept {
+  return queue_sound_event(status, PendingGameSound{sound_id, 0U, 0U, false});
+}
+
+bool queue_positional_game_sound(BootstrapStatus &status,
+                                 const std::uint16_t sound_id,
+                                 const std::uint16_t world_x,
+                                 const std::uint16_t world_y) noexcept {
+  return queue_sound_event(
+      status, PendingGameSound{sound_id, world_x, world_y, true});
+}
+
+bool play_pending_game_sound(RecoveryWindowState &state) noexcept {
+  if (state.status == nullptr ||
+      state.status->pending_game_sound.sound_id == 0xFFFFU) {
+    return false;
+  }
+  const PendingGameSound event = state.status->pending_game_sound;
+  const std::uint16_t sound_id = event.sound_id;
+  if (state.status->pending_game_sound_count != 0U) {
+    state.status->pending_game_sound =
+        state.status->pending_game_sound_backlog.front();
+    for (std::size_t index = 1U;
+         index < state.status->pending_game_sound_count; ++index) {
+      state.status->pending_game_sound_backlog[index - 1U] =
+          state.status->pending_game_sound_backlog[index];
+    }
+    --state.status->pending_game_sound_count;
+  } else {
+    state.status->pending_game_sound = {};
+  }
   const auto sound = std::find_if(state.status->archived_sounds.begin(),
                                   state.status->archived_sounds.end(),
                                   [sound_id](const ArchivedSoundAsset &asset) {
@@ -25,22 +72,17 @@ bool play_pending_game_sound(RecoveryWindowState &state) noexcept {
   }
   const std::size_t index =
       static_cast<std::size_t>(sound - state.status->archived_sounds.begin());
-  if (!state.audio_ready || index >= state.archived_sound_buffers.size() ||
-      state.audio_context == nullptr ||
-      !alcMakeContextCurrent(state.audio_context)) {
+  if (index >= state.archived_sound_buffers.size()) {
     return false;
   }
-  while (alGetError() != AL_NO_ERROR) {
-  }
-  alSourceStop(state.audio_source);
-  alSourcei(state.audio_source, AL_BUFFER,
-            static_cast<ALint>(state.archived_sound_buffers[index]));
-  alSourcePlay(state.audio_source);
-  if (alGetError() != AL_NO_ERROR) {
+  if (!play_digital_sound_buffer(state, state.archived_sound_buffers[index],
+                                 event)) {
     return false;
   }
   state.status->last_game_sound = sound_id;
-  ++state.audio_play_count;
+  if (sound_id < state.status->game_sound_play_counts.size()) {
+    ++state.status->game_sound_play_counts[sound_id];
+  }
   return true;
 }
 
@@ -98,8 +140,20 @@ bool queue_unit_response(BootstrapStatus &status,
   if (chosen == 0U) {
     return false;
   }
-  status.pending_game_sound = chosen;
-  return true;
+  return queue_game_sound(status, chosen);
+}
+
+bool queue_unit_ready_sound(BootstrapStatus &status,
+                            const ScenarioUnitPreview &unit) noexcept {
+  // gamesnd.cpp::sub_455790 only announces completed local units in the
+  // 106-entry Ready-sound table. Unit IDs 73 and 85 are explicitly excluded
+  // by the original handler.
+  if (!unit.alive || unit.owner != 0U || unit.unit_type >= 106U ||
+      unit.unit_type == 73U || unit.unit_type == 85U) {
+    return false;
+  }
+  return queue_game_sound(status,
+                          status.unit_sound_ranges[unit.unit_type].ready);
 }
 
 bool extract_unit_sound_ranges(const starcraft::data::CoreDataSet &data,
@@ -207,10 +261,52 @@ bool cache_unit_sound_assets(
         continue;
       }
       const UnitSoundRanges &ranges = status.unit_sound_ranges[type];
-      if (!cache_range(ranges.what_first, ranges.what_last) ||
-          !cache_range(ranges.annoyed_first, ranges.annoyed_last) ||
-          !cache_range(ranges.yes_first, ranges.yes_last)) {
-        return false;
+      // Some unit records intentionally reference expansion/retail variants
+      // absent from the currently mounted archive set. Preserve every sound
+      // that is present without making one optional response invalidate the
+      // complete renderer/audio bootstrap.
+      (void)cache_sound(ranges.ready);
+      (void)cache_range(ranges.what_first, ranges.what_last);
+      (void)cache_range(ranges.annoyed_first, ranges.annoyed_last);
+      (void)cache_range(ranges.yes_first, ranges.yes_last);
+    }
+    // CImage.cpp::sub_415210 opcodes 0x1B/0x1C/0x1D/0x1F feed the same
+    // eight-slot digital mixer as unit voices. Walk every reachable action of
+    // each cached image while Storm is open and preserve every sound ID (and
+    // complete numeric range) that its IScript can emit. This includes the
+    // Marine's licensed rifle sound without encoding a guessed unit/sound map.
+    const starcraft::lang::IScriptProgramView program{
+        status.iscript_bytes.data(), status.iscript_bytes.size()};
+    constexpr std::array<std::uint32_t, 14> random_values{{
+        0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 63U, 127U, 191U, 255U}};
+    starcraft::lang::IScriptState parent{};
+    parent.active = true;
+    for (const UnitRenderAsset &asset : status.unit_assets) {
+      for (std::uint8_t action = 0U; action < 28U; ++action) {
+        for (const std::uint32_t random_value : random_values) {
+          starcraft::lang::IScriptState script{};
+          if (!program.start(asset.iscript_id, action, script)) {
+            break;
+          }
+          for (std::size_t tick = 0U; tick < 256U; ++tick) {
+            const std::uint32_t sound_events = script.sound_event_count;
+            const auto result = program.tick(script, random_value, 256U,
+                                             &parent, 0U);
+            if (script.sound_event_count != sound_events) {
+              (void)cache_range(script.sound_range_first,
+                                script.sound_range_last);
+            }
+            if (result == starcraft::lang::IScriptTickResult::ended ||
+                result ==
+                    starcraft::lang::IScriptTickResult::unsupported_opcode ||
+                result ==
+                    starcraft::lang::IScriptTickResult::malformed_program ||
+                result ==
+                    starcraft::lang::IScriptTickResult::instruction_limit) {
+              break;
+            }
+          }
+        }
       }
     }
     // The SCV's explicit weapon-8 event creates the cutter projectile. Its

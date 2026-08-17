@@ -216,6 +216,27 @@ IScriptTickResult IScriptProgramView::tick(
         state.overlay_above = opcode == 0x09;
         ++state.overlay_event_count;
         break;
+      case 0x11:  // create a sprite below the current sprite
+        // CImage.cpp::sub_415210 case 0x11 consumes a u16 sprite ID and a
+        // signed Y offset, creates the CSprite at the owning sprite/image
+        // position, forces CSprite+17 (elevation) to zero, then initializes
+        // its head image. Building death scripts use this for the separately
+        // owned explosion sprite after attaching their first blast image.
+        if (!read_u16(state.program_counter, word)) {
+          state.active = false;
+          return IScriptTickResult::malformed_program;
+        }
+        state.program_counter =
+            static_cast<std::uint16_t>(state.program_counter + 2U);
+        if (!read_u8(state.program_counter++, byte)) {
+          state.active = false;
+          return IScriptTickResult::malformed_program;
+        }
+        state.sprite_id = word;
+        state.sprite_y_offset = static_cast<std::int8_t>(byte);
+        state.sprite_elevation = 0U;
+        ++state.sprite_event_count;
+        break;
       case 0x19:  // end/delete image
         state.active = false;
         return IScriptTickResult::ended;
@@ -237,6 +258,41 @@ IScriptTickResult IScriptProgramView::tick(
         state.sound_range_last = word;
         ++state.sound_event_count;
         break;
+      case 0x1C:
+      case 0x1F: {  // play one random sound; 0x1F also fires the unit weapon
+        // CImage.cpp::sub_415210 reads a byte count (at most ten), chooses
+        // one of the following u16 sound IDs, and advances past the complete
+        // list. Opcode 0x1F invokes CUnitCombat.cpp::sub_4267E0 before using
+        // the identical list decoder.
+        std::uint8_t count{};
+        if (!read_u8(state.program_counter++, count) || count == 0U ||
+            count > 10U) {
+          state.active = false;
+          return IScriptTickResult::malformed_program;
+        }
+        const std::size_t choices = state.program_counter;
+        const std::size_t bytes = static_cast<std::size_t>(count) * 2U;
+        if (choices + bytes > size_) {
+          state.active = false;
+          return IScriptTickResult::malformed_program;
+        }
+        const std::size_t selected = random_value % count;
+        if (!read_u16(choices + selected * 2U, word)) {
+          state.active = false;
+          return IScriptTickResult::malformed_program;
+        }
+        state.program_counter =
+            static_cast<std::uint16_t>(state.program_counter + bytes);
+        state.sound_event = word;
+        state.sound_range_first = word;
+        state.sound_range_last = word;
+        ++state.sound_event_count;
+        if (opcode == 0x1FU) {
+          state.weapon_event = 0xFFU;
+          ++state.weapon_event_count;
+        }
+        break;
+      }
       case 0x1D: {  // play one sound from an inclusive numeric range
         std::uint16_t last{};
         if (!read_u16(state.program_counter, word) ||
@@ -346,6 +402,27 @@ IScriptTickResult IScriptProgramView::tick(
         // The recovered simulation owns that flag at the order layer. The
         // opcode is operand-less and must not terminate the image timeline.
         break;
+      case 0x33:  // begin an uninterruptible image sequence
+        // CImage.cpp::sub_415210 sets CUnit+216 bit 0x80 and CSprite+18 bit
+        // 0x20. Marine and other weapon scripts bracket their launch frames
+        // with 0x33/0x34; treating this as unsupported stopped the script on
+        // its third tick and made every cooldown restart visibly flicker.
+        state.uninterruptible = true;
+        break;
+      case 0x34:  // finish an uninterruptible image sequence
+        // The original calls CUnitOrder.cpp::sub_4349D0, which clears the
+        // same CUnit and CSprite bits before resuming normal order handling.
+        state.uninterruptible = false;
+        break;
+      case 0x35:  // wait while the owning CUnit still has an attack target
+        // The original rewinds the image PC to this opcode and sleeps for ten
+        // image ticks while CUnit+100 is non-null. The interpreter has no
+        // CUnit pointer, so expose the wait boundary to gameloop.cpp, which
+        // performs the recovered target test before the next tick.
+        --state.program_counter;
+        state.sleep_ticks = 9U;
+        state.waiting_for_attack_target = true;
+        return IScriptTickResult::yielded;
       case 0x37:  // hide
         state.hidden = true;
         break;
@@ -364,6 +441,17 @@ IScriptTickResult IScriptProgramView::tick(
         state.program_counter = static_cast<std::uint16_t>(state.program_counter + 2U);
         state.flingy_speed = word;
         ++state.flingy_speed_event_count;
+        break;
+      case 0x40:  // create a resource-source plume at an LO-table point
+        // CImage.cpp::sub_415210 case 0x40 consumes a point index, resolves it
+        // through dword_55A918[image][frame], and creates
+        // image 402+point for a nonempty resource (407+point when depleted).
+        if (!read_u8(state.program_counter++, byte)) {
+          state.active = false;
+          return IScriptTickResult::malformed_program;
+        }
+        state.resource_overlay_point = byte;
+        ++state.resource_overlay_event_count;
         break;
       case 0x41:  // loop while this is not the owning sprite's head image
         // Inventory overlays are inserted as the sprite's head image by

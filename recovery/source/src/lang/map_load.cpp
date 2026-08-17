@@ -167,6 +167,7 @@ BootstrapStatus probe_assets(
     const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
         *const race_override) {
   BootstrapStatus status{};
+  status.weapon_asset_indices.fill(SIZE_MAX);
   const std::filesystem::path root = locate_input_root();
   if (root.empty()) {
     status.primary = "Licensed input directory was not found.";
@@ -250,6 +251,17 @@ BootstrapStatus probe_assets(
     research_data_ready = data.technology_research_traits(
         static_cast<std::uint16_t>(technology),
         status.technology_traits[technology]);
+  }
+  for (std::size_t weapon = 0;
+       research_data_ready && weapon < status.weapon_traits.size(); ++weapon) {
+    research_data_ready = data.weapon_simulation_traits(
+        static_cast<std::uint16_t>(weapon), status.weapon_traits[weapon]);
+  }
+  for (std::size_t order = 0;
+       research_data_ready && order < status.order_weapons.size(); ++order) {
+    research_data_ready = data.order_spell_traits(
+        static_cast<std::uint16_t>(order), status.order_weapons[order],
+        status.order_technologies[order], status.order_animations[order]);
   }
   for (std::size_t upgrade = 0;
        research_data_ready && upgrade < status.upgrade_traits.size();
@@ -580,6 +592,7 @@ BootstrapStatus probe_assets(
   bool focus_asset_ready{};
   bool scv_asset_ready{};
   bool geyser_asset_ready{};
+  bool geyser_smoke_assets_ready{};
   bool cargo_assets_ready{};
   bool worker_mining_effects_ready{};
   bool working_overlay_asset_ready{};
@@ -591,6 +604,15 @@ BootstrapStatus probe_assets(
   std::string protoss_asset_failure;
   if (data_loaded && palette_loaded && scenario.valid()) {
     status.iscript_bytes = data.iscript();
+    const starcraft::data::DatField *const sprite_image_table =
+        data.sprites().field(0U);
+    bool sprite_images_ready = sprite_image_table != nullptr;
+    for (std::size_t sprite = 0U;
+         sprite_images_ready && sprite < status.sprite_image_ids.size();
+         ++sprite) {
+      sprite_images_ready = sprite_image_table->value(
+          sprite, status.sprite_image_ids[sprite]);
+    }
     status.unit_assets.reserve(64);
     const auto ensure_asset = [&](const std::uint16_t image_id) -> std::size_t {
       const auto existing =
@@ -642,6 +664,18 @@ BootstrapStatus probe_assets(
       runtime.ready = true;
       return &runtime;
     };
+
+    // CBullet.cpp::sub_402940 follows weapons.dat[1] through flingy.dat and
+    // sprites.dat to create the projectile image. Cache every nonzero weapon
+    // graphic while the licensed archives are open so any race's attack
+    // IScript can materialize its real projectile at runtime.
+    for (std::uint16_t weapon = 0U;
+         weapon < status.weapon_asset_indices.size(); ++weapon) {
+      std::uint16_t projectile_image{};
+      if (data.weapon_image_id(weapon, projectile_image)) {
+        status.weapon_asset_indices[weapon] = ensure_asset(projectile_image);
+      }
+    }
 
     if (!focus_unit_found && scenario.players()[0].ownership != 0U) {
       // A melee CHK is allowed to contain only start-location markers and
@@ -709,6 +743,7 @@ BootstrapStatus probe_assets(
       preview.is_building = initialization.is_building;
       preview.unit_id = status.next_unit_id++;
       apply_initialization_traits(preview, initialization);
+      initialize_unit_energy(status, preview);
       if (preview.is_building) {
         // CUnitInit.cpp::sub_42EBB0 at 0x0042EBB0 dispatches animation 16
         // when a completed building is initialized.
@@ -795,6 +830,14 @@ BootstrapStatus probe_assets(
         }
       }
     }
+    // netcmd.cpp::sub_4762B0 and CUnitProtoss.cpp::sub_43C5B0 transform a
+    // reciprocal pair of type-67 Templars directly into type 68.  Because the
+    // result has no ordinary production-card entry, cache it explicitly while
+    // the read-only archives are open.
+    if (ensure_runtime_unit_type(68U) == nullptr) {
+      status.failed_runtime_unit_type = 68U;
+      production_assets_ready = false;
+    }
     // CUnitZerg.cpp::sub_448940 and sub_4495C0 spawn larva for each of the
     // three Zerg town-hall stages. They are part of the production runtime
     // even though the actual morph card belongs to the child larva CUnit.
@@ -842,6 +885,20 @@ BootstrapStatus probe_assets(
                                    status.geyser_selection_height) &&
           data.unit_simulation_traits(188, status.geyser_simulation);
     }
+    geyser_smoke_assets_ready = geyser_asset_ready;
+    for (std::uint16_t image = 402U; image <= 411U; ++image) {
+      geyser_smoke_assets_ready =
+          ensure_asset(image) != SIZE_MAX && geyser_smoke_assets_ready;
+    }
+    if (geyser_smoke_assets_ready) {
+      const UnitRenderAsset &geyser_asset =
+          status.unit_assets[status.geyser_asset_index];
+      geyser_smoke_assets_ready =
+          !geyser_asset.special_overlay_path.empty() &&
+          geyser_asset.special_overlay_frame_count != 0U &&
+          geyser_asset.special_overlay_point_count >= 3U &&
+          !geyser_asset.special_overlay_points.empty();
+    }
     // CUnitHarvest.cpp::sub_42D3C0 passes source inventory types 220 and 222
     // to CUnitInv.cpp::sub_430FB0. That function adds 137 to obtain the
     // attached image IDs for carried minerals and Terran gas.
@@ -884,6 +941,21 @@ BootstrapStatus probe_assets(
                 sprite_images->value(198U, pylon_power_image)
             ? ensure_asset(pylon_power_image)
             : SIZE_MAX;
+    // CUnitPSpells.cpp and CBullet.cpp bind these exact licensed effects:
+    // weapon 56 Psionic Storm, weapon 55 Stasis Field, sprite 265 Recall,
+    // and image 516 on a newly created Hallucination.
+    std::uint16_t spell_image{};
+    if (data.weapon_image_id(56U, spell_image)) {
+      status.psionic_storm_asset_index = ensure_asset(spell_image);
+    }
+    if (data.weapon_image_id(55U, spell_image)) {
+      status.stasis_field_asset_index = ensure_asset(spell_image);
+    }
+    status.recall_asset_index =
+        sprite_images != nullptr && sprite_images->value(265U, spell_image)
+            ? ensure_asset(spell_image)
+            : SIZE_MAX;
+    status.hallucination_asset_index = ensure_asset(516U);
     protoss_construction_assets_ready =
         status.protoss_warp_asset_index != SIZE_MAX &&
         status.protoss_materialize_asset_index != SIZE_MAX &&
@@ -995,6 +1067,85 @@ BootstrapStatus probe_assets(
       status.buildable_units.clear();
     }
 
+    // CUnitInit.cpp::sub_42EBB0 dispatches action 16 for every completed
+    // building. That action can attach a building-specific idle image (the
+    // Nexus creates image 161), distinct from both its static action-zero
+    // shadow and its construction images. Discover those action events from
+    // the licensed IScript and cache their GRPs before the MPQs are closed.
+    std::vector<std::uint16_t> building_runtime_overlay_images;
+    std::vector<std::uint16_t> building_runtime_sprite_images;
+    {
+      const starcraft::lang::IScriptProgramView program{
+          status.iscript_bytes.data(), status.iscript_bytes.size()};
+      for (const RuntimeUnitType &runtime : status.runtime_unit_types) {
+        if (!runtime.ready || !runtime.initialization.is_building ||
+            runtime.asset_index >= status.unit_assets.size()) {
+          continue;
+        }
+        const UnitRenderAsset &building_asset =
+            status.unit_assets[runtime.asset_index];
+        // Action 1 is the recovered building-death entry and action 16 is
+        // completed-building idle. Both attach licensed effect images which
+        // must be cached before Storm closes the archives.
+        for (const std::uint8_t action : {1U, 16U}) {
+          starcraft::lang::IScriptState script{};
+          if (!program.start(building_asset.iscript_id, action, script)) {
+            continue;
+          }
+          std::uint32_t overlay_events{};
+          std::uint32_t sprite_events{};
+          for (std::size_t tick = 0U; tick < 128U; ++tick) {
+            const auto result = program.tick(
+                script, static_cast<std::uint32_t>(tick), 256U, nullptr,
+                scenario.tileset_id());
+            if (script.overlay_event_count != overlay_events) {
+              overlay_events = script.overlay_event_count;
+              if (script.overlay_image != building_asset.overlay_image_id &&
+                  std::find(building_runtime_overlay_images.begin(),
+                            building_runtime_overlay_images.end(),
+                            script.overlay_image) ==
+                      building_runtime_overlay_images.end()) {
+                building_runtime_overlay_images.push_back(script.overlay_image);
+              }
+            }
+            if (script.sprite_event_count != sprite_events) {
+              sprite_events = script.sprite_event_count;
+              if (script.sprite_id < status.sprite_image_ids.size()) {
+                const std::uint16_t image =
+                    status.sprite_image_ids[script.sprite_id];
+                if (std::find(building_runtime_sprite_images.begin(),
+                              building_runtime_sprite_images.end(), image) ==
+                    building_runtime_sprite_images.end()) {
+                  building_runtime_sprite_images.push_back(image);
+                }
+              }
+            }
+            if (result == starcraft::lang::IScriptTickResult::ended ||
+                result ==
+                    starcraft::lang::IScriptTickResult::unsupported_opcode ||
+                result ==
+                    starcraft::lang::IScriptTickResult::malformed_program ||
+                result ==
+                    starcraft::lang::IScriptTickResult::instruction_limit) {
+              break;
+            }
+          }
+        }
+      }
+    }
+    for (const std::uint16_t image : building_runtime_overlay_images) {
+      build_assets_ready = ensure_asset(image) != SIZE_MAX &&
+                           build_assets_ready;
+    }
+    for (const std::uint16_t image : building_runtime_sprite_images) {
+      build_assets_ready = ensure_asset(image) != SIZE_MAX &&
+                           build_assets_ready;
+    }
+    build_assets_ready = sprite_images_ready && build_assets_ready;
+    if (!build_assets_ready) {
+      status.buildable_units.clear();
+    }
+
     const auto ensure_portrait = [&](const std::uint16_t unit_type,
                                      const std::uint8_t owner) -> bool {
       const auto existing = std::find_if(
@@ -1044,6 +1195,12 @@ BootstrapStatus probe_assets(
         wanted_sound_types[buildable.unit_type] = true;
       }
     }
+    for (std::size_t type = 0U; type < status.runtime_unit_types.size();
+         ++type) {
+      if (status.runtime_unit_types[type].ready) {
+        wanted_sound_types[type] = true;
+      }
+    }
     std::vector<std::uint8_t> sfx_data;
     std::vector<std::uint8_t> sfx_table;
     status.unit_sounds_ready =
@@ -1076,7 +1233,8 @@ BootstrapStatus probe_assets(
   const bool archive_closed = storm.close_archive(archive);
   status.assets_ready =
       map_loaded && scenario_loaded && data_loaded && focus_unit_found &&
-      focus_asset_ready && scv_asset_ready && palette_loaded &&
+      focus_asset_ready && scv_asset_ready && geyser_asset_ready &&
+      geyser_smoke_assets_ready && palette_loaded &&
       cargo_assets_ready && worker_mining_effects_ready &&
       working_overlay_asset_ready && build_assets_ready &&
       protoss_construction_assets_ready &&
@@ -1136,6 +1294,9 @@ BootstrapStatus probe_assets(
       status.detail = "The selected local CUnit image did not decode.";
     } else if (!scv_asset_ready) {
       status.detail = "The SCV runtime asset did not initialize.";
+    } else if (!geyser_asset_ready || !geyser_smoke_assets_ready) {
+      status.detail =
+          "The neutral geyser or its resource plume assets did not initialize.";
     } else if (!palette_loaded) {
       status.detail = "The selected ERA palette did not load.";
     } else if (!cargo_assets_ready || !worker_mining_effects_ready ||

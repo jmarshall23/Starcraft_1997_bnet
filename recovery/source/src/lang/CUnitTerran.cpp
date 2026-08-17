@@ -31,13 +31,13 @@ std::uint16_t terran_addon_parent_type(
     case 107U:
     case 108U:
       return 106U;
-    case 115U:
     case 120U:
-      return 116U;
-    case 117U:
       return 113U;
-    case 118U:
+    case 115U:
       return 114U;
+    case 117U:
+    case 118U:
+      return 116U;
     default:
       return UINT16_MAX;
   }

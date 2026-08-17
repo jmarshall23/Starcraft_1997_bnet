@@ -41,11 +41,20 @@ class PathingMap final {
   [[nodiscard]] std::uint16_t pixel_width() const noexcept;
   [[nodiscard]] std::uint16_t pixel_height() const noexcept;
   [[nodiscard]] bool walkable(std::uint16_t x, std::uint16_t y) const noexcept;
+  [[nodiscard]] bool walkable_rectangle(
+      int first_x,
+      int first_y,
+      int last_x,
+      int last_y) const noexcept;
 
  private:
   std::uint16_t width_{};
   std::uint16_t height_{};
   std::vector<std::uint8_t> walkable_{};
+  // Summed-area count of blocked minitiles. CUnitPath tests rectangular
+  // footprints repeatedly while expanding a path; this preserves the same
+  // CV5 walkability result without rescanning every minitile in the body.
+  std::vector<std::uint32_t> blocked_prefix_{};
 };
 
 [[nodiscard]] bool path_position_passable(

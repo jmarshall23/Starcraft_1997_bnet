@@ -57,6 +57,13 @@ bool parse_status_panel_controls(const std::vector<std::uint8_t> &layout,
       return false;
     }
   }
+  for (std::size_t index = 0; index < status.status_cargo_controls.size();
+       ++index) {
+    if (!parse_dialog_control(layout, static_cast<std::int16_t>(18 + index),
+                              status.status_cargo_controls[index])) {
+      return false;
+    }
+  }
   for (std::size_t index = 0; index < status.status_selection_controls.size();
        ++index) {
     if (!parse_dialog_control(layout, static_cast<std::int16_t>(33 + index),

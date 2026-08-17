@@ -92,24 +92,60 @@ struct FlingyMovementTraits {
 
 struct UnitSimulationTraits {
   std::uint32_t max_hit_points{};
+  std::uint32_t max_shield_points{};
   std::uint32_t dat_flags{};
   std::uint32_t ground_weapon_range{};
+  std::uint32_t air_weapon_range{};
   std::uint16_t ground_weapon_damage{};
+  std::uint16_t ground_weapon_damage_factor{};
+  std::uint16_t air_weapon_damage{};
+  std::uint16_t air_weapon_damage_factor{};
   std::uint16_t mineral_cost{};
   std::uint16_t gas_cost{};
   std::uint16_t build_time{};
   std::uint8_t armor{};
   std::uint8_t armor_class{};
+  std::uint8_t armor_upgrade{46U};
   std::uint8_t ground_weapon{};
+  std::uint8_t air_weapon{};
+  std::uint8_t ground_weapon_upgrade{46U};
+  std::uint8_t air_weapon_upgrade{46U};
   std::uint8_t ground_weapon_damage_class{};
   std::uint8_t ground_weapon_cooldown{};
+  std::uint8_t air_weapon_damage_class{};
+  std::uint8_t air_weapon_cooldown{};
+  std::uint8_t seek_range{};
+  std::uint8_t cargo_space_required{};
+  std::uint8_t cargo_space_provided{};
   bool has_ground_weapon{};
+  bool has_air_weapon{};
+};
+
+struct WeaponSimulationTraits {
+  std::uint32_t maximum_range{};
+  std::uint32_t projectile_top_speed{};
+  std::uint16_t inner_splash_radius{};
+  std::uint16_t median_splash_radius{};
+  std::uint16_t outer_splash_radius{};
+  std::uint16_t damage{};
+  std::uint16_t damage_factor{};
+  std::uint8_t upgrade{46U};
+  std::uint8_t damage_class{};
+  std::uint8_t cooldown{};
+  std::uint8_t behavior{};
+  std::uint8_t removal_timer{};
+  std::uint8_t explosion_type{};
+  std::uint8_t projectile_count{1U};
+  std::uint8_t forward_offset{};
+  std::uint8_t vertical_offset{};
+  bool has_projectile_graphic{};
 };
 
 struct TechnologyResearchTraits {
   std::uint16_t mineral_cost{};
   std::uint16_t gas_cost{};
   std::uint16_t research_time{};
+  std::uint16_t energy_cost{};
 };
 
 struct UpgradeResearchTraits {
@@ -132,6 +168,7 @@ class CoreDataSet final {
   [[nodiscard]] const DatTable& sprites() const noexcept;
   [[nodiscard]] const DatTable& images() const noexcept;
   [[nodiscard]] const DatTable& technologies() const noexcept;
+  [[nodiscard]] const DatTable& orders() const noexcept;
   [[nodiscard]] const DatTable& upgrades() const noexcept;
   [[nodiscard]] const DatTable& mapdata() const noexcept;
   [[nodiscard]] const DatTable& portraits() const noexcept;
@@ -143,6 +180,8 @@ class CoreDataSet final {
 
   [[nodiscard]] bool extract_unit_traits(starcraft::lang::UnitTraitsTable& traits) const noexcept;
   [[nodiscard]] std::string image_grp_path(std::uint16_t image_id) const;
+  [[nodiscard]] std::string
+  image_special_overlay_path(std::uint16_t image_id) const;
   [[nodiscard]] bool image_iscript_id(
       std::uint16_t image_id,
       std::uint16_t& script_id) const noexcept;
@@ -190,6 +229,12 @@ class CoreDataSet final {
   [[nodiscard]] bool technology_research_traits(
       std::uint16_t technology,
       TechnologyResearchTraits& traits) const noexcept;
+  [[nodiscard]] bool weapon_simulation_traits(
+      std::uint16_t weapon,
+      WeaponSimulationTraits& traits) const noexcept;
+  [[nodiscard]] bool order_spell_traits(
+      std::uint16_t order, std::uint8_t& weapon, std::uint8_t& technology,
+      std::uint8_t& animation) const noexcept;
   [[nodiscard]] bool upgrade_research_traits(
       std::uint16_t upgrade,
       UpgradeResearchTraits& traits) const noexcept;
@@ -207,6 +252,7 @@ class CoreDataSet final {
   DatTable sprites_{};
   DatTable images_{};
   DatTable technologies_{};
+  DatTable orders_{};
   DatTable upgrades_{};
   DatTable mapdata_{};
   DatTable portraits_{};

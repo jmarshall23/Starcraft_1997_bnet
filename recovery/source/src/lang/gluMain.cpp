@@ -28,12 +28,42 @@ void draw_control_image(const RecoveryWindowState &state,
   if (control == nullptr) {
     return;
   }
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  glues_control_rect(state.glue, *control, left, top, right, bottom);
   draw_preview_frame_gl(
-      image.frame, static_cast<float>(control->left),
-      static_cast<float>(control->top) * hud_vertical_scale(),
-      static_cast<float>(control->right - control->left + 1),
-      static_cast<float>(control->bottom - control->top + 1) *
-          hud_vertical_scale());
+      image.frame, static_cast<float>(left),
+      static_cast<float>(top) * hud_vertical_scale(),
+      static_cast<float>(right - left + 1),
+      static_cast<float>(bottom - top + 1) * hud_vertical_scale());
+}
+
+void draw_control_videos(const RecoveryWindowState &state,
+                         const GlueControl &control) noexcept {
+  const bool highlighted =
+      state.glue.hovered_control == control.identifier ||
+      state.glue.pressed_control == control.identifier;
+  for (const GlueVideo &video : state.glue.main_videos) {
+    if (video.control_identifier != control.identifier ||
+        !video.animation.ready ||
+        ((video.descriptor_flags & 8U) != 0U && !highlighted)) {
+      continue;
+    }
+    std::int16_t left{};
+    std::int16_t top{};
+    std::int16_t right{};
+    std::int16_t bottom{};
+    glues_control_rect(state.glue, control, left, top, right, bottom);
+    draw_preview_frame_gl(
+        video.animation.frame,
+        static_cast<float>(left + video.x_offset),
+        static_cast<float>(top + video.y_offset) * hud_vertical_scale(),
+        static_cast<float>(video.animation.frame.width),
+        static_cast<float>(video.animation.frame.height) *
+            hud_vertical_scale());
+  }
 }
 
 void set_message(GlueRuntime &glue, const char *const message,
@@ -71,12 +101,7 @@ GlueAction activate_main_menu_control(GlueRuntime &glue,
                 now);
     return GlueAction::redraw;
   case 4: // Multiplayer
-    glue.screen = GlueScreen::connection;
-    glue.screen_entered_tick = now;
-    glue.hovered_control = -1;
-    glue.pressed_control = -1;
-    glue.message.clear();
-    glue.message_until = 0U;
+    glues_enter_screen(glue, GlueScreen::connection, now);
     return GlueAction::redraw;
   case 5: // Campaign Editor
     set_message(glue,
@@ -98,8 +123,20 @@ void draw_main_menu_gl(const RecoveryWindowState &state) noexcept {
   draw_preview_frame_gl(state.glue.main_background, 0.0F, 0.0F,
                         static_cast<float>(kMapViewportWidth),
                         static_cast<float>(kMapViewportHeight));
-  for (const GlueImage &image : state.glue.main_images) {
-    draw_control_image(state, image);
+  // gluMain.bin interleaves PCX and SMK controls. Preserve that order: eTail
+  // sits below Exit.smk while the intro/credits panels sit above the large
+  // menu movies.
+  for (const GlueControl &control : state.glue.main_controls) {
+    if (control.type == 5U) {
+      for (const GlueImage &image : state.glue.main_images) {
+        if (image.control_identifier == control.identifier) {
+          draw_control_image(state, image);
+          break;
+        }
+      }
+    } else if (control.type == 14U) {
+      draw_control_videos(state, control);
+    }
   }
   for (const GlueControl &control : state.glue.main_controls) {
     if (control.type != 14U || control.text.empty()) {

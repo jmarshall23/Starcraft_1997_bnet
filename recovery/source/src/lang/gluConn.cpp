@@ -29,22 +29,16 @@ void draw_control_image(const RecoveryWindowState &state,
   if (control == nullptr) {
     return;
   }
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  glues_control_rect(state.glue, *control, left, top, right, bottom);
   draw_preview_frame_gl(
-      image.frame, static_cast<float>(control->left),
-      static_cast<float>(control->top) * hud_vertical_scale(),
-      static_cast<float>(control->right - control->left + 1),
-      static_cast<float>(control->bottom - control->top + 1) *
-          hud_vertical_scale());
-}
-
-void enter_screen(GlueRuntime &glue, const GlueScreen screen,
-                  const std::uint32_t now) noexcept {
-  glue.screen = screen;
-  glue.screen_entered_tick = now;
-  glue.hovered_control = -1;
-  glue.pressed_control = -1;
-  glue.message.clear();
-  glue.message_until = 0U;
+      image.frame, static_cast<float>(left),
+      static_cast<float>(top) * hud_vertical_scale(),
+      static_cast<float>(right - left + 1),
+      static_cast<float>(bottom - top + 1) * hud_vertical_scale());
 }
 
 void set_message(GlueRuntime &glue, const char *const message,
@@ -76,8 +70,8 @@ GlueAction activate_connection_control(GlueRuntime &glue,
                                        const int, const int y,
                                        const std::uint32_t now) noexcept {
   if (identifier == 10) { // Cancel
-    enter_screen(glue, GlueScreen::main_menu, now);
-    return GlueAction::redraw;
+    return glues_leave_screen(glue, GlueScreen::main_menu,
+                              GlueAction::none, now);
   }
   if (identifier == 5) { // Provider list
     const GlueControl *const list =
@@ -96,8 +90,8 @@ GlueAction activate_connection_control(GlueRuntime &glue,
     return GlueAction::none;
   }
   if (glue.selected_provider == 0U) {
-    enter_screen(glue, GlueScreen::map_selection, now);
-    return GlueAction::redraw;
+    return glues_leave_screen(glue, GlueScreen::map_selection,
+                              GlueAction::none, now);
   }
   if (glue.selected_provider == 1U) {
     set_message(glue, "The new LAN session transport is the next net task.",
@@ -128,20 +122,26 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
   const GlueControl *const list =
       control_with_id(state.glue.connection_controls, 5);
   if (list != nullptr) {
+    std::int16_t list_left{};
+    std::int16_t list_top{};
+    std::int16_t list_right{};
+    std::int16_t list_bottom{};
+    glues_control_rect(state.glue, *list, list_left, list_top, list_right,
+                       list_bottom);
     constexpr float row_height = 28.0F;
     const float selected_top =
-        static_cast<float>(list->top + 8) +
+        static_cast<float>(list_top + 8) +
         row_height * static_cast<float>(state.glue.selected_provider);
     glDisable(GL_TEXTURE_2D);
     glColor4ub(48U, 92U, 144U, 150U);
     glBegin(GL_QUADS);
-    glVertex2f(static_cast<float>(list->left + 5),
+    glVertex2f(static_cast<float>(list_left + 5),
                selected_top * hud_vertical_scale());
-    glVertex2f(static_cast<float>(list->right - 5),
+    glVertex2f(static_cast<float>(list_right - 5),
                selected_top * hud_vertical_scale());
-    glVertex2f(static_cast<float>(list->right - 5),
+    glVertex2f(static_cast<float>(list_right - 5),
                (selected_top + 22.0F) * hud_vertical_scale());
-    glVertex2f(static_cast<float>(list->left + 5),
+    glVertex2f(static_cast<float>(list_left + 5),
                (selected_top + 22.0F) * hud_vertical_scale());
     glEnd();
     glColor4ub(255U, 255U, 255U, 255U);
@@ -149,8 +149,8 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
     for (std::size_t index = 0; index < state.glue.providers.size(); ++index) {
       const bool selected = index == state.glue.selected_provider;
       draw_glue_text_gl(
-          state, state.glue.providers[index], static_cast<float>(list->left + 12),
-          static_cast<float>(list->top + 24) +
+          state, state.glue.providers[index], static_cast<float>(list_left + 12),
+          static_cast<float>(list_top + 24) +
               row_height * static_cast<float>(index),
           selected ? 255U : 205U, selected ? 230U : 205U,
           selected ? 128U : 205U, false);
@@ -167,11 +167,18 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
   const GlueControl *const description =
       control_with_id(state.glue.connection_controls, 8);
   if (description != nullptr) {
+    std::int16_t description_left{};
+    std::int16_t description_top{};
+    std::int16_t description_right{};
+    std::int16_t description_bottom{};
+    glues_control_rect(state.glue, *description, description_left,
+                       description_top, description_right,
+                       description_bottom);
     draw_glue_text_gl(
         state,
         state.glue.provider_descriptions[state.glue.selected_provider],
-        static_cast<float>(description->left + 4),
-        static_cast<float>(description->top + 18), 220U, 220U, 220U, false);
+        static_cast<float>(description_left + 4),
+        static_cast<float>(description_top + 18), 220U, 220U, 220U, false);
   }
   for (const std::int16_t identifier : {std::int16_t{9}, std::int16_t{10}}) {
     const GlueControl *const button =

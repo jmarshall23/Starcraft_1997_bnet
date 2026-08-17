@@ -118,7 +118,7 @@ void draw_minimap_gl(const BootstrapStatus &status) {
   const float map_height = static_cast<float>(status.scenario_height) * 32.0F;
   glDisable(GL_TEXTURE_2D);
   for (const ScenarioUnitPreview &unit : status.units) {
-    if (!unit.alive) {
+    if (!unit.alive || unit.sprite_hidden) {
       continue;
     }
     std::uint8_t red{224};

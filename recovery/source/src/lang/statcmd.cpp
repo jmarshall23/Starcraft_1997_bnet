@@ -38,6 +38,23 @@ void activate_command_button(BootstrapStatus &status,
             button.argument >= status.runtime_unit_types.size()) {
           return;
         }
+        if (producer->unit_type == 72U || producer->unit_type == 82U ||
+            producer->unit_type == 83U) {
+          const std::size_t hangar_count = static_cast<std::size_t>(
+              std::count_if(producer->hangar_unit_ids.begin(),
+                            producer->hangar_unit_ids.end(),
+                            [](const std::uint32_t id) { return id != 0U; }));
+          const bool expanded =
+              producer->owner < status.player_upgrade_levels.size() &&
+              ((producer->unit_type == 83U &&
+                status.player_upgrade_levels[producer->owner][36U] != 0U) ||
+               (producer->unit_type != 83U &&
+                status.player_upgrade_levels[producer->owner][43U] != 0U));
+          if (hangar_count + producer->production_queue.count() >=
+              (expanded ? 10U : 5U)) {
+            return;
+          }
+        }
         const RuntimeUnitType &product =
             status.runtime_unit_types[button.argument];
         const starcraft::data::UnitSimulationTraits &simulation =
@@ -57,6 +74,9 @@ void activate_command_button(BootstrapStatus &status,
           producer->production_kind =
               producer->unit_type == starcraft::lang::zerg_larva_type
                   ? starcraft::lang::UnitProductionKind::zerg_larva_morph
+              : producer->unit_type == 72U || producer->unit_type == 82U ||
+                        producer->unit_type == 83U
+                  ? starcraft::lang::UnitProductionKind::carrier_hangar
                   : starcraft::lang::UnitProductionKind::train;
           if (producer->production_kind ==
               starcraft::lang::UnitProductionKind::zerg_larva_morph) {
@@ -302,6 +322,79 @@ void activate_command_button(BootstrapStatus &status,
           (void)restart_unit_animation(status, unit, 20U);
           break;
         }
+      } else if (button.action == CommandAction::begin_patrol_target) {
+        // statbtn.cpp::sub_47EC70 passes order 0x92 for both unit and terrain.
+        begin_command_target(status, 0x92U, 0x92U);
+      } else if (button.action == CommandAction::hold_position) {
+        // statbtn.cpp::sub_47ECC0 dispatches the local hold command through
+        // sub_4748E0. The recovered simulation keeps the unit stationary.
+        cancel_command_target(status);
+        for (ScenarioUnitPreview &unit : status.units) {
+          if (unit.selected && unit.alive && unit.owner == 0U &&
+              !unit.is_building) {
+            cancel_unit_order(status, unit);
+          }
+        }
+      } else if (button.action == CommandAction::toggle_cloak) {
+        cancel_command_target(status);
+        for (ScenarioUnitPreview &unit : status.units) {
+          if (unit.selected && unit.alive && unit.owner == 0U) {
+            (void)toggle_unit_cloak(status, unit, button.argument != 0U);
+          }
+        }
+      } else if (button.action == CommandAction::begin_load_target) {
+        // sub_47F900 opens the target cursor with unit order 0x5B and the
+        // ordinary terrain move order 7.
+        begin_command_target(status, 0x5BU, 7U);
+      } else if (button.action == CommandAction::begin_technology_target) {
+        const std::uint8_t order = technology_target_order(
+            static_cast<std::uint8_t>(button.argument));
+        if (order != 0U) {
+          // Target-tech's recovered jump table passes the same spell order in
+          // CL and DL to target.cpp::sub_4B0120. Empty terrain remains a spell
+          // target rather than silently becoming move order 7.
+          begin_command_target(status, order, order);
+        }
+      } else if (button.action == CommandAction::archon_warp) {
+        // netcmd.cpp::sub_4762B0 consumes selected CUnits in adjacent pairs.
+        // Each valid (67,67) pair receives reciprocal order 0x66; the order
+        // handler moves the pair together before one CUnit becomes type 68.
+        std::array<std::uint32_t, 12> templars{};
+        std::size_t count{};
+        for (const ScenarioUnitPreview &unit : status.units) {
+          if (unit.selected && unit.alive && unit.owner == 0U &&
+              unit.unit_type == 67U &&
+              count < templars.size()) {
+            templars[count++] = unit.unit_id;
+          }
+        }
+        for (std::size_t index = 0U; index + 1U < count; index += 2U) {
+          ScenarioUnitPreview *const first =
+              find_unit_by_id(status, templars[index]);
+          ScenarioUnitPreview *const second =
+              find_unit_by_id(status, templars[index + 1U]);
+          if (first == nullptr || second == nullptr) {
+            continue;
+          }
+          const bool first_started = begin_scv_interaction(
+              status, *first, *second, ActiveUnitOrder::archon_warp);
+          const bool second_started = begin_scv_interaction(
+              status, *second, *first, ActiveUnitOrder::archon_warp);
+          if (!first_started || !second_started) {
+            cancel_unit_order(status, *first);
+            cancel_unit_order(status, *second);
+          }
+        }
+      } else if (button.action == CommandAction::unload_all) {
+        // sub_47F950 issues order 0x6C; CUnitTransport.cpp::sub_443850 walks
+        // the same eight compact cargo slots for Dropships, Shuttles,
+        // Overlords, and Bunkers.
+        for (ScenarioUnitPreview &transport : status.units) {
+          if (transport.selected && transport.alive && transport.owner == 0U &&
+              transport.construction_complete) {
+            (void)unload_transport_units(status, transport);
+          }
+        }
       } else if (button.action == CommandAction::close_card) {
         cancel_command_target(status);
         status.active_command_card = 0;
@@ -406,6 +499,108 @@ constexpr std::array<CommandButtonVisual, 3> kMobileUnitButtons{{
     {3, 230, 0, CommandAction::begin_attack_target},
 }};
 
+// Aircraft cards transcribed from the 0x00500188 command-card table. The
+// shared positions 4/5 are the exact patrol (0x0047EC70) and hold
+// (0x0047ECC0) records omitted by the old three-button fallback.
+constexpr std::array<CommandButtonVisual, 5> kAircraftButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+}};
+
+// Exact Protoss unit records at cards 67, 68, 71, 72/82, and 83. The old
+// generic ground/air fallbacks returned before these unit-specific records.
+constexpr std::array<CommandButtonVisual, 8> kHighTemplarButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+    {7, 275, 22, CommandAction::begin_technology_target},
+    {8, 277, 23, CommandAction::begin_technology_target},
+    {9, 68, 27, CommandAction::archon_warp},
+}};
+
+// Tassadar's type-79 card is a distinct seven-record table at 0x004FEE38.
+// Its two technology-looking records both dispatch the generic command-30
+// callback rather than Target-tech, and it has no Archon Warp record.
+constexpr std::array<CommandButtonVisual, 7> kHeroTemplarButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+    {7, 277, 22, CommandAction::none},
+    {8, 277, 23, CommandAction::none},
+}};
+
+constexpr std::array<CommandButtonVisual, 6> kArchonButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+    // Technology 21 (Mind Control) has no order in orders.dat and the shipped
+    // callback only sends command 0x1E/21. Keep its recovered visual record;
+    // it remains inert until its missing command receiver is recovered.
+    {7, 274, 21, CommandAction::none},
+}};
+
+constexpr std::array<CommandButtonVisual, 8> kArbiterButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+    {7, 280, 24, CommandAction::begin_technology_target},
+    {8, 278, 25, CommandAction::begin_technology_target},
+    // Essence Flare is present in this beta card/techdata but has no order in
+    // orders.dat and reaches Target-tech's fatal default in StarCraft.exe.
+    {9, 279, 26, CommandAction::none},
+}};
+
+constexpr std::array<CommandButtonVisual, 7> kCarrierButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+    {7, 73, 73, CommandAction::train_unit},
+    {9, 236, 0, CommandAction::none},
+}};
+
+constexpr std::array<CommandButtonVisual, 7> kReaverButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+    {7, 85, 85, CommandAction::train_unit},
+    {9, 236, 0, CommandAction::none},
+}};
+
+constexpr std::array<CommandButtonVisual, 7> kTransportButtons{{
+    {1, 228, 0, CommandAction::begin_move_target},
+    {2, 229, 0, CommandAction::stop},
+    {3, 230, 0, CommandAction::begin_attack_target},
+    {4, 254, 0, CommandAction::begin_patrol_target},
+    {5, 255, 0, CommandAction::hold_position},
+    {8, 307, 0, CommandAction::begin_load_target},
+    {9, 310, 0, CommandAction::unload_all},
+}};
+
+constexpr std::array<CommandButtonVisual, 3> kScienceVesselAbilities{{
+    {7, 247, 6, CommandAction::begin_technology_target},
+    {8, 241, 2, CommandAction::begin_technology_target},
+    {9, 242, 7, CommandAction::begin_technology_target},
+}};
+
+constexpr std::array<CommandButtonVisual, 1> kBattlecruiserAbilities{{
+    {7, 251, 8, CommandAction::begin_technology_target},
+}};
+
 constexpr std::array<CommandButtonVisual, 1> kTargetCancelButtons{{
     {9, 236, 0, CommandAction::cancel_target},
 }};
@@ -431,6 +626,55 @@ constexpr std::array<CommandButtonVisual, 3> kScienceFacilityButtons{{
     {7, 117, 117, CommandAction::build_addon},
     {8, 118, 118, CommandAction::build_addon},
     {9, 236, 0, CommandAction::none},
+}};
+
+// Exact idle-building records decoded from the executable's command-card
+// table at 0x00500188. Only mutually exclusive lift/land/cancel records are
+// omitted; the active research/upgrade cancel card is selected above.
+constexpr std::array<CommandButtonVisual, 2> kAcademyButtons{{
+    {1, 237, 0, CommandAction::research_technology},
+    {4, 238, 16, CommandAction::upgrade_technology},
+}};
+constexpr std::array<CommandButtonVisual, 1> kMachineShopButtons{{
+    {1, 239, 18, CommandAction::upgrade_technology},
+}};
+constexpr std::array<CommandButtonVisual, 6> kTerranScienceFacilityButtons{{
+    {1, 247, 6, CommandAction::research_technology},
+    {2, 241, 2, CommandAction::research_technology},
+    {3, 242, 7, CommandAction::research_technology},
+    {4, 248, 19, CommandAction::upgrade_technology},
+    {7, 117, 117, CommandAction::build_addon},
+    {8, 118, 118, CommandAction::build_addon},
+}};
+constexpr std::array<CommandButtonVisual, 4> kControlTowerButtons{{
+    {1, 240, 1, CommandAction::research_technology},
+    {2, 252, 10, CommandAction::research_technology},
+    {4, 249, 20, CommandAction::upgrade_technology},
+    {5, 256, 21, CommandAction::upgrade_technology},
+}};
+constexpr std::array<CommandButtonVisual, 4> kCovertOpsButtons{{
+    {1, 252, 9, CommandAction::research_technology},
+    {2, 251, 8, CommandAction::research_technology},
+    {4, 284, 22, CommandAction::upgrade_technology},
+    {5, 285, 23, CommandAction::upgrade_technology},
+}};
+constexpr std::array<CommandButtonVisual, 3> kPhysicsLabButtons{{
+    {1, 243, 3, CommandAction::research_technology},
+    {2, 245, 5, CommandAction::research_technology},
+    {4, 286, 17, CommandAction::upgrade_technology},
+}};
+constexpr std::array<CommandButtonVisual, 2> kEngineeringBayButtons{{
+    {1, 287, 7, CommandAction::upgrade_technology},
+    {2, 291, 0, CommandAction::upgrade_technology},
+}};
+constexpr std::array<CommandButtonVisual, 4> kArmoryButtons{{
+    {1, 288, 8, CommandAction::upgrade_technology},
+    {2, 289, 9, CommandAction::upgrade_technology},
+    {4, 292, 1, CommandAction::upgrade_technology},
+    {5, 290, 2, CommandAction::upgrade_technology},
+}};
+constexpr std::array<CommandButtonVisual, 1> kBunkerButtons{{
+    {9, 310, 0, CommandAction::unload_all},
 }};
 
 constexpr std::array<CommandButtonVisual, 9> kTerranBasicBuildButtons{{
@@ -628,6 +872,15 @@ constexpr CommandCardView card_view(
 
 CommandCardView recovered_building_card(const std::uint16_t unit_type) noexcept {
   switch (unit_type) {
+    case 112U: return card_view(kAcademyButtons);
+    case 115U: return card_view(kMachineShopButtons);
+    case 116U: return card_view(kTerranScienceFacilityButtons);
+    case 117U: return card_view(kControlTowerButtons);
+    case 118U: return card_view(kCovertOpsButtons);
+    case 120U: return card_view(kPhysicsLabButtons);
+    case 122U: return card_view(kEngineeringBayButtons);
+    case 123U: return card_view(kArmoryButtons);
+    case 125U: return card_view(kBunkerButtons);
     case 131U: return card_view(kHatcheryButtons);
     case 132U: return card_view(kLairButtons);
     case 133U: return card_view(kHiveButtons);
@@ -664,6 +917,11 @@ CommandCardView command_card_for(const BootstrapStatus &status) noexcept {
   if (status.command_target_active) {
     return {kTargetCancelButtons.data(), kTargetCancelButtons.size()};
   }
+  const auto technology_ready = [&](const std::uint8_t technology) noexcept {
+    return technology < status.researched_technologies.size() &&
+           selected->owner < status.player_researched_technologies.size() &&
+           status.player_researched_technologies[selected->owner][technology];
+  };
   if (starcraft::lang::is_terran_scv(selected->unit_type) &&
       status.active_command_card == 237) {
     return {kTerranBasicBuildButtons.data(), kTerranBasicBuildButtons.size()};
@@ -700,6 +958,103 @@ CommandCardView command_card_for(const BootstrapStatus &status) noexcept {
   }
   if (starcraft::lang::is_protoss_probe(selected->unit_type)) {
     return {kProbeButtons.data(), kProbeButtons.size()};
+  }
+  if (selected->construction_complete && selected->unit_type == 67U) {
+    static thread_local std::array<CommandButtonVisual, 8> available{};
+    std::size_t count{};
+    for (const CommandButtonVisual &button : kHighTemplarButtons) {
+      if (button.action == CommandAction::begin_technology_target &&
+          !technology_ready(static_cast<std::uint8_t>(button.argument))) {
+        continue;
+      }
+      available[count++] = button;
+    }
+    const std::size_t selected_templars = static_cast<std::size_t>(
+        std::count_if(status.units.begin(), status.units.end(),
+                      [](const ScenarioUnitPreview &unit) {
+                        return unit.selected && unit.alive &&
+                               unit.owner == 0U && unit.unit_type == 67U;
+                      }));
+    // Conditions 0x004A3160/0x004A3180 choose two records at the same
+    // position.  The first is the unavailable placeholder; the second
+    // dispatches sub_47F9C0 only when a Templar pair is selected.
+    if (count != 0U && available[count - 1U].position == 9U &&
+        selected_templars < 2U) {
+      available[count - 1U].action = CommandAction::none;
+    }
+    return {available.data(), count};
+  }
+  if (selected->construction_complete && selected->unit_type == 79U) {
+    static thread_local std::array<CommandButtonVisual, 7> available{};
+    std::copy(kHeroTemplarButtons.begin(),
+              kHeroTemplarButtons.begin() + 5U, available.begin());
+    std::size_t count = 5U;
+    for (std::size_t index = 5U; index < kHeroTemplarButtons.size(); ++index) {
+      if (technology_ready(static_cast<std::uint8_t>(
+              kHeroTemplarButtons[index].argument))) {
+        available[count++] = kHeroTemplarButtons[index];
+      }
+    }
+    return {available.data(), count};
+  }
+  if (selected->construction_complete && selected->unit_type == 68U) {
+    static thread_local std::array<CommandButtonVisual, 6> available{};
+    std::copy(kArchonButtons.begin(), kArchonButtons.begin() + 5U,
+              available.begin());
+    std::size_t count = 5U;
+    if (technology_ready(21U)) {
+      available[count++] = kArchonButtons.back();
+    }
+    return {available.data(), count};
+  }
+  if (selected->construction_complete && selected->unit_type == 71U) {
+    static thread_local std::array<CommandButtonVisual, 8> available{};
+    std::size_t count{};
+    for (const CommandButtonVisual &button : kArbiterButtons) {
+      if ((button.action == CommandAction::begin_technology_target ||
+           button.action == CommandAction::none) &&
+          button.argument >= 24U && button.argument <= 26U &&
+          !technology_ready(static_cast<std::uint8_t>(button.argument))) {
+        continue;
+      }
+      available[count++] = button;
+    }
+    return {available.data(), count};
+  }
+  if (selected->construction_complete &&
+      (selected->unit_type == 72U || selected->unit_type == 82U)) {
+    return card_view(kCarrierButtons);
+  }
+  if (selected->construction_complete && selected->unit_type == 83U) {
+    return card_view(kReaverButtons);
+  }
+  if (selected->construction_complete && is_airborne(*selected)) {
+    if (selected->unit_type == 11U || selected->unit_type == 69U ||
+        (selected->unit_type == 42U && selected->owner <
+                                           status.player_upgrade_levels.size() &&
+         status.player_upgrade_levels[selected->owner][24U] != 0U)) {
+      return card_view(kTransportButtons);
+    }
+    static thread_local std::array<CommandButtonVisual, 9> aircraft{};
+    std::copy(kAircraftButtons.begin(), kAircraftButtons.end(),
+              aircraft.begin());
+    std::size_t count = kAircraftButtons.size();
+    if (selected->unit_type == 8U && technology_ready(9U)) {
+      aircraft[count++] = selected->cloaked
+                              ? CommandButtonVisual{
+                                    7, 253, 0, CommandAction::toggle_cloak}
+                              : CommandButtonVisual{
+                                    7, 252, 1, CommandAction::toggle_cloak};
+    } else if (selected->unit_type == 9U) {
+      for (const CommandButtonVisual &ability : kScienceVesselAbilities) {
+        if (technology_ready(static_cast<std::uint8_t>(ability.argument))) {
+          aircraft[count++] = ability;
+        }
+      }
+    } else if (selected->unit_type == 12U && technology_ready(8U)) {
+      aircraft[count++] = kBattlecruiserAbilities.front();
+    }
+    return {aircraft.data(), count};
   }
   if (selected->construction_complete) {
     if (selected->active_technology < status.technology_traits.size()) {
@@ -774,9 +1129,6 @@ CommandCardView command_card_for(const BootstrapStatus &status) noexcept {
   }
   if (!selected->is_building && selected->movement_top_speed != 0U) {
     return {kMobileUnitButtons.data(), kMobileUnitButtons.size()};
-  }
-  if (selected->unit_type == 116 && selected->construction_complete) {
-    return {kScienceFacilityButtons.data(), kScienceFacilityButtons.size()};
   }
   return {};
 }

@@ -371,11 +371,17 @@ GameDialogAction activate_control(RecoveryWindowState &state,
     if (identifier == 1 || identifier == 2) {
       set_slider(dialog, identifier, x);
       if (state.audio_ready) {
-        alSourcef(identifier == 1 ? state.music_source : state.audio_source,
-                  AL_GAIN,
-                  static_cast<float>(identifier == 1 ? dialog.music_volume
-                                                      : dialog.digital_volume) /
-                      100.0F);
+        const float gain =
+            static_cast<float>(identifier == 1 ? dialog.music_volume
+                                                : dialog.digital_volume) /
+            100.0F;
+        if (identifier == 1) {
+          alSourcef(state.music_source, AL_GAIN, gain);
+        } else {
+          for (const ALuint source : state.audio_sources) {
+            alSourcef(source, AL_GAIN, gain);
+          }
+        }
       }
     } else if (identifier == 3) {
       dialog.unit_speech = !dialog.unit_speech;

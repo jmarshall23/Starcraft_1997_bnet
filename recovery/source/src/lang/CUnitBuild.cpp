@@ -31,6 +31,19 @@ constexpr std::array<UnitProductionButton, 3> kStargate{{
     {167, 1, 70, 70}, {167, 2, 72, 72}, {167, 3, 71, 71},
 }};
 
+// CUnitCarrier.cpp::sub_424010 uses the ordinary five-entry production queue
+// but attaches completed type-73 Interceptors/type-85 Scarabs to CUnit+192
+// instead of placing them on the map.
+constexpr std::array<UnitProductionButton, 1> kCarrier{{
+    {72, 7, 73, 73, UnitProductionKind::carrier_hangar},
+}};
+constexpr std::array<UnitProductionButton, 1> kGantrithor{{
+    {82, 7, 73, 73, UnitProductionKind::carrier_hangar},
+}};
+constexpr std::array<UnitProductionButton, 1> kReaver{{
+    {83, 7, 85, 85, UnitProductionKind::carrier_hangar},
+}};
+
 // Larva card 35 uses action 0x0047F690, recovered in statbtn.cpp, and morphs
 // through CUnitZBuild.cpp::sub_447820 instead of a building production queue.
 constexpr std::array<UnitProductionButton, 9> kLarva{{
@@ -45,8 +58,8 @@ constexpr std::array<UnitProductionButton, 9> kLarva{{
     {35, 9, 47, 47, UnitProductionKind::zerg_larva_morph},
 }};
 
-constexpr std::array<std::uint16_t, 11> kProductionProducerTypes{{
-    35, 106, 108, 111, 113, 114, 130, 154, 155, 160, 167,
+constexpr std::array<std::uint16_t, 14> kProductionProducerTypes{{
+    35, 72, 82, 83, 106, 108, 111, 113, 114, 130, 154, 155, 160, 167,
 }};
 
 template <std::size_t Size>
@@ -122,6 +135,9 @@ UnitProductionButtonView production_buttons_for(
     const std::uint16_t producer_type) noexcept {
   switch (producer_type) {
     case 35: return view(kLarva);
+    case 72: return view(kCarrier);
+    case 82: return view(kGantrithor);
+    case 83: return view(kReaver);
     case 106: return view(kCommandCenter);
     case 108: return view(kNuclearSilo);
     case 111: return view(kBarracks);

@@ -1,8 +1,10 @@
 #include "../platform/bootstrap_runtime.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -14,6 +16,20 @@ namespace {
 constexpr std::uint16_t kGlueWidth = 640U;
 constexpr std::uint16_t kGlueHeight = 480U;
 constexpr std::uint32_t kTitleDurationMilliseconds = 1800U;
+constexpr std::uint32_t kTransformTickMilliseconds = 20U;
+constexpr std::uint32_t kTransformEnterMilliseconds = 480U;
+constexpr std::uint32_t kTransformLeaveMilliseconds = 240U;
+
+constexpr std::array<GlueTransformControl, 4> kConnectionTransforms{{
+    {1, 0}, {2, 2}, {3, 3}, {4, 2},
+}};
+constexpr std::array<GlueTransformControl, 5> kLobbyTransforms{{
+    {1, 3}, {2, 2}, {3, 0}, {4, 3}, {5, 2},
+}};
+// glues.cpp::sub_460100 consumes these exact (control, direction) pairs.
+// sub_460290 performs the quarter-distance entrance step; sub_460400 and
+// sub_4604B0 perform the doubling exit step. The matching PDB is absent, so
+// retain address evidence instead of assigning unsupported original names.
 
 std::string clean_glue_text(const std::string_view encoded) {
   std::string text;
@@ -59,6 +75,10 @@ bool parse_glue_layout_impl(const std::vector<std::uint8_t> &layout,
       control.bottom = static_cast<std::int16_t>(
           root_y + static_cast<std::int16_t>(read_u16(layout, offset + 10U)));
       control.flags = read_u32(layout, offset + 24U);
+      // BIN control records end with an unaligned pointer at +66. For type-14
+      // controls it owns the linked SMK descriptor chain (path, flags, and
+      // per-layer origin) used by the original dialog renderer.
+      control.visual_offset = read_u32(layout, offset + 66U);
       const std::uint32_t text_offset = read_u32(layout, offset + 20U);
       if (text_offset != 0U && text_offset < layout.size()) {
         const char *const first =
@@ -91,10 +111,17 @@ bool parse_glue_layout_impl(const std::vector<std::uint8_t> &layout,
 
 bool load_glue_pcx(starcraft::runtime::StormModule &storm,
                    const char *const path, const bool transparent,
-                   SpritePreviewFrame &frame) {
+                   SpritePreviewFrame &frame,
+                   std::vector<std::uint8_t> *const palette = nullptr) {
   starcraft::runtime::DecodedPcx image{};
-  return storm.load_pcx(path, image) &&
-         decode_pcx_frame(image, transparent, frame);
+  if (!storm.load_pcx(path, image) ||
+      !decode_pcx_frame(image, transparent, frame)) {
+    return false;
+  }
+  if (palette != nullptr) {
+    *palette = image.palette;
+  }
+  return true;
 }
 
 bool load_control_images(starcraft::runtime::StormModule &storm,
@@ -120,14 +147,86 @@ bool load_control_images(starcraft::runtime::StormModule &storm,
   return true;
 }
 
-void enter_screen(GlueRuntime &glue, const GlueScreen screen,
-                  const std::uint32_t now) noexcept {
+bool load_main_control_videos(starcraft::runtime::StormModule &storm,
+                              const std::vector<std::uint8_t> &layout,
+                              const std::vector<GlueControl> &controls,
+                              std::vector<GlueVideo> &videos) {
+  videos.clear();
+  try {
+    for (const GlueControl &control : controls) {
+      std::uint32_t descriptor = control.visual_offset;
+      std::size_t visited{};
+      while (descriptor != 0U && descriptor + 30U <= layout.size() &&
+             visited++ < 16U) {
+        const std::uint32_t next = read_u32(layout, descriptor);
+        const std::uint32_t flags = read_u32(layout, descriptor + 4U);
+        const std::uint32_t path_offset =
+            read_u32(layout, descriptor + 10U);
+        if (path_offset == 0U || path_offset >= layout.size()) {
+          return false;
+        }
+        const char *const path =
+            reinterpret_cast<const char *>(layout.data() + path_offset);
+        const std::size_t available = layout.size() - path_offset;
+        if (std::memchr(path, 0, available) == nullptr) {
+          return false;
+        }
+        GlueVideo video{};
+        video.control_identifier = control.identifier;
+        video.descriptor_flags = flags;
+        video.x_offset =
+            static_cast<std::int16_t>(read_u16(layout, descriptor + 18U));
+        video.y_offset =
+            static_cast<std::int16_t>(read_u16(layout, descriptor + 20U));
+        // The menu SMKs are composited over BackGnd.pcx. Palette index zero is
+        // the transparent key for both the base (flag 4) and highlighted
+        // (flag 12) descriptors; bit 8 selects the highlighted layer.
+        if (!load_smacker_animation(storm, path, true, video.animation)) {
+          return false;
+        }
+        videos.push_back(std::move(video));
+        if (next == descriptor) {
+          return false;
+        }
+        descriptor = next;
+      }
+      if (descriptor != 0U) {
+        return false;
+      }
+    }
+  } catch (...) {
+    videos.clear();
+    return false;
+  }
+  return !videos.empty();
+}
+
+void reset_screen_state(GlueRuntime &glue, const GlueScreen screen,
+                        const std::uint32_t now) noexcept {
   glue.screen = screen;
   glue.screen_entered_tick = now;
   glue.hovered_control = -1;
   glue.pressed_control = -1;
   glue.message.clear();
   glue.message_until = 0U;
+  glue.popup_control = -1;
+  glue.popup_row = -1;
+  glue.transform_started_tick = now;
+  glue.clock_tick = now;
+  glue.transform_target = screen;
+  glue.transform_action = GlueAction::none;
+  glue.transform_controls.clear();
+  if (screen == GlueScreen::connection) {
+    glue.transform_controls.assign(kConnectionTransforms.begin(),
+                                   kConnectionTransforms.end());
+  } else if (screen == GlueScreen::map_selection ||
+             screen == GlueScreen::lobby) {
+    glue.transform_controls.assign(kLobbyTransforms.begin(),
+                                   kLobbyTransforms.end());
+  }
+  glue.transform_phase = glue.transform_controls.empty()
+                             ? GlueTransformPhase::none
+                             : GlueTransformPhase::entering;
 }
 
 void draw_message(const RecoveryWindowState &state) noexcept {
@@ -155,6 +254,113 @@ std::int16_t control_at(const GlueRuntime &glue, const int x,
 }
 
 } // namespace
+
+void glues_enter_screen(GlueRuntime &glue, const GlueScreen screen,
+                        const std::uint32_t now) noexcept {
+  reset_screen_state(glue, screen, now);
+}
+
+GlueAction glues_leave_screen(GlueRuntime &glue, const GlueScreen target,
+                              const GlueAction action,
+                              const std::uint32_t now) noexcept {
+  if (glue.transform_controls.empty()) {
+    if (target != glue.screen) {
+      glues_enter_screen(glue, target, now);
+    }
+    return action == GlueAction::none ? GlueAction::redraw : action;
+  }
+  glue.transform_phase = GlueTransformPhase::leaving;
+  glue.transform_started_tick = now;
+  glue.transform_target = target;
+  glue.transform_action = action;
+  glue.hovered_control = -1;
+  glue.pressed_control = -1;
+  glue.popup_control = -1;
+  glue.popup_row = -1;
+  return GlueAction::redraw;
+}
+
+void glues_control_rect(const GlueRuntime &glue, const GlueControl &control,
+                        std::int16_t &left, std::int16_t &top,
+                        std::int16_t &right,
+                        std::int16_t &bottom) noexcept {
+  left = control.left;
+  top = control.top;
+  right = control.right;
+  bottom = control.bottom;
+  if (glue.transform_phase == GlueTransformPhase::none) {
+    return;
+  }
+  auto found = std::find_if(
+      glue.transform_controls.begin(), glue.transform_controls.end(),
+      [&control](const GlueTransformControl &transform) {
+        return transform.identifier == control.identifier;
+      });
+  if (found == glue.transform_controls.end()) {
+    const std::vector<GlueControl> &layout =
+        glue.screen == GlueScreen::connection ? glue.connection_controls
+                                              : glue.lobby_controls;
+    const int center_x = (control.left + control.right) / 2;
+    const int center_y = (control.top + control.bottom) / 2;
+    for (auto candidate = glue.transform_controls.begin();
+         candidate != glue.transform_controls.end(); ++candidate) {
+      const auto panel = std::find_if(
+          layout.begin(), layout.end(), [&candidate](const GlueControl &value) {
+            return value.identifier == candidate->identifier &&
+                   value.type == 5U;
+          });
+      if (panel != layout.end() && center_x >= panel->left &&
+          center_x <= panel->right && center_y >= panel->top &&
+          center_y <= panel->bottom) {
+        found = candidate;
+        break;
+      }
+    }
+    if (found == glue.transform_controls.end()) {
+      return;
+    }
+  }
+  const std::uint32_t elapsed =
+      glue.clock_tick - glue.transform_started_tick;
+  const std::uint32_t ticks = elapsed / kTransformTickMilliseconds;
+  int offset{};
+  if (glue.transform_phase == GlueTransformPhase::entering) {
+    switch (found->direction) {
+    case 0:
+      offset = -(static_cast<int>(control.right) + 1);
+      break;
+    case 1:
+      offset = -(static_cast<int>(control.bottom) + 1);
+      break;
+    case 2:
+      offset = static_cast<int>(kGlueWidth) - control.left;
+      break;
+    default:
+      offset = static_cast<int>(kGlueHeight) - control.top;
+      break;
+    }
+    for (std::uint32_t tick = 0U; tick < ticks && offset != 0; ++tick) {
+      const int distance = (std::max)(1, std::abs(offset) >> 2);
+      offset += offset < 0 ? distance : -distance;
+      if (std::abs(offset) < distance) {
+        offset = 0;
+      }
+    }
+  } else {
+    const std::uint32_t limited_ticks = (std::min)(ticks, 30U);
+    const int distance =
+        limited_ticks == 0U ? 0 : (1 << limited_ticks) - 1;
+    offset = (found->direction == 0 || found->direction == 1) ? -distance
+                                                              : distance;
+  }
+  if (found->direction == 0 || found->direction == 2) {
+    left = static_cast<std::int16_t>(left + offset);
+    right = static_cast<std::int16_t>(right + offset);
+  } else {
+    top = static_cast<std::int16_t>(top + offset);
+    bottom = static_cast<std::int16_t>(bottom + offset);
+  }
+}
 
 bool parse_glue_layout(const std::vector<std::uint8_t> &layout,
                        std::vector<GlueControl> &controls) noexcept {
@@ -190,23 +396,39 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
   std::vector<std::uint8_t> main_layout;
   std::vector<std::uint8_t> connection_layout;
   std::vector<std::uint8_t> lobby_layout;
+  std::vector<std::uint8_t> main_palette;
+  std::vector<std::uint8_t> network_palette;
+  std::vector<std::uint8_t> main_dialog_group;
+  std::vector<std::uint8_t> network_dialog_group;
+  std::uint16_t dialog_width{};
+  std::uint16_t dialog_height{};
   const bool loaded =
       load_glue_pcx(storm, R"(glue\title\title-beta.pcx)", false,
                     glue.title_background) &&
       load_glue_pcx(storm, R"(glue\PalMm\BackGnd.pcx)", false,
-                    glue.main_background) &&
+                    glue.main_background, &main_palette) &&
       load_glue_pcx(storm, R"(glue\PalNl\BackGnd.pcx)", false,
-                    glue.connection_background) &&
+                    glue.connection_background, &network_palette) &&
       storm.load_file(R"(rez\gluMain.bin)", main_layout) &&
       storm.load_file(R"(rez\gluConn.bin)", connection_layout) &&
       storm.load_file(R"(rez\gluChat.bin)", lobby_layout) &&
       parse_glue_layout(main_layout, glue.main_controls) &&
       parse_glue_layout(connection_layout, glue.connection_controls) &&
       parse_glue_layout(lobby_layout, glue.lobby_controls) &&
+      load_main_control_videos(storm, main_layout, glue.main_controls,
+                               glue.main_videos) &&
       load_control_images(storm, glue.main_controls, glue.main_images) &&
       load_control_images(storm, glue.connection_controls,
                           glue.connection_images) &&
       load_control_images(storm, glue.lobby_controls, glue.lobby_images) &&
+      storm.load_file(R"(glue\PalMm\Dlg.grp)", main_dialog_group) &&
+      decode_preview_frames(main_dialog_group, main_palette,
+                            glue.main_dialog_frames, dialog_width,
+                            dialog_height) &&
+      storm.load_file(R"(glue\PalNl\Dlg.grp)", network_dialog_group) &&
+      decode_preview_frames(network_dialog_group, network_palette,
+                            glue.network_dialog_frames, dialog_width,
+                            dialog_height) &&
       enumerate_glue_maps(storm, root, glue);
   const bool patch_closed = storm.close_archive(patch);
   const bool base_closed = storm.close_archive(base);
@@ -218,7 +440,7 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
     return false;
   }
   configure_lobby_slots(glue);
-  enter_screen(glue, GlueScreen::title, GetTickCount());
+  glues_enter_screen(glue, GlueScreen::title, GetTickCount());
   return true;
 }
 
@@ -250,6 +472,11 @@ bool client_to_glue(const HWND window, const LPARAM lparam, int &glue_x,
 
 GlueAction glue_mouse_move(GlueRuntime &glue, const int x,
                            const int y) noexcept {
+  if (glue.transform_phase != GlueTransformPhase::none) {
+    const bool changed = glue.hovered_control != -1;
+    glue.hovered_control = -1;
+    return changed ? GlueAction::redraw : GlueAction::none;
+  }
   const std::int16_t previous = glue.hovered_control;
   switch (glue.screen) {
   case GlueScreen::main_menu:
@@ -278,15 +505,28 @@ GlueAction glue_left_down(GlueRuntime &glue, const int x,
     glue.pressed_control = 0;
     return GlueAction::redraw;
   }
+  if (glue.transform_phase != GlueTransformPhase::none) {
+    return GlueAction::none;
+  }
   glue.pressed_control = control_at(glue, x, y);
+  if (glue.screen == GlueScreen::lobby && glue.popup_control != -1 &&
+      glue.pressed_control == -1) {
+    glue.popup_control = -1;
+    glue.popup_row = -1;
+    return GlueAction::redraw;
+  }
   return glue.pressed_control == -1 ? GlueAction::none : GlueAction::redraw;
 }
 
 GlueAction glue_left_up(GlueRuntime &glue, const int x, const int y,
                         const std::uint32_t now) noexcept {
   if (glue.screen == GlueScreen::title) {
-    enter_screen(glue, GlueScreen::main_menu, now);
+    glues_enter_screen(glue, GlueScreen::main_menu, now);
     return GlueAction::redraw;
+  }
+  if (glue.transform_phase != GlueTransformPhase::none) {
+    glue.pressed_control = -1;
+    return GlueAction::none;
   }
   const std::int16_t released = control_at(glue, x, y);
   const std::int16_t pressed = glue.pressed_control;
@@ -311,24 +551,32 @@ GlueAction glue_left_up(GlueRuntime &glue, const int x, const int y,
 GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
                          const std::uint32_t now) noexcept {
   if (glue.screen == GlueScreen::title) {
-    enter_screen(glue, GlueScreen::main_menu, now);
+    glues_enter_screen(glue, GlueScreen::main_menu, now);
+    return GlueAction::redraw;
+  }
+  if (glue.transform_phase != GlueTransformPhase::none) {
+    return GlueAction::none;
+  }
+  if (key == VK_ESCAPE && glue.popup_control != -1) {
+    glue.popup_control = -1;
+    glue.popup_row = -1;
     return GlueAction::redraw;
   }
   if (key == VK_ESCAPE) {
     if (glue.screen == GlueScreen::connection) {
-      enter_screen(glue, GlueScreen::main_menu, now);
-      return GlueAction::redraw;
+      return glues_leave_screen(glue, GlueScreen::main_menu,
+                                GlueAction::none, now);
     }
     if (glue.screen == GlueScreen::map_selection) {
-      enter_screen(glue, GlueScreen::connection, now);
-      return GlueAction::redraw;
+      return glues_leave_screen(glue, GlueScreen::connection,
+                                GlueAction::none, now);
     }
     if (glue.screen == GlueScreen::lobby) {
-      enter_screen(glue, GlueScreen::map_selection, now);
-      return GlueAction::redraw;
+      return glues_leave_screen(glue, GlueScreen::map_selection,
+                                GlueAction::none, now);
     }
     if (glue.screen == GlueScreen::ready) {
-      enter_screen(glue, GlueScreen::lobby, now);
+      glues_enter_screen(glue, GlueScreen::lobby, now);
       glue.ready_deadline = 0U;
       return GlueAction::redraw;
     }
@@ -373,10 +621,26 @@ GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
 }
 
 GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
+  glue.clock_tick = now;
   if (glue.screen == GlueScreen::title &&
       now - glue.screen_entered_tick >= kTitleDurationMilliseconds) {
-    enter_screen(glue, GlueScreen::main_menu, now);
+    glues_enter_screen(glue, GlueScreen::main_menu, now);
     return GlueAction::redraw;
+  }
+  if (glue.transform_phase == GlueTransformPhase::entering) {
+    if (now - glue.transform_started_tick >= kTransformEnterMilliseconds) {
+      glue.transform_phase = GlueTransformPhase::none;
+    }
+    return GlueAction::redraw;
+  }
+  if (glue.transform_phase == GlueTransformPhase::leaving) {
+    if (now - glue.transform_started_tick < kTransformLeaveMilliseconds) {
+      return GlueAction::redraw;
+    }
+    const GlueScreen target = glue.transform_target;
+    const GlueAction action = glue.transform_action;
+    glues_enter_screen(glue, target, now);
+    return action == GlueAction::none ? GlueAction::redraw : action;
   }
   if (glue.screen == GlueScreen::ready && glue.ready_deadline != 0U &&
       static_cast<std::int32_t>(now - glue.ready_deadline) >= 0) {
@@ -385,6 +649,15 @@ GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
   }
   if (glue.screen == GlueScreen::ready) {
     return GlueAction::redraw;
+  }
+  if (glue.screen == GlueScreen::main_menu) {
+    bool advanced{};
+    for (GlueVideo &video : glue.main_videos) {
+      advanced = advance_smacker_animation(video.animation, now) || advanced;
+    }
+    if (advanced) {
+      return GlueAction::redraw;
+    }
   }
   if (!glue.message.empty() && glue.message_until != 0U &&
       static_cast<std::int32_t>(now - glue.message_until) >= 0) {
@@ -460,11 +733,15 @@ void draw_glue_centered_text_gl(const RecoveryWindowState &state,
             : static_cast<std::size_t>('?' - 32);
     text_width += advances[index] * scale;
   }
-  const float x = (static_cast<float>(control.left + control.right) -
-                   text_width) /
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  glues_control_rect(state.glue, control, left, top, right, bottom);
+  const float x = (static_cast<float>(left + right) - text_width) /
                   2.0F;
   const float y =
-      (static_cast<float>(control.top + control.bottom) +
+      (static_cast<float>(top + bottom) +
        (large ? 18.0F : 9.0F)) /
       2.0F;
   draw_glue_text_gl(state, text, x, y, red, green, blue, large);

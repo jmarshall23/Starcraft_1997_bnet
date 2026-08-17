@@ -75,10 +75,16 @@ void shutdown_audio(RecoveryWindowState &state) noexcept {
       alDeleteSources(1, &state.music_source);
       state.music_source = 0U;
     }
-    if (state.audio_source != 0U) {
-      alSourceStop(state.audio_source);
-      alDeleteSources(1, &state.audio_source);
-      state.audio_source = 0U;
+    for (const ALuint source : state.audio_sources) {
+      if (source != 0U) {
+        alSourceStop(source);
+      }
+    }
+    if (std::any_of(state.audio_sources.begin(), state.audio_sources.end(),
+                    [](const ALuint source) { return source != 0U; })) {
+      alDeleteSources(static_cast<ALsizei>(state.audio_sources.size()),
+                      state.audio_sources.data());
+      state.audio_sources.fill(0U);
     }
     if (state.resource_error_buffers[0] != 0U ||
         state.resource_error_buffers[1] != 0U) {
@@ -105,6 +111,7 @@ void shutdown_audio(RecoveryWindowState &state) noexcept {
   }
   state.audio_ready = false;
   state.music_playing = false;
+  state.audio_source_cursor = 0U;
 }
 
 bool initialize_audio(RecoveryWindowState &state) noexcept {
@@ -162,10 +169,16 @@ bool initialize_audio(RecoveryWindowState &state) noexcept {
   alGenBuffers(1, &state.music_buffer);
   alBufferData(state.music_buffer, music_wave.format, music_wave.samples,
                music_wave.sample_bytes, music_wave.sample_rate);
-  alGenSources(1, &state.audio_source);
-  alSourcei(state.audio_source, AL_SOURCE_RELATIVE, AL_TRUE);
-  alSourcef(state.audio_source, AL_ROLLOFF_FACTOR, 0.0F);
-  alSourcef(state.audio_source, AL_GAIN, 1.0F);
+  // The requested recovery runtime expands the original digital mixer to 128
+  // simultaneous voices. Each source remains independently bound so a later
+  // attack/explosion cannot truncate an earlier clip.
+  alGenSources(static_cast<ALsizei>(state.audio_sources.size()),
+               state.audio_sources.data());
+  for (const ALuint source : state.audio_sources) {
+    alSourcei(source, AL_SOURCE_RELATIVE, AL_TRUE);
+    alSourcef(source, AL_ROLLOFF_FACTOR, 0.0F);
+    alSourcef(source, AL_GAIN, 1.0F);
+  }
   alGenSources(1, &state.music_source);
   alSourcei(state.music_source, AL_SOURCE_RELATIVE, AL_TRUE);
   alSourcef(state.music_source, AL_ROLLOFF_FACTOR, 0.0F);
@@ -173,7 +186,13 @@ bool initialize_audio(RecoveryWindowState &state) noexcept {
   alSourcei(state.music_source, AL_LOOPING, AL_TRUE);
   alSourcei(state.music_source, AL_BUFFER,
             static_cast<ALint>(state.music_buffer));
-  state.audio_ready = alGetError() == AL_NO_ERROR && state.audio_source != 0U &&
+  state.audio_ready =
+                      alGetError() == AL_NO_ERROR &&
+                      std::all_of(state.audio_sources.begin(),
+                                  state.audio_sources.end(),
+                                  [](const ALuint source) {
+                                    return source != 0U;
+                                  }) &&
                       state.resource_error_buffers[0] != 0U &&
                       state.resource_error_buffers[1] != 0U &&
                       !state.archived_sound_buffers.empty() &&
@@ -190,6 +209,86 @@ bool initialize_audio(RecoveryWindowState &state) noexcept {
   return state.audio_ready;
 }
 
+bool play_digital_sound_buffer(RecoveryWindowState &state,
+                               const ALuint buffer,
+                               const PendingGameSound &event) noexcept {
+  if (!state.audio_ready || buffer == 0U || state.audio_context == nullptr ||
+      !alcMakeContextCurrent(state.audio_context)) {
+    return false;
+  }
+  while (alGetError() != AL_NO_ERROR) {
+  }
+
+  float gain = 1.0F;
+  if (event.positional && state.status != nullptr) {
+    const int left = state.status->camera_x;
+    const int top = state.status->camera_y;
+    const int right = left + kMapViewportWidth;
+    const int bottom = top + kMapViewportHeight;
+    int outside{};
+    if (event.world_x < left) {
+      outside += left - event.world_x;
+    } else if (event.world_x > right) {
+      outside += event.world_x - right;
+    }
+    if (event.world_y < top) {
+      outside += top - event.world_y;
+    } else if (event.world_y > bottom) {
+      outside += event.world_y - bottom;
+    }
+    // gamesnd.cpp::sub_4551F0 uses 99-(99*distance>>9) and rejects a
+    // resulting volume of ten or less. This prevents every remote map event
+    // from entering the mixer while retaining the original 512-pixel falloff.
+    const int recovered_volume = (std::max)(0, 99 - ((99 * outside) >> 9));
+    if (recovered_volume <= 10) {
+      return false;
+    }
+    gain = static_cast<float>(recovered_volume) / 99.0F;
+    alListener3f(AL_POSITION,
+                 static_cast<ALfloat>(left + kMapViewportWidth / 2),
+                 -static_cast<ALfloat>(top + kMapViewportHeight / 2), 0.0F);
+  }
+
+  std::size_t selected = state.audio_sources.size();
+  for (std::size_t offset = 0; offset < state.audio_sources.size(); ++offset) {
+    const std::size_t index =
+        (static_cast<std::size_t>(state.audio_source_cursor) + offset) %
+        state.audio_sources.size();
+    ALint source_state{};
+    alGetSourcei(state.audio_sources[index], AL_SOURCE_STATE, &source_state);
+    if (source_state == AL_INITIAL || source_state == AL_STOPPED) {
+      selected = index;
+      break;
+    }
+  }
+  if (selected == state.audio_sources.size()) {
+    // This recovery target intentionally exposes 128 channels. Once all are
+    // occupied, rotate fairly until the recovered priority metadata is wired
+    // into the allocator.
+    selected = state.audio_source_cursor % state.audio_sources.size();
+    alSourceStop(state.audio_sources[selected]);
+  }
+  const ALuint source = state.audio_sources[selected];
+  alSourcei(source, AL_SOURCE_RELATIVE, event.positional ? AL_FALSE : AL_TRUE);
+  alSourcef(source, AL_ROLLOFF_FACTOR, 0.0F);
+  alSourcef(source, AL_GAIN, gain);
+  if (event.positional) {
+    alSource3f(source, AL_POSITION, static_cast<ALfloat>(event.world_x),
+               -static_cast<ALfloat>(event.world_y), 0.0F);
+  } else {
+    alSource3f(source, AL_POSITION, 0.0F, 0.0F, 0.0F);
+  }
+  alSourcei(source, AL_BUFFER, static_cast<ALint>(buffer));
+  alSourcePlay(source);
+  if (alGetError() != AL_NO_ERROR) {
+    return false;
+  }
+  state.audio_source_cursor = static_cast<std::uint16_t>(
+      (selected + 1U) % state.audio_sources.size());
+  ++state.audio_play_count;
+  return true;
+}
+
 bool play_pending_resource_error(RecoveryWindowState &state) noexcept {
   if (state.status == nullptr || state.status->pending_resource_error_sound >=
                                      state.resource_error_buffers.size()) {
@@ -197,21 +296,8 @@ bool play_pending_resource_error(RecoveryWindowState &state) noexcept {
   }
   const std::size_t sound = state.status->pending_resource_error_sound;
   state.status->pending_resource_error_sound = 0xFFU;
-  if (!state.audio_ready || state.audio_context == nullptr ||
-      !alcMakeContextCurrent(state.audio_context)) {
-    return false;
-  }
-  while (alGetError() != AL_NO_ERROR) {
-  }
-  alSourceStop(state.audio_source);
-  alSourcei(state.audio_source, AL_BUFFER,
-            static_cast<ALint>(state.resource_error_buffers[sound]));
-  alSourcePlay(state.audio_source);
-  if (alGetError() != AL_NO_ERROR) {
-    return false;
-  }
-  ++state.audio_play_count;
-  return true;
+  return play_digital_sound_buffer(state,
+                                   state.resource_error_buffers[sound]);
 }
 
 } // namespace starcraft::recovery

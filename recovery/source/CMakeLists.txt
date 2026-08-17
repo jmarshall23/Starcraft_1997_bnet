@@ -5,6 +5,7 @@ project(StarCraftRecovery VERSION 0.0.1 LANGUAGES C CXX)
 get_filename_component(STARCRAFT_RECOVERY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(LIBSMACKER_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/libsmacker")
 set(OPENAL_SOFT_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/openal-soft")
+set(IMGUI_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/imgui")
 
 if(NOT WIN32)
   message(FATAL_ERROR "The recovered target is Win32-only.")
@@ -95,8 +96,15 @@ if(MSVC)
 endif()
 
 add_executable(StarCraftRecovery WIN32
+  "${IMGUI_ROOT}/imgui.cpp"
+  "${IMGUI_ROOT}/imgui_draw.cpp"
+  "${IMGUI_ROOT}/imgui_tables.cpp"
+  "${IMGUI_ROOT}/imgui_widgets.cpp"
+  "${IMGUI_ROOT}/backends/imgui_impl_opengl2.cpp"
+  "${IMGUI_ROOT}/backends/imgui_impl_win32.cpp"
   src/platform/bootstrap_probes.cpp
   src/platform/bootstrap_win32.cpp
+  src/platform/debug_console.cpp
   src/gds/image.cpp
   src/gds/capture.cpp
   src/gds/sys_Win.cpp
@@ -106,6 +114,8 @@ add_executable(StarCraftRecovery WIN32
   src/lang/CUnitBuildRuntime.cpp
   src/lang/CUnitInitRuntime.cpp
   src/lang/CUnitPBuildRuntime.cpp
+  src/lang/CUnitPSpellsRuntime.cpp
+  src/lang/CUnitSpellsRuntime.cpp
   src/lang/CUnitProtossRuntime.cpp
   src/lang/SAI_MainRuntime.cpp
   src/lang/CUnitUpgradeRuntime.cpp
@@ -130,6 +140,7 @@ add_executable(StarCraftRecovery WIN32
   src/lang/minimap.cpp
   src/lang/Music.cpp
   src/lang/placebox.cpp
+  src/lang/playflic.cpp
   src/lang/select.cpp
   src/lang/snd.cpp
   src/lang/statmisc.cpp
@@ -145,6 +156,10 @@ add_executable(StarCraftRecovery WIN32
   src/lang/VictDlg.cpp
   src/lang/victory.cpp
   src/staredit/mapcomn/creep_runtime.cpp
+)
+target_include_directories(
+  StarCraftRecovery
+  PRIVATE "${IMGUI_ROOT}" "${IMGUI_ROOT}/backends"
 )
 target_link_libraries(
   StarCraftRecovery
@@ -174,6 +189,9 @@ target_link_libraries(stat_text_inventory PRIVATE starcraft_core)
 
 add_executable(dialog_inventory tools/dialog_inventory.cpp)
 target_link_libraries(dialog_inventory PRIVATE starcraft_core)
+
+add_executable(protoss_data_inventory tools/protoss_data_inventory.cpp)
+target_link_libraries(protoss_data_inventory PRIVATE starcraft_core)
 
 if(MSVC)
   # Preserve the original PE's fixed x86 image-base assumption while recovery is
@@ -422,6 +440,10 @@ if(BUILD_TESTING)
     NAME bootstrap_glue_protoss_race_probe
     COMMAND StarCraftRecovery --probe-glue --probe-map-index=0 --probe-local-race=2 --probe-worker-build-cards
   )
+  add_test(
+    NAME bootstrap_glue_geyser_probe
+    COMMAND StarCraftRecovery --probe-glue --probe-map-index=0 --probe-glue-geyser
+  )
   add_test(NAME bootstrap_opengl_probe COMMAND StarCraftRecovery --probe-opengl)
   add_test(NAME bootstrap_selection_probe COMMAND StarCraftRecovery --probe-selection)
   add_test(NAME bootstrap_command_panel_probe COMMAND StarCraftRecovery --probe-command-panel)
@@ -432,6 +454,18 @@ if(BUILD_TESTING)
   add_test(
     NAME bootstrap_race_building_cards_probe
     COMMAND StarCraftRecovery --probe-race-building-cards
+  )
+  add_test(
+    NAME bootstrap_bunker_probe
+    COMMAND StarCraftRecovery --probe-bunker
+  )
+  add_test(
+    NAME bootstrap_terran_air_probe
+    COMMAND StarCraftRecovery --probe-terran-air
+  )
+  add_test(
+    NAME bootstrap_protoss_abilities_probe
+    COMMAND StarCraftRecovery --probe-protoss-abilities
   )
   add_test(
     NAME bootstrap_race_construction_probe
@@ -467,6 +501,14 @@ if(BUILD_TESTING)
   add_test(NAME bootstrap_pathfinding_probe COMMAND StarCraftRecovery --probe-pathfinding)
   add_test(NAME bootstrap_portrait_probe COMMAND StarCraftRecovery --probe-portrait)
   add_test(NAME bootstrap_worker_actions_probe COMMAND StarCraftRecovery --probe-worker-actions)
+  add_test(
+    NAME bootstrap_combat_animation_probe
+    COMMAND StarCraftRecovery --probe-combat-animation
+  )
+  add_test(
+    NAME bootstrap_projectile_hangar_probe
+    COMMAND StarCraftRecovery --probe-projectile-hangar
+  )
   add_test(
     NAME bootstrap_harvest_visual_probe
     COMMAND StarCraftRecovery --probe-harvest-visual
