@@ -186,6 +186,25 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       lobby_capture_argument == nullptr
           ? nullptr
           : lobby_capture_argument + sizeof(lobby_capture_option) - 1U;
+  constexpr char connection_capture_option[] = "--capture-glue-connection=";
+  const char *const connection_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, connection_capture_option);
+  const char *const connection_capture_path =
+      connection_capture_argument == nullptr
+          ? nullptr
+          : connection_capture_argument + sizeof(connection_capture_option) -
+                1U;
+  constexpr char map_capture_option[] = "--capture-glue-map=";
+  const char *const map_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, map_capture_option);
+  const char *const map_capture_path =
+      map_capture_argument == nullptr
+          ? nullptr
+          : map_capture_argument + sizeof(map_capture_option) - 1U;
   constexpr char game_capture_option[] = "--capture-glue-game=";
   const char *const game_capture_argument =
       command_line == nullptr
@@ -222,7 +241,8 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       ai_probe || terran_air_probe || protoss_abilities_probe ||
       minimap_probe || camera_probe || status_panel_probe ||
       multi_status_probe || construction_status_probe ||
-      capture_path != nullptr || lobby_capture_path != nullptr ||
+      capture_path != nullptr || connection_capture_path != nullptr ||
+      map_capture_path != nullptr || lobby_capture_path != nullptr ||
       game_capture_path != nullptr || battle_capture_path != nullptr) {
     handled = true;
     window_state.validate_render_pixels = opengl_probe;
@@ -388,8 +408,14 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       const bool connection_rendered =
           multiplayer_action == GlueAction::redraw &&
           window_state.glue.screen == GlueScreen::connection &&
-          render_opengl(window, window_state);
+           render_opengl(window, window_state);
+      const bool connection_captured =
+          connection_capture_path == nullptr ||
+          (connection_rendered && capture_opengl_bmp(
+                                      window, window_state,
+                                      connection_capture_path));
       const std::uint32_t skirmish_now = GetTickCount();
+      window_state.glue.selected_provider = 2U;
       const GlueAction skirmish_action = activate_connection_control(
           window_state.glue, 9, 0, 0, skirmish_now);
       settle_transform(skirmish_now);
@@ -414,7 +440,11 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       const bool map_rendered =
           skirmish_action == GlueAction::redraw &&
           window_state.glue.screen == GlueScreen::map_selection &&
-          render_opengl(window, window_state);
+           render_opengl(window, window_state);
+      const bool map_captured =
+          map_capture_path == nullptr ||
+          (map_rendered && capture_opengl_bmp(window, window_state,
+                                              map_capture_path));
       const std::uint32_t map_now = GetTickCount();
       const GlueAction map_action = activate_map_selection_control(
           window_state.glue, 6, 0, 0, map_now);
@@ -965,7 +995,8 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       }
       DestroyWindow(window);
       return title_rendered && main_rendered && main_captured &&
-                     connection_rendered && map_rendered && lobby_rendered &&
+                     connection_rendered && connection_captured &&
+                     map_rendered && map_captured && lobby_rendered &&
                      lobby_captured && ready_rendered &&
                      selected_game_rendered && selected_game_captured &&
                       glue_worker_card_verified &&

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <sstream>
 
 namespace starcraft::recovery {
 namespace {
@@ -52,6 +53,36 @@ void set_message(GlueRuntime &glue, const char *const message,
   }
 }
 
+void draw_wrapped_text(const RecoveryWindowState &state,
+                       const std::string_view text, const float x,
+                       const float y, const float maximum_width) noexcept {
+  try {
+    std::istringstream words{std::string{text}};
+    std::string line;
+    std::string word;
+    float baseline = y;
+    while (words >> word) {
+      const std::string candidate =
+          line.empty() ? word : line + " " + word;
+      if (!line.empty() &&
+          state.glue.small_font.text_width(candidate) > maximum_width) {
+        draw_glue_styled_text_gl(state, line, x, baseline,
+                                 GlueFontStyle::normal);
+        line = word;
+        baseline += static_cast<float>(
+            state.glue.small_font.maximum_height + 2U);
+      } else {
+        line = candidate;
+      }
+    }
+    if (!line.empty()) {
+      draw_glue_styled_text_gl(state, line, x, baseline,
+                               GlueFontStyle::normal);
+    }
+  } catch (...) {
+  }
+}
+
 } // namespace
 
 std::int16_t connection_control_at(const GlueRuntime &glue, const int x,
@@ -90,19 +121,18 @@ GlueAction activate_connection_control(GlueRuntime &glue,
     return GlueAction::none;
   }
   if (glue.selected_provider == 0U) {
-    return glues_leave_screen(glue, GlueScreen::map_selection,
-                              GlueAction::none, now);
-  }
-  if (glue.selected_provider == 1U) {
-    set_message(glue, "The new LAN session transport is the next net task.",
-                now);
-  } else {
     if (battle::UiBeginConnect(glue.battle_net)) {
       glue.online_lobby = false;
       return glues_leave_screen(glue, GlueScreen::battle_net,
                                 GlueAction::none, now);
     }
     set_message(glue, glue.battle_net.status.c_str(), now);
+  } else if (glue.selected_provider == 1U) {
+    set_message(glue, "The new LAN session transport is the next net task.",
+                now);
+  } else {
+    return glues_leave_screen(glue, GlueScreen::map_selection,
+                              GlueAction::none, now);
   }
   return GlueAction::redraw;
 }
@@ -118,8 +148,8 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
   const GlueControl *const heading =
       control_with_id(state.glue.connection_controls, -1);
   if (heading != nullptr && !heading->text.empty()) {
-    draw_glue_centered_text_gl(state, heading->text, *heading, 230U, 230U,
-                               230U, false);
+    draw_glue_centered_styled_text_gl(state, heading->text, *heading,
+                                      GlueFontStyle::normal, false);
   }
 
   const GlueControl *const list =
@@ -151,21 +181,22 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
     glEnable(GL_TEXTURE_2D);
     for (std::size_t index = 0; index < state.glue.providers.size(); ++index) {
       const bool selected = index == state.glue.selected_provider;
-      draw_glue_text_gl(
-          state, state.glue.providers[index], static_cast<float>(list_left + 12),
+      draw_glue_styled_text_gl(
+          state, state.glue.providers[index],
+          static_cast<float>(list_left + 12),
           static_cast<float>(list_top + 24) +
               row_height * static_cast<float>(index),
-          selected ? 255U : 205U, selected ? 230U : 205U,
-          selected ? 128U : 205U, false);
+          selected ? GlueFontStyle::bright_green : GlueFontStyle::normal,
+          false);
     }
   }
 
   const GlueControl *const provider_name =
       control_with_id(state.glue.connection_controls, 6);
   if (provider_name != nullptr) {
-    draw_glue_centered_text_gl(
+    draw_glue_centered_styled_text_gl(
         state, state.glue.providers[state.glue.selected_provider],
-        *provider_name, 255U, 220U, 96U, true);
+        *provider_name, GlueFontStyle::gold, true);
   }
   const GlueControl *const description =
       control_with_id(state.glue.connection_controls, 8);
@@ -177,11 +208,12 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
     glues_control_rect(state.glue, *description, description_left,
                        description_top, description_right,
                        description_bottom);
-    draw_glue_text_gl(
+    draw_wrapped_text(
         state,
         state.glue.provider_descriptions[state.glue.selected_provider],
         static_cast<float>(description_left + 4),
-        static_cast<float>(description_top + 18), 220U, 220U, 220U, false);
+        static_cast<float>(description_top + 18),
+        static_cast<float>(description_right - description_left - 8));
   }
   for (const std::int16_t identifier : {std::int16_t{9}, std::int16_t{10}}) {
     const GlueControl *const button =
@@ -191,10 +223,11 @@ void draw_connection_gl(const RecoveryWindowState &state) noexcept {
     }
     const bool hovered = state.glue.hovered_control == identifier;
     const bool pressed = state.glue.pressed_control == identifier;
-    draw_glue_centered_text_gl(
-        state, button->text, *button, pressed ? 255U : hovered ? 255U : 220U,
-        pressed ? 128U : hovered ? 224U : 220U,
-        pressed ? 48U : hovered ? 96U : 220U, false);
+    draw_glue_centered_styled_text_gl(
+        state, button->text, *button,
+        pressed ? GlueFontStyle::error
+                : hovered ? GlueFontStyle::gold : GlueFontStyle::normal,
+        false);
   }
 }
 

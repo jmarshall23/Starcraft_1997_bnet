@@ -124,6 +124,29 @@ bool load_glue_pcx(starcraft::runtime::StormModule &storm,
   return true;
 }
 
+bool load_glue_font_colors(
+    starcraft::runtime::StormModule &storm, const char *const path,
+    const std::vector<std::uint8_t> &palette,
+    std::array<std::array<std::uint32_t, 8>, 6> &colors) {
+  starcraft::runtime::DecodedPcx table{};
+  if (!storm.load_pcx(path, table) || table.width != 48U ||
+      table.height != 1U || table.pixels.size() != 48U ||
+      palette.size() != 1024U) {
+    return false;
+  }
+  for (std::size_t style = 0; style < colors.size(); ++style) {
+    for (std::size_t shade = 0; shade < colors[style].size(); ++shade) {
+      const std::size_t palette_index = table.pixels[style * 8U + shade];
+      const std::size_t color = palette_index * 4U;
+      colors[style][shade] =
+          (static_cast<std::uint32_t>(palette[color]) << 16U) |
+          (static_cast<std::uint32_t>(palette[color + 1U]) << 8U) |
+          palette[color + 2U];
+    }
+  }
+  return true;
+}
+
 bool load_control_images(starcraft::runtime::StormModule &storm,
                          const std::vector<GlueControl> &controls,
                          std::vector<GlueImage> &images) {
@@ -205,6 +228,9 @@ void reset_screen_state(GlueRuntime &glue, const GlueScreen screen,
                         const std::uint32_t now) noexcept {
   glue.screen = screen;
   glue.screen_entered_tick = now;
+  if (screen == GlueScreen::map_selection) {
+    glue.selected_map_changed_tick = now;
+  }
   glue.hovered_control = -1;
   glue.pressed_control = -1;
   glue.message.clear();
@@ -438,6 +464,14 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
                     glue.main_background, &main_palette) &&
       load_glue_pcx(storm, R"(glue\PalNl\BackGnd.pcx)", false,
                     glue.connection_background, &network_palette) &&
+      starcraft::gds::load_starcraft_font(storm, R"(font\font10.fnt)",
+                                          glue.small_font) &&
+      starcraft::gds::load_starcraft_font(storm, R"(font\font16.fnt)",
+                                          glue.large_font) &&
+      load_glue_font_colors(storm, R"(glue\PalMm\TFont.pcx)", main_palette,
+                            glue.main_font_colors) &&
+      load_glue_font_colors(storm, R"(glue\PalNl\TFont.pcx)",
+                            network_palette, glue.network_font_colors) &&
       storm.load_file(R"(rez\gluMain.bin)", main_layout) &&
       storm.load_file(R"(rez\gluConn.bin)", connection_layout) &&
       storm.load_file(R"(rez\gluChat.bin)", lobby_layout) &&
@@ -464,8 +498,8 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
   const bool base_closed = storm.close_archive(base);
   glue.assets_ready = loaded && patch_closed && base_closed;
   if (!glue.assets_ready) {
-    glue.failure = "A title, glue dialog, Battle.net artwork, control image, "
-                   "or multiplayer map failed to decode.";
+    glue.failure = "A title, StarCraft font, glue dialog, Battle.net artwork, "
+                   "control image, or multiplayer map failed to decode.";
     glue.screen = GlueScreen::gameplay;
     return false;
   }
@@ -683,10 +717,12 @@ GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
   } else if (glue.screen == GlueScreen::map_selection) {
     if (key == VK_UP && glue.selected_map > 0U) {
       --glue.selected_map;
+      glue.selected_map_changed_tick = now;
       return GlueAction::redraw;
     }
     if (key == VK_DOWN && glue.selected_map + 1U < glue.maps.size()) {
       ++glue.selected_map;
+      glue.selected_map_changed_tick = now;
       return GlueAction::redraw;
     }
     if (key == VK_RETURN) {
@@ -764,6 +800,12 @@ GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
     glue.message_until = 0U;
     return GlueAction::redraw;
   }
+  if (glue.screen == GlueScreen::map_selection &&
+      now - glue.selected_map_changed_tick < 240U) {
+    // gluMap's selected-map details are palette-faded after a row change.
+    // Continue presenting frames until that recovered UI transition settles.
+    return GlueAction::redraw;
+  }
   return GlueAction::none;
 }
 
@@ -772,8 +814,91 @@ void draw_glue_text_gl(const RecoveryWindowState &state,
                        const float y, const std::uint8_t red,
                        const std::uint8_t green, const std::uint8_t blue,
                        const bool large) noexcept {
-  draw_game_text_gl(state, text, x, y * hud_vertical_scale(), red, green,
-                    blue, large);
+  GlueFontStyle style = GlueFontStyle::normal;
+  if (red >= 224U && green < 176U) {
+    style = GlueFontStyle::error;
+  } else if (green > red + 12U) {
+    style = GlueFontStyle::bright_green;
+  } else if (red >= 240U && green >= 190U && blue < 176U) {
+    style = GlueFontStyle::gold;
+  } else if (red < 176U && green < 176U && blue < 176U) {
+    style = GlueFontStyle::disabled;
+  }
+  draw_glue_styled_text_gl(state, text, x, y, style, large);
+}
+
+void draw_glue_styled_text_gl(const RecoveryWindowState &state,
+                              const std::string_view text, const float x,
+                              const float y, const GlueFontStyle style,
+                              const bool large,
+                              const std::uint8_t alpha) noexcept {
+  const starcraft::gds::BitmapFont &font =
+      large ? state.glue.large_font : state.glue.small_font;
+  if (text.empty()) {
+    return;
+  }
+  if (font.glyphs.empty()) {
+    draw_game_text_gl(state, text, x, y * hud_vertical_scale(), 220U, 220U,
+                      220U, large);
+    return;
+  }
+  const auto &color_tables =
+      state.glue.screen == GlueScreen::main_menu
+          ? state.glue.main_font_colors
+          : state.glue.network_font_colors;
+  const std::size_t style_index = static_cast<std::size_t>(style);
+  if (style_index >= color_tables.size()) {
+    return;
+  }
+  const float vertical_scale = hud_vertical_scale();
+  float cursor_x = x;
+  float baseline_y = y;
+  glDisable(GL_TEXTURE_2D);
+  glBegin(GL_QUADS);
+  for (const unsigned char character : text) {
+    if (character == '\n') {
+      cursor_x = x;
+      baseline_y += static_cast<float>(font.maximum_height + 1U);
+      continue;
+    }
+    if (character == ' ') {
+      cursor_x += static_cast<float>(font.maximum_width / 2U);
+      continue;
+    }
+    const starcraft::gds::FontGlyph *glyph = font.glyph(character);
+    if (glyph == nullptr) {
+      glyph = font.glyph('?');
+    }
+    if (glyph == nullptr) {
+      continue;
+    }
+    const float glyph_left = cursor_x + glyph->x_offset;
+    const float glyph_top = baseline_y - font.maximum_height + glyph->y_offset;
+    for (std::size_t row = 0; row < glyph->height; ++row) {
+      for (std::size_t column = 0; column < glyph->width; ++column) {
+        const std::uint8_t shade =
+            glyph->shades[row * glyph->width + column];
+        if (shade >= color_tables[style_index].size()) {
+          continue;
+        }
+        const std::uint32_t color = color_tables[style_index][shade];
+        glColor4ub(static_cast<std::uint8_t>(color >> 16U),
+                   static_cast<std::uint8_t>(color >> 8U),
+                   static_cast<std::uint8_t>(color), alpha);
+        const float left = glyph_left + static_cast<float>(column);
+        const float top =
+            (glyph_top + static_cast<float>(row)) * vertical_scale;
+        glVertex2f(left, top);
+        glVertex2f(left + 1.0F, top);
+        glVertex2f(left + 1.0F, top + vertical_scale);
+        glVertex2f(left, top + vertical_scale);
+      }
+    }
+    cursor_x += static_cast<float>(glyph->width + glyph->x_offset + 1U);
+  }
+  glEnd();
+  glColor4ub(255U, 255U, 255U, 255U);
+  glEnable(GL_TEXTURE_2D);
 }
 
 void draw_game_text_gl(const RecoveryWindowState &state,
@@ -820,30 +945,40 @@ void draw_glue_centered_text_gl(const RecoveryWindowState &state,
                                 const std::uint8_t green,
                                 const std::uint8_t blue,
                                 const bool large) noexcept {
-  const auto &advances =
-      large ? state.glue_font_advances : state.font_advances;
-  const float scale = large ? state.glue_font_outline_scale
-                            : state.font_outline_scale;
-  float text_width{};
-  for (const unsigned char character : text) {
-    const std::size_t index =
-        character >= 32U && character < 128U
-            ? character - 32U
-            : static_cast<std::size_t>('?' - 32);
-    text_width += advances[index] * scale;
+  GlueFontStyle style = GlueFontStyle::normal;
+  if (red >= 224U && green < 176U) {
+    style = GlueFontStyle::error;
+  } else if (green > red + 12U) {
+    style = GlueFontStyle::bright_green;
+  } else if (red >= 240U && green >= 190U && blue < 176U) {
+    style = GlueFontStyle::gold;
+  } else if (red < 176U && green < 176U && blue < 176U) {
+    style = GlueFontStyle::disabled;
   }
+  draw_glue_centered_styled_text_gl(state, text, control, style, large);
+}
+
+void draw_glue_centered_styled_text_gl(
+    const RecoveryWindowState &state, const std::string_view text,
+    const GlueControl &control, const GlueFontStyle style, const bool large,
+    const std::uint8_t alpha) noexcept {
+  const starcraft::gds::BitmapFont &font =
+      large ? state.glue.large_font : state.glue.small_font;
+  const float text_width = font.glyphs.empty()
+                               ? 0.0F
+                               : font.text_width(text);
   std::int16_t left{};
   std::int16_t top{};
   std::int16_t right{};
   std::int16_t bottom{};
   glues_control_rect(state.glue, control, left, top, right, bottom);
-  const float x = (static_cast<float>(left + right) - text_width) /
-                  2.0F;
+  const float x =
+      (static_cast<float>(left + right + 1) - text_width) / 2.0F;
   const float y =
       (static_cast<float>(top + bottom) +
-       (large ? 18.0F : 9.0F)) /
+       static_cast<float>(font.maximum_height)) /
       2.0F;
-  draw_glue_text_gl(state, text, x, y, red, green, blue, large);
+  draw_glue_styled_text_gl(state, text, x, y, style, large, alpha);
 }
 
 bool render_glue(const RecoveryWindowState &state) noexcept {

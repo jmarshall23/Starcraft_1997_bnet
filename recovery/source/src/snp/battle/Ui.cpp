@@ -246,7 +246,10 @@ bool load_button_sheet(starcraft::runtime::StormModule &storm,
 void draw_label(const RecoveryWindowState &state, const std::string_view text,
                 const int x, const int y, const bool highlighted = false,
                 const bool large = false) noexcept {
-  draw_glue_text_gl(state, text, static_cast<float>(x), static_cast<float>(y),
+  // Battle.snp's UiSetFont uses Win32 fonts (and falls back to Arial). Keep
+  // that separate from StarCraft's FNT/TFont glue renderer.
+  draw_game_text_gl(state, text, static_cast<float>(x),
+                    static_cast<float>(y) * hud_vertical_scale(),
                     highlighted ? 255U : 218U,
                     highlighted ? 208U : 218U,
                     highlighted ? 88U : 218U, large);

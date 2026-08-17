@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace starcraft::recovery {
 namespace {
@@ -58,6 +59,22 @@ std::size_t active_slot_count(const GlueRuntime &glue) noexcept {
     count += slot.ownership != 0U ? 1U : 0U;
   }
   return count;
+}
+
+std::pair<float, float> panel_offset(const RecoveryWindowState &state,
+                                     const std::int16_t identifier) noexcept {
+  const GlueControl *const panel =
+      control_with_id(state.glue.lobby_controls, identifier);
+  if (panel == nullptr) {
+    return {};
+  }
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  glues_control_rect(state.glue, *panel, left, top, right, bottom);
+  return {static_cast<float>(left - panel->left),
+          static_cast<float>(top - panel->top)};
 }
 
 } // namespace
@@ -152,26 +169,37 @@ void draw_lobby_gl(const RecoveryWindowState &state) noexcept {
   }
   draw_lobby_slots_gl(state);
 
+  const auto [left_x, left_y] = panel_offset(state, 3);
+  const auto [right_x, right_y] = panel_offset(state, 2);
+
   if (state.glue.selected_map < state.glue.maps.size()) {
     const GlueMapEntry &map = state.glue.maps[state.glue.selected_map];
-    draw_glue_text_gl(state, "Game Name:", 404.0F, 69.0F);
-    draw_glue_text_gl(state, "Local Skirmish", 412.0F, 88.0F, 255U, 220U,
-                      96U);
-    draw_glue_text_gl(state, "Game Type:", 404.0F, 149.0F);
-    draw_glue_text_gl(state, "Melee", 412.0F, 167.0F, 255U, 220U, 96U);
-    draw_glue_text_gl(state, "Map Name:", 404.0F, 181.0F);
-    draw_glue_text_gl(state, map.name, 412.0F, 200.0F, 255U, 220U, 96U);
-    draw_glue_text_gl(state, "Map Size:", 428.0F, 242.0F);
-    draw_glue_text_gl(state,
-                      std::to_string(map.width) + "x" +
-                          std::to_string(map.height),
-                      536.0F, 242.0F, 230U, 230U, 230U);
-    draw_glue_text_gl(state, "Game Speed:", 428.0F, 260.0F);
-    draw_glue_text_gl(state, "Fastest", 536.0F, 260.0F, 230U, 230U, 230U);
+    draw_glue_styled_text_gl(state, "Game Name:", 404.0F + right_x,
+                             69.0F + right_y, GlueFontStyle::normal);
+    draw_glue_styled_text_gl(
+        state, state.glue.online_lobby ? "Battle.net Game" : "Local Skirmish",
+        412.0F + right_x, 88.0F + right_y, GlueFontStyle::gold);
+    draw_glue_styled_text_gl(state, "Game Type:", 404.0F + right_x,
+                             149.0F + right_y, GlueFontStyle::normal);
+    draw_glue_styled_text_gl(state, "Melee", 412.0F + right_x,
+                             167.0F + right_y, GlueFontStyle::gold);
+    draw_glue_styled_text_gl(state, "Map Name:", 404.0F + right_x,
+                             181.0F + right_y, GlueFontStyle::normal);
+    draw_glue_styled_text_gl(state, map.name, 412.0F + right_x,
+                             200.0F + right_y, GlueFontStyle::gold);
+    draw_glue_styled_text_gl(state, "Map Size:", 428.0F + right_x,
+                             242.0F + right_y, GlueFontStyle::normal);
+    draw_glue_styled_text_gl(
+        state,
+        std::to_string(map.width) + "x" + std::to_string(map.height),
+        536.0F + right_x, 242.0F + right_y, GlueFontStyle::normal);
+    draw_glue_styled_text_gl(state, "Game Speed:", 428.0F + right_x,
+                             260.0F + right_y, GlueFontStyle::normal);
+    draw_glue_styled_text_gl(state, "Fastest", 536.0F + right_x,
+                             260.0F + right_y, GlueFontStyle::normal);
   }
-  draw_glue_text_gl(state, "Observers", 32.0F, 275.0F, 180U, 180U, 180U);
-  draw_glue_text_gl(state, "Select a map or click a slot/race to configure it.",
-                    28.0F, 466.0F, 190U, 190U, 190U);
+  draw_glue_styled_text_gl(state, "Observers", 32.0F + left_x,
+                           275.0F + left_y, GlueFontStyle::normal);
 
   for (const std::int16_t identifier : {std::int16_t{6}, std::int16_t{7}}) {
     const GlueControl *const button =
@@ -181,10 +209,11 @@ void draw_lobby_gl(const RecoveryWindowState &state) noexcept {
     }
     const bool hovered = state.glue.hovered_control == identifier;
     const bool pressed = state.glue.pressed_control == identifier;
-    draw_glue_centered_text_gl(
-        state, button->text, *button, pressed || hovered ? 255U : 220U,
-        pressed ? 128U : hovered ? 224U : 220U,
-        pressed ? 48U : hovered ? 96U : 220U, false);
+    draw_glue_centered_styled_text_gl(
+        state, button->text, *button,
+        pressed ? GlueFontStyle::error
+                : hovered ? GlueFontStyle::gold : GlueFontStyle::normal,
+        false);
   }
 }
 

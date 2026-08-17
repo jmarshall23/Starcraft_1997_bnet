@@ -181,32 +181,29 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
         static_cast<std::int16_t>(kSlotRaceBase + row);
     const bool selected = state.glue.hovered_control == name_id ||
                           state.glue.hovered_control == race_id;
-    const std::uint8_t red = selected ? 255U : active ? 215U : 120U;
-    const std::uint8_t green = selected ? 224U : active ? 215U : 120U;
-    const std::uint8_t blue = selected ? 96U : active ? 215U : 120U;
+    const GlueFontStyle style =
+        selected ? GlueFontStyle::gold
+                 : active ? GlueFontStyle::normal
+                          : GlueFontStyle::disabled;
     draw_combo_field(state, name_rect, !slot.local,
                      state.glue.hovered_control == name_id,
                      state.glue.popup_control == name_id);
     draw_combo_field(state, race_rect, active,
                      state.glue.hovered_control == race_id,
                      state.glue.popup_control == race_id);
-    draw_glue_text_gl(state, std::to_string(row + 1U),
-                      static_cast<float>(number_rect.left),
-                      static_cast<float>(number_rect.bottom - 2), red, green, blue,
-                      false);
-    draw_glue_text_gl(state, active ? slot.name : "Closed",
-                      static_cast<float>(name_rect.left),
-                      static_cast<float>(name_rect.bottom - 2), red, green, blue,
-                      false);
-    draw_glue_text_gl(state, active ? race_name(slot.race) : "---",
-                      static_cast<float>(race_rect.left),
-                      static_cast<float>(race_rect.bottom - 2), red, green, blue,
-                      false);
-    draw_glue_text_gl(state,
-                      active ? slot.local ? "OK" : "CPU" : "",
-                      static_cast<float>(status_rect.left),
-                      static_cast<float>(status_rect.bottom - 2), red, green, blue,
-                      false);
+    draw_glue_styled_text_gl(state, std::to_string(row + 1U),
+                             static_cast<float>(number_rect.left),
+                             static_cast<float>(number_rect.bottom - 2), style);
+    draw_glue_styled_text_gl(state, active ? slot.name : "Closed",
+                             static_cast<float>(name_rect.left),
+                             static_cast<float>(name_rect.bottom - 2), style);
+    draw_glue_styled_text_gl(state, active ? race_name(slot.race) : "---",
+                             static_cast<float>(race_rect.left),
+                             static_cast<float>(race_rect.bottom - 2), style);
+    draw_glue_styled_text_gl(
+        state, active ? slot.local ? "OK" : "CPU" : "",
+        static_cast<float>(status_rect.left),
+        static_cast<float>(status_rect.bottom - 2), style);
   }
 
   if (state.glue.popup_control != -1) {
@@ -271,13 +268,12 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
           glColor4ub(255U, 255U, 255U, 255U);
           glEnable(GL_TEXTURE_2D);
         }
-        draw_glue_text_gl(
+        draw_glue_styled_text_gl(
             state, race_popup ? races[static_cast<std::size_t>(row)]
                               : slots[static_cast<std::size_t>(row)],
             static_cast<float>(owner->left + 4),
             static_cast<float>(top + row * kPopupRowHeight + 14),
-            hovered ? 255U : 215U, hovered ? 224U : 215U,
-            hovered ? 96U : 215U, false);
+            hovered ? GlueFontStyle::gold : GlueFontStyle::normal);
       }
     }
   }

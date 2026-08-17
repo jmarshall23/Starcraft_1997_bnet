@@ -58,6 +58,37 @@ std::string map_display_name(const std::filesystem::path &path) {
   return path.stem().string();
 }
 
+std::pair<float, float> panel_offset(const RecoveryWindowState &state,
+                                     const std::int16_t identifier) noexcept {
+  const GlueControl *const panel =
+      control_with_id(state.glue.lobby_controls, identifier);
+  if (panel == nullptr) {
+    return {};
+  }
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+  glues_control_rect(state.glue, *panel, left, top, right, bottom);
+  return {static_cast<float>(left - panel->left),
+          static_cast<float>(top - panel->top)};
+}
+
+std::uint8_t entrance_alpha(const GlueRuntime &glue) noexcept {
+  constexpr std::uint32_t duration = 480U;
+  const std::uint32_t elapsed = glue.clock_tick - glue.screen_entered_tick;
+  return static_cast<std::uint8_t>(
+      (std::min)(255U, elapsed * 255U / duration));
+}
+
+std::uint8_t selection_alpha(const GlueRuntime &glue) noexcept {
+  constexpr std::uint32_t duration = 240U;
+  const std::uint32_t elapsed =
+      glue.clock_tick - glue.selected_map_changed_tick;
+  return static_cast<std::uint8_t>(
+      (std::min)(255U, elapsed * 255U / duration));
+}
+
 } // namespace
 
 bool enumerate_glue_maps(starcraft::runtime::StormModule &storm,
@@ -186,6 +217,7 @@ GlueAction activate_map_selection_control(GlueRuntime &glue,
     const std::size_t map = static_cast<std::size_t>(identifier - kMapRowBase);
     if (map < glue.maps.size()) {
       glue.selected_map = map;
+      glue.selected_map_changed_tick = now;
     }
     return GlueAction::redraw;
   }
@@ -235,13 +267,18 @@ void draw_map_selection_gl(const RecoveryWindowState &state) noexcept {
                         static_cast<float>(kMapViewportWidth),
                         static_cast<float>(kMapViewportHeight));
   for (const GlueImage &image : state.glue.lobby_images) {
-    if (image.control_identifier == 3 || image.control_identifier == 4 ||
-        image.control_identifier == 5) {
+    if (image.control_identifier == 2 || image.control_identifier == 3 ||
+        image.control_identifier == 4 || image.control_identifier == 5) {
       draw_lobby_image(state, image);
     }
   }
-  draw_glue_text_gl(state, "Select Map", 116.0F, 26.0F, 255U, 220U, 96U,
-                    true);
+  const auto [left_x, left_y] = panel_offset(state, 3);
+  const auto [right_x, right_y] = panel_offset(state, 2);
+  const std::uint8_t alpha = entrance_alpha(state.glue);
+  const std::uint8_t detail_alpha =
+      (std::min)(alpha, selection_alpha(state.glue));
+  draw_glue_styled_text_gl(state, "Select Map", 116.0F + left_x,
+                           26.0F + left_y, GlueFontStyle::gold, true, alpha);
   for (std::size_t index = 0; index < state.glue.maps.size() && index < 6U;
        ++index) {
     const float top = static_cast<float>(kMapListTop +
@@ -249,12 +286,17 @@ void draw_map_selection_gl(const RecoveryWindowState &state) noexcept {
                                              kMapRowHeight);
     if (index == state.glue.selected_map) {
       glDisable(GL_TEXTURE_2D);
-      glColor4ub(48U, 92U, 144U, 150U);
+      glColor4ub(48U, 92U, 144U,
+                 static_cast<std::uint8_t>(150U * alpha / 255U));
       glBegin(GL_QUADS);
-      glVertex2f(31.0F, top * hud_vertical_scale());
-      glVertex2f(360.0F, top * hud_vertical_scale());
-      glVertex2f(360.0F, (top + 26.0F) * hud_vertical_scale());
-      glVertex2f(31.0F, (top + 26.0F) * hud_vertical_scale());
+      glVertex2f(31.0F + left_x,
+                 (top + left_y) * hud_vertical_scale());
+      glVertex2f(360.0F + left_x,
+                 (top + left_y) * hud_vertical_scale());
+      glVertex2f(360.0F + left_x,
+                 (top + 26.0F + left_y) * hud_vertical_scale());
+      glVertex2f(31.0F + left_x,
+                 (top + 26.0F + left_y) * hud_vertical_scale());
       glEnd();
       glColor4ub(255U, 255U, 255U, 255U);
       glEnable(GL_TEXTURE_2D);
@@ -263,19 +305,28 @@ void draw_map_selection_gl(const RecoveryWindowState &state) noexcept {
     const std::string detail = map.name + "  " + std::to_string(map.width) +
                                "x" + std::to_string(map.height) + "  " +
                                std::to_string(map.player_count) + " Players";
-    draw_glue_text_gl(state, detail, 39.0F, top + 18.0F,
-                      index == state.glue.selected_map ? 255U : 210U,
-                      index == state.glue.selected_map ? 230U : 210U,
-                      index == state.glue.selected_map ? 128U : 210U, false);
+    draw_glue_styled_text_gl(
+        state, detail, 39.0F + left_x, top + 18.0F + left_y,
+        index == state.glue.selected_map ? GlueFontStyle::bright_green
+                                         : GlueFontStyle::normal,
+        false, alpha);
   }
   const GlueMapEntry &selected = state.glue.maps[state.glue.selected_map];
-  draw_glue_text_gl(state, "Game Type:", 404.0F, 137.0F, 210U, 210U, 210U);
-  draw_glue_text_gl(state, "Melee", 412.0F, 167.0F, 255U, 220U, 96U);
-  draw_glue_text_gl(state, "Map Size:", 404.0F, 207.0F, 210U, 210U, 210U);
-  draw_glue_text_gl(state,
-                    std::to_string(selected.width) + "x" +
-                        std::to_string(selected.height),
-                    412.0F, 237.0F, 255U, 220U, 96U);
+  draw_glue_styled_text_gl(state, "Game Type:", 404.0F + right_x,
+                           137.0F + right_y, GlueFontStyle::normal, false,
+                           detail_alpha);
+  draw_glue_styled_text_gl(state, "Melee", 412.0F + right_x,
+                           167.0F + right_y, GlueFontStyle::gold, false,
+                           detail_alpha);
+  draw_glue_styled_text_gl(state, "Map Size:", 404.0F + right_x,
+                           207.0F + right_y, GlueFontStyle::normal, false,
+                           detail_alpha);
+  draw_glue_styled_text_gl(
+      state,
+      std::to_string(selected.width) + "x" +
+          std::to_string(selected.height),
+      412.0F + right_x, 237.0F + right_y, GlueFontStyle::gold, false,
+      detail_alpha);
   for (const std::int16_t identifier : {std::int16_t{6}, std::int16_t{7}}) {
     const GlueControl *const button =
         control_with_id(state.glue.lobby_controls, identifier);
@@ -284,10 +335,11 @@ void draw_map_selection_gl(const RecoveryWindowState &state) noexcept {
     }
     const bool hovered = state.glue.hovered_control == identifier;
     const bool pressed = state.glue.pressed_control == identifier;
-    draw_glue_centered_text_gl(
-        state, button->text, *button, pressed || hovered ? 255U : 220U,
-        pressed ? 128U : hovered ? 224U : 220U,
-        pressed ? 48U : hovered ? 96U : 220U, false);
+    draw_glue_centered_styled_text_gl(
+        state, button->text, *button,
+        pressed ? GlueFontStyle::error
+                : hovered ? GlueFontStyle::gold : GlueFontStyle::normal,
+        false, alpha);
   }
 }
 

@@ -88,6 +88,7 @@ add_library(starcraft_core STATIC
   src/data/dat.cpp
   src/game/scenario.cpp
   src/gds/bitmap.cpp
+  src/gds/font.cpp
   src/gds/grp.cpp
   src/gds/meta_bitmap.cpp
   src/gds/tileset.cpp

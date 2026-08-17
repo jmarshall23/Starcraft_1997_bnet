@@ -2,6 +2,7 @@
 
 #include "starcraft/data/dat.hpp"
 #include "starcraft/game/scenario.hpp"
+#include "starcraft/gds/font.hpp"
 #include "starcraft/gds/tileset.hpp"
 #include "starcraft/lang/cunit_build.hpp"
 #include "starcraft/lang/cunit_harvest.hpp"
@@ -201,6 +202,15 @@ struct GlueLobbySlot {
   bool local{};
 };
 
+enum class GlueFontStyle : std::uint8_t {
+  gold = 0,
+  green = 1,
+  bright_green = 2,
+  disabled = 3,
+  normal = 4,
+  error = 5,
+};
+
 struct GlueRuntime {
   GlueScreen screen{GlueScreen::gameplay};
   SpritePreviewFrame title_background{};
@@ -215,23 +225,28 @@ struct GlueRuntime {
   std::vector<GlueVideo> main_videos{};
   std::vector<SpritePreviewFrame> main_dialog_frames{};
   std::vector<SpritePreviewFrame> network_dialog_frames{};
+  starcraft::gds::BitmapFont small_font{};
+  starcraft::gds::BitmapFont large_font{};
+  std::array<std::array<std::uint32_t, 8>, 6> main_font_colors{};
+  std::array<std::array<std::uint32_t, 8>, 6> network_font_colors{};
   BattleArtwork battle_artwork{};
   std::vector<GlueMapEntry> maps{};
   std::array<GlueLobbySlot, starcraft::data::chk_player_slot_count>
       lobby_slots{};
   std::array<std::string, 3> providers{{
-      "Offline Skirmish",
-      "Local Area Network",
       "Battle.net",
+      "Local Area Network",
+      "Offline Skirmish",
   }};
   std::array<std::string, 3> provider_descriptions{{
-      "Create a local game with computer-controlled player slots.",
-      "Local-network transport will use the new session protocol.",
       "Online login, chat, and matchmaking will use the new service.",
+      "Local-network transport will use the new session protocol.",
+      "Create a local game with computer-controlled player slots.",
   }};
   std::string message{};
   std::string failure{};
   std::uint32_t screen_entered_tick{};
+  std::uint32_t selected_map_changed_tick{};
   std::uint32_t message_until{};
   std::uint32_t ready_deadline{};
   std::uint32_t clock_tick{};
@@ -1036,6 +1051,10 @@ void draw_glue_text_gl(const RecoveryWindowState &state, std::string_view text,
                        std::uint8_t green = 220U,
                        std::uint8_t blue = 220U,
                        bool large = false) noexcept;
+void draw_glue_styled_text_gl(
+    const RecoveryWindowState &state, std::string_view text, float x, float y,
+    GlueFontStyle style = GlueFontStyle::normal, bool large = false,
+    std::uint8_t alpha = 255U) noexcept;
 void draw_game_text_gl(const RecoveryWindowState &state,
                        std::string_view text, float x, float y,
                        std::uint8_t red = 220U,
@@ -1049,6 +1068,11 @@ void draw_glue_centered_text_gl(const RecoveryWindowState &state,
                                 std::uint8_t green = 220U,
                                 std::uint8_t blue = 220U,
                                 bool large = true) noexcept;
+void draw_glue_centered_styled_text_gl(
+    const RecoveryWindowState &state, std::string_view text,
+    const GlueControl &control,
+    GlueFontStyle style = GlueFontStyle::normal, bool large = true,
+    std::uint8_t alpha = 255U) noexcept;
 void draw_title_gl(const RecoveryWindowState &state) noexcept;
 void draw_main_menu_gl(const RecoveryWindowState &state) noexcept;
 void draw_connection_gl(const RecoveryWindowState &state) noexcept;
