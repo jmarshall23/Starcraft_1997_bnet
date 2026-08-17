@@ -186,6 +186,7 @@ add_executable(StarCraftRecovery WIN32
   src/lang/snd.cpp
   src/lang/statmisc.cpp
   src/lang/statcmd.cpp
+  src/lang/TechTree.cpp
   src/lang/statdata.cpp
   src/lang/statdraw.cpp
   src/lang/statport.cpp

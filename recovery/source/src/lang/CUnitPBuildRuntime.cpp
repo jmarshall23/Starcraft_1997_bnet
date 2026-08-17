@@ -84,7 +84,7 @@ bool complete_protoss_build_order(BootstrapStatus &status,
   }
   if (buildable == nullptr ||
       !placement_is_valid(status, *buildable, probe.build_target_x,
-                          probe.build_target_y, probe.owner)) {
+                          probe.build_target_y, probe.owner, probe.unit_id)) {
     refund_probe_order();
     finish_probe_order();
     return false;

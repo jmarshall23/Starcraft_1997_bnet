@@ -4,6 +4,7 @@
 #include "starcraft/lang/cunit_build.hpp"
 #include "starcraft/lang/cunit_harvest.hpp"
 #include "starcraft/lang/cunit_path_collide.hpp"
+#include "starcraft/lang/cunit_zerg.hpp"
 #include "starcraft/lang/damage.hpp"
 #include "starcraft/lang/flingy.hpp"
 #include "starcraft/lang/pathfinding.hpp"
@@ -706,6 +707,7 @@ std::size_t issue_scv_move_order(BootstrapStatus &status,
   std::size_t issued{};
   for (ScenarioUnitPreview &unit : status.units) {
     if (!unit.selected || !unit.alive || unit.owner != 0 || unit.is_building ||
+        unit.unit_type == starcraft::lang::zerg_larva_type ||
         unit.movement_top_speed == 0U || unit.movement_acceleration == 0U) {
       continue;
     }
@@ -1319,7 +1321,9 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
   for (ScenarioUnitPreview &worker : status.units) {
     const bool worker_only_order = active_order != ActiveUnitOrder::attack;
     if (!worker.selected || !worker.alive || worker.owner != 0 ||
-        worker.is_building || worker.movement_top_speed == 0U ||
+        worker.is_building ||
+        worker.unit_type == starcraft::lang::zerg_larva_type ||
+        worker.movement_top_speed == 0U ||
         (worker_only_order && (worker.dat_flags & 0x08U) == 0U) ||
         (active_order == ActiveUnitOrder::attack &&
          !unit_has_weapon_against(worker, *hit))) {
@@ -1404,7 +1408,9 @@ std::size_t issue_scv_smart_order(BootstrapStatus &status,
     const bool worker_only_order = order != ActiveUnitOrder::attack &&
                                    order != ActiveUnitOrder::enter_transport;
     if (!worker.alive || !worker.selected || worker.owner != 0U ||
-        worker.is_building || worker.movement_top_speed == 0U ||
+        worker.is_building ||
+        worker.unit_type == starcraft::lang::zerg_larva_type ||
+        worker.movement_top_speed == 0U ||
         (worker_only_order && (worker.dat_flags & 0x08U) == 0U) ||
         (order == ActiveUnitOrder::attack &&
          !unit_has_weapon_against(worker, *hit)) ||
@@ -1795,6 +1801,11 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
     }
     if (worker.active_order == ActiveUnitOrder::protoss_build) {
       (void)complete_protoss_build_order(status, worker);
+      changed = true;
+      continue;
+    }
+    if (worker.active_order == ActiveUnitOrder::zerg_build) {
+      (void)complete_zerg_build_order(status, worker);
       changed = true;
       continue;
     }

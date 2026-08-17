@@ -416,6 +416,7 @@ enum class ActiveUnitOrder : std::uint8_t {
   gather,
   return_cargo,
   protoss_build,
+  zerg_build,
   enter_transport,
   pickup_transport,
   return_hangar,
@@ -687,11 +688,21 @@ struct CommandCardView {
   std::size_t count{};
 };
 
+struct UnitRequirementResult {
+  bool visible{true};
+  bool allowed{true};
+  std::array<std::uint16_t, 12> required_units{};
+  std::array<std::uint16_t, 12> missing_units{};
+  std::size_t required_count{};
+  std::size_t missing_count{};
+};
+
 struct BuildableUnitVisual {
   std::uint16_t unit_type{};
   std::uint16_t placement_width{};
   std::uint16_t placement_height{};
   std::size_t asset_index{SIZE_MAX};
+  std::size_t construction_asset_index{SIZE_MAX};
   starcraft::data::UnitSimulationTraits simulation{};
   std::uint16_t addon_parent_type{0xFFFFU};
   std::int16_t addon_x{};
@@ -748,6 +759,7 @@ struct BootstrapStatus {
   std::size_t scv_mining_effect_asset_index{SIZE_MAX};
   std::size_t probe_mining_effect_asset_index{SIZE_MAX};
   std::size_t command_center_working_asset_index{SIZE_MAX};
+  std::size_t zerg_extractor_construction_asset_index{SIZE_MAX};
   std::size_t protoss_warp_asset_index{SIZE_MAX};
   std::size_t protoss_materialize_asset_index{SIZE_MAX};
   std::size_t pylon_power_asset_index{SIZE_MAX};
@@ -954,6 +966,7 @@ struct RecoveryWindowState {
   // regression probe and never enabled during ordinary gameplay.
   bool validate_render_pixels{};
   std::uint16_t pressed_command_position{};
+  std::uint16_t hovered_command_position{};
   GLuint font_display_lists{};
   GLuint glue_font_display_lists{};
   std::array<float, 96> font_advances{};
@@ -1231,6 +1244,12 @@ void apply_initialization_traits(
 first_selected_unit(const BootstrapStatus &status) noexcept;
 [[nodiscard]] CommandCardView
 command_card_for(const BootstrapStatus &status) noexcept;
+[[nodiscard]] UnitRequirementResult unit_requirements_for(
+    const BootstrapStatus &status, const ScenarioUnitPreview &producer,
+    std::uint16_t product_type) noexcept;
+[[nodiscard]] bool command_button_enabled(
+    const BootstrapStatus &status, const ScenarioUnitPreview &producer,
+    const CommandButtonVisual &button) noexcept;
 [[nodiscard]] CommandCardView
 recovered_building_card(std::uint16_t unit_type) noexcept;
 [[nodiscard]] const BuildableUnitVisual *
@@ -1419,7 +1438,8 @@ issue_scv_return_cargo(BootstrapStatus &status) noexcept;
                                       const BuildableUnitVisual &buildable,
                                       std::uint16_t center_x,
                                       std::uint16_t center_y,
-                                      std::uint8_t owner = 0U) noexcept;
+                                      std::uint8_t owner = 0U,
+                                      std::uint32_t ignored_unit_id = 0U) noexcept;
 [[nodiscard]] bool update_building_placement(BootstrapStatus &status,
                                              int game_x, int game_y) noexcept;
 [[nodiscard]] bool place_current_building(BootstrapStatus &status) noexcept;
@@ -1427,9 +1447,18 @@ issue_scv_return_cargo(BootstrapStatus &status) noexcept;
     BootstrapStatus &status, ScenarioUnitPreview &probe,
     const BuildableUnitVisual &buildable, std::uint16_t center_x,
     std::uint16_t center_y, bool charge_resources) noexcept;
+[[nodiscard]] bool begin_zerg_build_order(
+    BootstrapStatus &status, ScenarioUnitPreview &drone,
+    const BuildableUnitVisual &buildable, std::uint16_t center_x,
+    std::uint16_t center_y, bool charge_resources) noexcept;
+[[nodiscard]] bool complete_zerg_build_order(
+    BootstrapStatus &status, ScenarioUnitPreview &drone) noexcept;
 [[nodiscard]] bool configure_preview_type(BootstrapStatus &status,
                                           ScenarioUnitPreview &unit,
                                           std::uint16_t unit_type) noexcept;
+[[nodiscard]] bool replace_preview_primary_image(
+    BootstrapStatus &status, ScenarioUnitPreview &unit,
+    std::size_t asset_index) noexcept;
 void activate_command_button(BootstrapStatus &status,
                              std::uint16_t position) noexcept;
 [[nodiscard]] bool advance_unit_production(BootstrapStatus &status,

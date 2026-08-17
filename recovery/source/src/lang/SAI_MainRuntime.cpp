@@ -423,46 +423,23 @@ bool start_ai_building(BootstrapStatus &status, AiPlayerRuntime &ai,
                        const BuildableUnitVisual &buildable) noexcept {
   ScenarioUnitPreview *worker = idle_worker(status, ai.owner);
   if (worker == nullptr) return false;
+  const UnitRequirementResult requirements =
+      unit_requirements_for(status, *worker, buildable.unit_type);
+  if (!requirements.visible || !requirements.allowed) return false;
   std::uint16_t x{};
   std::uint16_t y{};
   if (!find_ai_build_site(status, buildable, ai.owner, x, y)) return false;
   if (ai.race == 2U) {
     return begin_protoss_build_order(status, *worker, buildable, x, y, true);
   }
+  if (ai.race == 0U) {
+    return begin_zerg_build_order(status, *worker, buildable, x, y, true);
+  }
   std::uint32_t &minerals = status.player_mineral_stock[ai.owner];
   std::uint32_t &gas = status.player_gas_stock[ai.owner];
   if (minerals < buildable.simulation.mineral_cost ||
       gas < buildable.simulation.gas_cost) {
     return false;
-  }
-  if (ai.race == 0U) {
-    cancel_unit_order(status, *worker);
-    if (!configure_preview_type(status, *worker, buildable.unit_type)) return false;
-    minerals -= buildable.simulation.mineral_cost;
-    gas -= buildable.simulation.gas_cost;
-    if (buildable.unit_type == 149U) {
-      for (ScenarioUnitPreview &geyser : status.units) {
-        if (geyser.alive && geyser.unit_type == 188U &&
-            std::abs(static_cast<int>(geyser.x) - x) <= 16 &&
-            std::abs(static_cast<int>(geyser.y) - y) <= 16) {
-          worker->resource_amount = geyser.resource_amount;
-          geyser.alive = false;
-          geyser.selected = false;
-          break;
-        }
-      }
-    }
-    worker->x = x;
-    worker->y = y;
-    worker->x_fixed = static_cast<std::int32_t>(x) << 8U;
-    worker->y_fixed = static_cast<std::int32_t>(y) << 8U;
-    worker->construction_complete = false;
-    worker->construction_ticks_total = static_cast<std::uint16_t>((
-        std::max)(1U, static_cast<unsigned>(buildable.simulation.build_time) >> 1U));
-    worker->construction_ticks_remaining = worker->construction_ticks_total;
-    worker->hit_points = (std::max)(1U, worker->max_hit_points / 10U);
-    worker->construction_animation_phase = 0U;
-    return true;
   }
   const std::uint32_t worker_id = worker->unit_id;
   ScenarioUnitPreview building{};
@@ -541,6 +518,11 @@ bool satisfy_ai_build_request(BootstrapStatus &status, AiPlayerRuntime &ai,
           !producer.construction_complete || producer.production_queue.full() ||
           !starcraft::lang::producer_builds_unit(producer.unit_type,
                                                 request.unit_type)) {
+        continue;
+      }
+      const UnitRequirementResult requirements =
+          unit_requirements_for(status, producer, request.unit_type);
+      if (!requirements.visible || !requirements.allowed) {
         continue;
       }
       const auto &simulation = runtime.initialization.simulation;

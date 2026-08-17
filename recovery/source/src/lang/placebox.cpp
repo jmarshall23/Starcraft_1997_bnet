@@ -155,7 +155,8 @@ bool placement_is_valid(const BootstrapStatus &status,
                         const BuildableUnitVisual &buildable,
                         const std::uint16_t center_x,
                         const std::uint16_t center_y,
-                        const std::uint8_t owner) noexcept {
+                        const std::uint8_t owner,
+                        const std::uint32_t ignored_unit_id) noexcept {
   // placebox.cpp::sub_481410 at 0x00481410 reads dword_8DFFB0's width and
   // height, divides them by 32, and colors the per-tile placement bitmap.
   // Validate that footprint against map bounds, the CV5 0x0800 terrain-block
@@ -231,7 +232,7 @@ bool placement_is_valid(const BootstrapStatus &status,
     }
   }
   for (const ScenarioUnitPreview &unit : status.units) {
-    if (!unit.alive) {
+    if (!unit.alive || unit.unit_id == ignored_unit_id) {
       continue;
     }
     const int unit_left = static_cast<int>(unit.x) - unit.selection_width / 2;
@@ -282,7 +283,8 @@ bool begin_protoss_build_order(BootstrapStatus &status,
                                const bool charge_resources) noexcept {
   if (!probe.alive || probe.is_building ||
       !starcraft::lang::is_protoss_probe(probe.unit_type) ||
-      !placement_is_valid(status, buildable, center_x, center_y, probe.owner)) {
+      !placement_is_valid(status, buildable, center_x, center_y, probe.owner,
+                          probe.unit_id)) {
     return false;
   }
   std::uint32_t &minerals = probe.owner == 0U
@@ -363,6 +365,62 @@ bool begin_protoss_build_order(BootstrapStatus &status,
   return true;
 }
 
+bool begin_zerg_build_order(BootstrapStatus &status,
+                            ScenarioUnitPreview &drone,
+                            const BuildableUnitVisual &buildable,
+                            const std::uint16_t center_x,
+                            const std::uint16_t center_y,
+                            const bool charge_resources) noexcept {
+  if (!drone.alive || drone.is_building ||
+      !starcraft::lang::is_zerg_drone(drone.unit_type) ||
+      !placement_is_valid(status, buildable, center_x, center_y, drone.owner,
+                          drone.unit_id)) {
+    return false;
+  }
+  std::uint32_t &minerals = drone.owner == 0U
+                                ? status.player_minerals
+                                : status.player_mineral_stock[drone.owner];
+  std::uint32_t &gas = drone.owner == 0U
+                           ? status.player_gas
+                           : status.player_gas_stock[drone.owner];
+  if (charge_resources &&
+      (minerals < buildable.simulation.mineral_cost ||
+       gas < buildable.simulation.gas_cost)) {
+    return false;
+  }
+
+  cancel_unit_order(status, drone);
+  // CUnitZerg.cpp::sub_448E60 state zero first moves to (x, y - 7). State
+  // one validates the footprint and performs the short settling move to the
+  // exact center; only state two releases queued order 0x1c.
+  const std::uint16_t approach_y = static_cast<std::uint16_t>(
+      (std::max)(0, static_cast<int>(center_y) - 7));
+  if (!plan_scv_path(status, drone, center_x, approach_y)) {
+    return false;
+  }
+  if (charge_resources) {
+    minerals -= buildable.simulation.mineral_cost;
+    gas -= buildable.simulation.gas_cost;
+    if (drone.owner == 0U) {
+      status.player_mineral_stock[0] = minerals;
+      status.player_gas_stock[0] = gas;
+    }
+  }
+
+  // CUnitZBuild.cpp::sub_4473A0 first issues order 0x45 to the requested
+  // approach point and queues order 0x1c. sub_4475E0 may only transform the
+  // Drone after that movement order has completed.
+  drone.movement_speed = 0U;
+  (void)restart_unit_animation(status, drone, 11U);
+  drone.moving = true;
+  drone.active_order = ActiveUnitOrder::zerg_build;
+  drone.construction_target_type = buildable.unit_type;
+  drone.build_target_x = center_x;
+  drone.build_target_y = center_y;
+  drone.action_phase = 1U;
+  return true;
+}
+
 bool place_current_building(BootstrapStatus &status) noexcept {
   if (!status.placement_active || !status.placement_valid) {
     return false;
@@ -439,6 +497,20 @@ bool place_current_building(BootstrapStatus &status) noexcept {
     status.active_command_card = 0U;
     return true;
   }
+  if (zerg_worker) {
+    ScenarioUnitPreview *const drone = find_unit_by_id(status, worker_id);
+    if (drone == nullptr ||
+        !begin_zerg_build_order(status, *drone, *buildable,
+                                status.placement_x, status.placement_y,
+                                true)) {
+      return false;
+    }
+    status.placement_active = false;
+    status.placement_valid = false;
+    status.placement_unit_type = 0xFFFFU;
+    status.active_command_card = 0U;
+    return true;
+  }
   try {
     std::size_t geyser_index = SIZE_MAX;
     const bool refinery = buildable->unit_type == 110U ||
@@ -488,35 +560,11 @@ bool place_current_building(BootstrapStatus &status) noexcept {
       return true;
     };
 
-    // CUnitZBuild.cpp::sub_4475E0 changes the Drone CUnit itself to the
-    // selected structure for every entry except Extractor 149. Preserve that
-    // identity and selection instead of creating a second unit.
-    if (zerg_worker && buildable->unit_type != 149U) {
-      ScenarioUnitPreview *const drone = find_unit_by_id(status, worker_id);
-      if (drone == nullptr) {
-        return false;
-      }
-      cancel_unit_order(status, *drone);
-      if (!initialize_construction(*drone)) {
-        return false;
-      }
-      status.player_minerals -= buildable->simulation.mineral_cost;
-      status.player_gas -= buildable->simulation.gas_cost;
-      status.placement_active = false;
-      status.placement_valid = false;
-      status.placement_unit_type = 0xFFFFU;
-      status.active_command_card = 0U;
-      return true;
-    }
-
     ScenarioUnitPreview building{};
     building.unit_id = status.next_unit_id++;
     if (!initialize_construction(building)) {
       return false;
     }
-    // Extractor is the sole Zerg branch that creates a separate building on
-    // the geyser. Transfer selection before sub_4301A0's Drone cleanup.
-    building.selected = zerg_worker && buildable->unit_type == 149U;
     if (geyser_index != SIZE_MAX) {
       building.resource_amount = status.units[geyser_index].resource_amount;
     }
@@ -531,14 +579,6 @@ bool place_current_building(BootstrapStatus &status) noexcept {
     if (geyser_index != SIZE_MAX) {
       status.units[geyser_index].alive = false;
       status.units[geyser_index].selected = false;
-    }
-    if (zerg_worker && buildable->unit_type == 149U) {
-      ScenarioUnitPreview *const drone = find_unit_by_id(status, worker_id);
-      if (drone != nullptr) {
-        cancel_unit_order(status, *drone);
-        drone->alive = false;
-        drone->selected = false;
-      }
     }
     if (!nydus_exit) {
       status.player_minerals -= buildable->simulation.mineral_cost;

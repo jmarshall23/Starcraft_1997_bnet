@@ -926,6 +926,10 @@ BootstrapStatus probe_assets(
     working_overlay_asset_ready =
         status.command_center_working_asset_index != SIZE_MAX;
 
+    // CUnitZBuild.cpp::sub_4475E0 attaches image 314 only to the new
+    // Extractor CUnit after the Drone is consumed on a Vespene geyser.
+    status.zerg_extractor_construction_asset_index = ensure_asset(314U);
+
     // CUnitPBuild.cpp::sub_43BBF0 attaches image 189 when the Probe reaches
     // the accepted footprint. CUnitProtoss.cpp::sub_43CF60 creates sprite
     // 198 for the same licensed power-field shape used by sub_43C200.
@@ -1001,6 +1005,15 @@ BootstrapStatus probe_assets(
       buildable.asset_index = ensure_asset(image_id);
       if (buildable.asset_index == SIZE_MAX) {
         return false;
+      }
+      std::uint16_t construction_image_id{};
+      if (data.unit_construction_image_id(unit_type,
+                                          construction_image_id)) {
+        buildable.construction_asset_index =
+            ensure_asset(construction_image_id);
+        if (buildable.construction_asset_index == SIZE_MAX) {
+          return false;
+        }
       }
       if (!data.unit_simulation_traits(unit_type, buildable.simulation) ||
           ensure_runtime_unit_type(unit_type) == nullptr) {

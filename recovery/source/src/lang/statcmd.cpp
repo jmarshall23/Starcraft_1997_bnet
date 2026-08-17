@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace starcraft::recovery {
@@ -23,6 +24,18 @@ void activate_command_button(BootstrapStatus &status,
     const CommandButtonVisual &button = card.buttons[button_index];
     if (button.position == position) {
       status.last_command_position = position;
+      const ScenarioUnitPreview *const selected = first_selected_unit(status);
+      if (selected != nullptr &&
+          (button.action == CommandAction::train_unit ||
+           button.action == CommandAction::begin_building_placement ||
+           button.action == CommandAction::build_addon ||
+           button.action == CommandAction::morph_building)) {
+        const UnitRequirementResult requirements =
+            unit_requirements_for(status, *selected, button.argument);
+        if (!requirements.visible || !requirements.allowed) {
+          return;
+        }
+      }
       if (button.action == CommandAction::train_unit) {
         ScenarioUnitPreview *producer{};
         for (ScenarioUnitPreview &unit : status.units) {
@@ -272,6 +285,17 @@ void activate_command_button(BootstrapStatus &status,
             building->construction_ticks_total;
         building->construction_animation_phase = 2U;
         status.active_command_card = 0U;
+        // CUnitZBuild.cpp::sub_447B40 calls sub_42BA80(this, 1) before
+        // action 13. For building morphs that lookup uses the current
+        // Hatchery/Spire/Colony type, so its units.dat construction image
+        // remains primary until the target type is committed.
+        const BuildableUnitVisual *const current =
+            find_buildable_unit(status, building->unit_type);
+        if (current != nullptr &&
+            current->construction_asset_index != SIZE_MAX) {
+          (void)replace_preview_primary_image(
+              status, *building, current->construction_asset_index);
+        }
         (void)restart_unit_animation(status, *building, 13U);
       } else if (button.action == CommandAction::place_nydus_exit) {
         const ScenarioUnitPreview *const canal = first_selected_unit(status);
@@ -873,11 +897,11 @@ constexpr CommandCardView card_view(
 CommandCardView recovered_building_card(const std::uint16_t unit_type) noexcept {
   switch (unit_type) {
     case 112U: return card_view(kAcademyButtons);
-    case 115U: return card_view(kMachineShopButtons);
+    case 120U: return card_view(kMachineShopButtons);
     case 116U: return card_view(kTerranScienceFacilityButtons);
-    case 117U: return card_view(kControlTowerButtons);
-    case 118U: return card_view(kCovertOpsButtons);
-    case 120U: return card_view(kPhysicsLabButtons);
+    case 115U: return card_view(kControlTowerButtons);
+    case 117U: return card_view(kCovertOpsButtons);
+    case 118U: return card_view(kPhysicsLabButtons);
     case 122U: return card_view(kEngineeringBayButtons);
     case 123U: return card_view(kArmoryButtons);
     case 125U: return card_view(kBunkerButtons);
@@ -1150,6 +1174,7 @@ void draw_selected_command_panel_gl(const RecoveryWindowState &state) {
     return;
   }
   const CommandCardView card = command_card_for(*status);
+  const ScenarioUnitPreview *const selected = first_selected_unit(*status);
   for (std::size_t index = 0; index < card.count; ++index) {
     const CommandButtonVisual &button = card.buttons[index];
     if (button.position == 0 ||
@@ -1168,7 +1193,121 @@ void draw_selected_command_panel_gl(const RecoveryWindowState &state) {
                               control);
     draw_hud_control_frame_gl(status->command_icon_frames[button.icon],
                               control);
+    if (selected != nullptr &&
+        !command_button_enabled(*status, *selected, button)) {
+      const float left = static_cast<float>(control.left);
+      const float top = static_cast<float>(control.top) * hud_vertical_scale();
+      const float right = static_cast<float>(control.right + 1);
+      const float bottom =
+          static_cast<float>(control.bottom + 1) * hud_vertical_scale();
+      glColor4ub(8U, 8U, 8U, 152U);
+      glBegin(GL_QUADS);
+      glVertex2f(left, top);
+      glVertex2f(right, top);
+      glVertex2f(right, bottom);
+      glVertex2f(left, bottom);
+      glEnd();
+      glColor4ub(255U, 255U, 255U, 255U);
+    }
   }
+
+  if (selected == nullptr || state.hovered_command_position == 0U) {
+    return;
+  }
+  const CommandButtonVisual *hovered{};
+  for (std::size_t index = 0; index < card.count; ++index) {
+    if (card.buttons[index].position == state.hovered_command_position) {
+      hovered = &card.buttons[index];
+      break;
+    }
+  }
+  if (hovered == nullptr ||
+      (hovered->action != CommandAction::train_unit &&
+       hovered->action != CommandAction::begin_building_placement &&
+       hovered->action != CommandAction::build_addon &&
+       hovered->action != CommandAction::morph_building)) {
+    return;
+  }
+
+  std::uint32_t mineral_cost{};
+  std::uint32_t gas_cost{};
+  if (hovered->argument < status->runtime_unit_types.size() &&
+      status->runtime_unit_types[hovered->argument].ready) {
+    const auto &simulation = status->runtime_unit_types[hovered->argument]
+                                 .initialization.simulation;
+    mineral_cost = simulation.mineral_cost;
+    gas_cost = simulation.gas_cost;
+  } else if (const BuildableUnitVisual *const buildable =
+                 find_buildable_unit(*status, hovered->argument)) {
+    mineral_cost = buildable->simulation.mineral_cost;
+    gas_cost = buildable->simulation.gas_cost;
+  } else {
+    return;
+  }
+
+  const UnitRequirementResult requirements =
+      unit_requirements_for(*status, *selected, hovered->argument);
+  std::string name = printable_status_text(
+      status_text(*status, static_cast<std::uint16_t>(hovered->argument + 1U)));
+  if (name.empty()) {
+    name = "Unit " + std::to_string(hovered->argument);
+  }
+  const std::string cost = "Minerals: " + std::to_string(mineral_cost) +
+                           "   Gas: " + std::to_string(gas_cost);
+  std::string prerequisite_text = "Requires: ";
+  if (requirements.required_count == 0U) {
+    prerequisite_text += "None";
+  } else {
+    for (std::size_t index = 0; index < requirements.required_count; ++index) {
+      if (index != 0U) {
+        prerequisite_text += ", ";
+      }
+      std::string prerequisite = printable_status_text(status_text(
+          *status, static_cast<std::uint16_t>(
+                       requirements.required_units[index] + 1U)));
+      prerequisite_text += prerequisite.empty()
+                               ? "Unit " + std::to_string(
+                                              requirements.required_units[index])
+                               : prerequisite;
+    }
+  }
+
+  const CommandControl &control =
+      status->command_controls[hovered->position - 1U];
+  const float width = 330.0F;
+  const float left = (std::min)(305.0F, (std::max)(
+                                          2.0F,
+                                          static_cast<float>(control.left) -
+                                              width + 52.0F));
+  const float top = static_cast<float>(control.top) * hud_vertical_scale() -
+                    50.0F;
+  glColor4ub(5U, 10U, 14U, 238U);
+  glBegin(GL_QUADS);
+  glVertex2f(left, top);
+  glVertex2f(left + width, top);
+  glVertex2f(left + width, top + 46.0F);
+  glVertex2f(left, top + 46.0F);
+  glEnd();
+  glColor4ub(55U, 120U, 150U, 255U);
+  glBegin(GL_LINE_LOOP);
+  glVertex2f(left, top);
+  glVertex2f(left + width, top);
+  glVertex2f(left + width, top + 46.0F);
+  glVertex2f(left, top + 46.0F);
+  glEnd();
+  glColor4ub(255U, 255U, 255U, 255U);
+  const bool cost_missing = status->player_minerals < mineral_cost ||
+                            status->player_gas < gas_cost;
+  draw_game_text_gl(state, name, left + 5.0F, top + 4.0F, 235U, 235U,
+                    235U);
+  draw_game_text_gl(state, cost, left + 5.0F, top + 17.0F,
+                    cost_missing ? 255U : 210U,
+                    cost_missing ? 70U : 210U,
+                    cost_missing ? 60U : 210U);
+  draw_game_text_gl(state, prerequisite_text, left + 5.0F, top + 30.0F,
+                    requirements.missing_count != 0U ? 255U : 210U,
+                    requirements.missing_count != 0U ? 75U : 210U,
+                    requirements.missing_count != 0U ? 60U : 210U);
 }
 
 std::uint16_t command_position_at(const BootstrapStatus &status,

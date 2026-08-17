@@ -333,6 +333,15 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
         client_to_game(window, lparam, game_x, game_y)) {
       state->mouse_game_x = game_x;
       state->mouse_game_y = game_y;
+      const std::uint16_t hovered =
+          !game_dialog_active(*state) && !state->status->placement_active &&
+                  !state->status->command_target_active
+              ? command_position_at(*state->status, game_x, game_y)
+              : 0U;
+      if (hovered != state->hovered_command_position) {
+        state->hovered_command_position = hovered;
+        InvalidateRect(window, nullptr, FALSE);
+      }
       if (!state->mouse_in_client) {
         state->mouse_in_client = true;
         TRACKMOUSEEVENT tracking{};
@@ -362,9 +371,15 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
         state->selection_current_y = game_y;
         InvalidateRect(window, nullptr, FALSE);
       }
-    } else if (state != nullptr && game_dialog_active(*state)) {
-      apply_game_dialog_action(
-          window, state, game_dialog_mouse_move(*state, -1, -1));
+    } else if (state != nullptr) {
+      if (game_dialog_active(*state)) {
+        apply_game_dialog_action(
+            window, state, game_dialog_mouse_move(*state, -1, -1));
+      }
+      if (state->hovered_command_position != 0U) {
+        state->hovered_command_position = 0U;
+        InvalidateRect(window, nullptr, FALSE);
+      }
     }
     return 0;
   }
@@ -381,6 +396,8 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
       }
       state->mouse_in_client = false;
       state->camera_scroll_ramp = 0;
+      state->hovered_command_position = 0U;
+      InvalidateRect(window, nullptr, FALSE);
     }
     return 0;
   }

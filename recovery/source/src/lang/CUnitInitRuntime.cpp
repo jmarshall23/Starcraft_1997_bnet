@@ -6,6 +6,30 @@
 
 namespace starcraft::recovery {
 
+bool replace_preview_primary_image(BootstrapStatus &status,
+                                   ScenarioUnitPreview &unit,
+                                   const std::size_t asset_index) noexcept {
+  if (asset_index >= status.unit_assets.size()) {
+    return false;
+  }
+  const UnitRenderAsset &asset = status.unit_assets[asset_index];
+  unit.asset_index = asset_index;
+  unit.iscript_state = asset.initial_iscript_state;
+  unit.overlay_iscript_state = asset.initial_overlay_iscript_state;
+  unit.current_sprite_frame = asset.initial_iscript_state.frame;
+  unit.current_overlay_frame = asset.initial_overlay_iscript_state.frame;
+  unit.iscript_ready = asset.iscript_ready;
+  unit.overlay_ready = asset.overlay_ready;
+  unit.dynamic_overlay_asset_index = SIZE_MAX;
+  unit.dynamic_overlay_iscript_state = {};
+  unit.current_dynamic_overlay_frame = 0U;
+  unit.dynamic_overlay_x_offset = 0;
+  unit.dynamic_overlay_y_offset = 0;
+  unit.dynamic_overlay_above = false;
+  unit.dynamic_overlay_ready = false;
+  return true;
+}
+
 bool configure_preview_type(BootstrapStatus &status, ScenarioUnitPreview &unit,
                             const std::uint16_t unit_type) noexcept {
   if (unit_type >= status.runtime_unit_types.size()) {

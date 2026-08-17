@@ -432,6 +432,23 @@ bool CoreDataSet::unit_image_id(const std::uint16_t unit_type,
          sprite_image->value(sprite_id, image_id) && image_id < 590;
 }
 
+bool CoreDataSet::unit_construction_image_id(
+    const std::uint16_t unit_type, std::uint16_t &image_id) const noexcept {
+  // CUnitGUI.cpp::sub_42BA80 reads dword_8DE720[unit_type] when its second
+  // argument is one. dword_8DE720 is units.dat field 4, the replacement
+  // CImage used while a Zerg CUnit is under construction. A zero entry makes
+  // the original routine fall back to the unit's normal sprite image.
+  const DatField *const construction_images = units_.field(4U);
+  std::uint32_t value{};
+  if (construction_images == nullptr ||
+      !construction_images->value(unit_type, value) || value == 0U ||
+      value >= 590U) {
+    return false;
+  }
+  image_id = static_cast<std::uint16_t>(value);
+  return true;
+}
+
 bool CoreDataSet::unit_selection_circle(
     const std::uint16_t unit_type, std::uint16_t &image_id,
     std::int8_t &y_offset) const noexcept {

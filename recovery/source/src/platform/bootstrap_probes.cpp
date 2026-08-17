@@ -1176,6 +1176,48 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         worker_build_cards_probe_stage =
             worker_build_cards_verified ? 3 : worker_build_cards_probe_stage;
         status.units.pop_back();
+
+        BootstrapStatus requirement_status{};
+        ScenarioUnitPreview requirement_drone{};
+        requirement_drone.unit_id = 1U;
+        requirement_drone.owner = 0U;
+        requirement_drone.unit_type = starcraft::lang::zerg_drone_type;
+        requirement_drone.alive = true;
+        requirement_drone.construction_complete = true;
+        requirement_status.units.push_back(requirement_drone);
+        const UnitRequirementResult pool_blocked = unit_requirements_for(
+            requirement_status, requirement_status.units.front(), 142U);
+        ScenarioUnitPreview prerequisite_hatchery{};
+        prerequisite_hatchery.unit_id = 2U;
+        prerequisite_hatchery.owner = 0U;
+        prerequisite_hatchery.unit_type = 131U;
+        prerequisite_hatchery.alive = true;
+        prerequisite_hatchery.construction_complete = true;
+        requirement_status.units.push_back(prerequisite_hatchery);
+        const UnitRequirementResult pool_allowed = unit_requirements_for(
+            requirement_status, requirement_status.units.front(), 142U);
+
+        BootstrapStatus larva_order_status{};
+        ScenarioUnitPreview larva{};
+        larva.unit_id = 1U;
+        larva.owner = 0U;
+        larva.unit_type = starcraft::lang::zerg_larva_type;
+        larva.selected = true;
+        larva.alive = true;
+        larva.movement_top_speed = 256U;
+        larva.movement_acceleration = 16U;
+        larva_order_status.units.push_back(larva);
+        const bool larva_player_order_rejected =
+            issue_scv_move_order(larva_order_status, 128U, 128U) == 0U &&
+            !larva_order_status.units.front().moving &&
+            larva_order_status.units.front().active_order ==
+                ActiveUnitOrder::none;
+        worker_build_cards_verified =
+            worker_build_cards_verified && !pool_blocked.allowed &&
+            pool_blocked.missing_count != 0U && pool_allowed.allowed &&
+            pool_allowed.missing_count == 0U && larva_player_order_rejected;
+        worker_build_cards_probe_stage =
+            worker_build_cards_verified ? 4 : worker_build_cards_probe_stage;
       }
     }
 
@@ -1253,16 +1295,16 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       constexpr std::array<ExpectedBuildingCard, 9> terran_cards{{
           {112U, 2U, 1U, 237U, 0U,
            CommandButtonVisual::Action::research_technology},
-          {115U, 1U, 1U, 239U, 18U,
+          {115U, 4U, 5U, 256U, 21U,
            CommandButtonVisual::Action::upgrade_technology},
           {116U, 6U, 3U, 242U, 7U,
            CommandButtonVisual::Action::research_technology},
-          {117U, 4U, 5U, 256U, 21U,
+          {117U, 4U, 4U, 284U, 22U,
            CommandButtonVisual::Action::upgrade_technology},
-          {118U, 4U, 4U, 284U, 22U,
-           CommandButtonVisual::Action::upgrade_technology},
-          {120U, 3U, 2U, 245U, 5U,
+          {118U, 3U, 2U, 245U, 5U,
            CommandButtonVisual::Action::research_technology},
+          {120U, 1U, 1U, 239U, 18U,
+           CommandButtonVisual::Action::upgrade_technology},
           {122U, 2U, 1U, 287U, 7U,
            CommandButtonVisual::Action::upgrade_technology},
           {123U, 4U, 5U, 290U, 2U,
@@ -1424,6 +1466,16 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                               : race_building_cards_probe_stage;
       }
       if (race_building_cards_verified) {
+        ScenarioUnitPreview spawning_pool{};
+        spawning_pool.unit_id = status.next_unit_id++;
+        spawning_pool.owner = 0U;
+        race_building_cards_verified =
+            configure_preview_type(status, spawning_pool, 142U);
+        if (race_building_cards_verified) {
+          spawning_pool.selected = false;
+          spawning_pool.construction_complete = true;
+          status.units.push_back(spawning_pool);
+        }
         ScenarioUnitPreview hatchery{};
         hatchery.unit_id = status.next_unit_id++;
         hatchery.owner = 0U;
@@ -1443,8 +1495,11 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           const std::uint16_t ticks =
               morphing == nullptr ? 0U : morphing->construction_ticks_remaining;
           for (std::uint32_t tick = 0;
-               race_building_cards_verified && tick <= ticks + 12U; ++tick) {
-            (void)advance_zerg_building_construction(status);
+               race_building_cards_verified && tick <= ticks + 128U; ++tick) {
+            // The retail completion handoff is delivered by opcode 0x27 in
+            // the construction image's action-15 script. Exercise the whole
+            // frame so the image advances between order-state updates.
+            advance_probe_frame();
           }
           morphing = find_unit_by_id(status, hatchery_id);
           race_building_cards_verified =
@@ -1452,6 +1507,10 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               morphing->unit_type == 132U &&
               morphing->construction_complete &&
               morphing->construction_target_type == 0xFFFFU;
+          status.units.pop_back();
+        }
+        if (!status.units.empty() &&
+            status.units.back().unit_id == spawning_pool.unit_id) {
           status.units.pop_back();
         }
         race_building_cards_probe_stage =
@@ -5245,16 +5304,79 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
 
       const std::uint32_t drone_id =
           insert_worker(starcraft::lang::zerg_drone_type);
+      const BuildableUnitVisual *const zerg_target_buildable =
+          find_buildable_unit(status, 131U);
       const std::size_t before_drone_morph = status.units.size();
       const bool drone_placed =
-          drone_id != 0U && place_for_worker(drone_id, 131U);
+          drone_id != 0U && place_for_worker(drone_id, 131U, 384);
       ScenarioUnitPreview *zerg_building = find_unit_by_id(status, drone_id);
-      const bool drone_morphed =
+      const std::uint16_t queued_zerg_x =
+          zerg_building == nullptr ? 0U : zerg_building->build_target_x;
+      const std::uint16_t queued_zerg_y =
+          zerg_building == nullptr ? 0U : zerg_building->build_target_y;
+      const bool drone_order_started =
           drone_placed && status.units.size() == before_drone_morph &&
+          zerg_building != nullptr &&
+          zerg_building->unit_type == starcraft::lang::zerg_drone_type &&
+          zerg_building->active_order == ActiveUnitOrder::zerg_build &&
+          zerg_building->construction_target_type == 131U &&
+          zerg_building->moving;
+      bool zerg_deferred_until_arrival{};
+      bool zerg_settling_deferred{};
+      if (drone_order_started) {
+        zerg_deferred_until_arrival =
+            zerg_building != nullptr && zerg_building->moving &&
+            zerg_building->unit_type == starcraft::lang::zerg_drone_type &&
+            zerg_building->active_order == ActiveUnitOrder::zerg_build &&
+            status.units.size() == before_drone_morph;
+      }
+      if (zerg_deferred_until_arrival && zerg_building != nullptr) {
+        zerg_building->x = zerg_building->movement_final_x;
+        zerg_building->y = zerg_building->movement_final_y;
+        zerg_building->x_fixed =
+            static_cast<std::int32_t>(zerg_building->x) << 8U;
+        zerg_building->y_fixed =
+            static_cast<std::int32_t>(zerg_building->y) << 8U;
+        stop_unit_movement(status, *zerg_building);
+        (void)advance_unit_actions(status);
+        zerg_building = find_unit_by_id(status, drone_id);
+        zerg_settling_deferred =
+            zerg_building != nullptr && zerg_building->moving &&
+            zerg_building->unit_type == starcraft::lang::zerg_drone_type &&
+            zerg_building->active_order == ActiveUnitOrder::zerg_build &&
+            zerg_building->action_phase == 2U &&
+            zerg_building->movement_final_x == queued_zerg_x &&
+            zerg_building->movement_final_y == queued_zerg_y &&
+            status.units.size() == before_drone_morph;
+      }
+      if (zerg_settling_deferred && zerg_building != nullptr) {
+        zerg_building->x = zerg_building->movement_final_x;
+        zerg_building->y = zerg_building->movement_final_y;
+        zerg_building->x_fixed =
+            static_cast<std::int32_t>(zerg_building->x) << 8U;
+        zerg_building->y_fixed =
+            static_cast<std::int32_t>(zerg_building->y) << 8U;
+        stop_unit_movement(status, *zerg_building);
+        (void)advance_unit_actions(status);
+        zerg_building = find_unit_by_id(status, drone_id);
+      }
+      const bool drone_morphed =
+          drone_order_started && zerg_deferred_until_arrival &&
+          zerg_settling_deferred &&
+          status.units.size() == before_drone_morph &&
           zerg_building != nullptr && zerg_building->unit_type == 131U &&
           !zerg_building->construction_complete &&
           zerg_building->construction_builder_id == 0U;
+      const bool zerg_construction_visual =
+          drone_morphed && zerg_target_buildable != nullptr &&
+          zerg_target_buildable->construction_asset_index <
+              status.unit_assets.size() &&
+          zerg_target_buildable->construction_asset_index !=
+              zerg_target_buildable->asset_index &&
+          zerg_building->asset_index ==
+              zerg_target_buildable->construction_asset_index;
       race_construction_probe_stage = drone_morphed ? 1 : 0;
+      bool zerg_blood_burst_started{};
       if (drone_morphed) {
         zerg_building->construction_ticks_remaining = 1U;
         for (int tick = 0; tick < 128 && !zerg_building->construction_complete;
@@ -5264,11 +5386,21 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           if (zerg_building == nullptr) {
             break;
           }
+          zerg_blood_burst_started =
+              zerg_blood_burst_started ||
+              (zerg_building->construction_animation_phase == 6U &&
+               zerg_building->last_animation == 15U &&
+               zerg_target_buildable != nullptr &&
+               zerg_building->asset_index ==
+                   zerg_target_buildable->construction_asset_index);
         }
       }
       const bool zerg_completed =
           zerg_building != nullptr && zerg_building->construction_complete &&
           zerg_building->hit_points == zerg_building->max_hit_points;
+      const bool zerg_final_visual =
+          zerg_completed && zerg_target_buildable != nullptr &&
+          zerg_building->asset_index == zerg_target_buildable->asset_index;
       bool zerg_idle_animated{};
       if (zerg_completed) {
         const std::size_t initial_frame = zerg_building->current_sprite_frame;
@@ -5562,7 +5694,12 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             sprite_draws_before(drone_depth, overlord_depth) &&
             !sprite_draws_before(overlord_depth, drone_depth);
       }
-      race_construction_verified = zerg_completed && zerg_idle_animated &&
+      race_construction_verified = drone_order_started &&
+                                   zerg_deferred_until_arrival &&
+                                   zerg_settling_deferred &&
+                                   zerg_construction_visual &&
+                                   zerg_blood_burst_started && zerg_completed &&
+                                   zerg_final_visual && zerg_idle_animated &&
                                    probe_order_started &&
                                    warp_deferred_until_arrival &&
                                    probe_released && hidden_for_build_time &&
@@ -5572,10 +5709,17 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                    pylon_power_display_verified &&
                                    sprite_depth_verified;
       race_construction_probe_stage =
-          !drone_morphed   ? 0
+          !drone_placed ? 0
+          : !drone_order_started ? 1
+          : !zerg_deferred_until_arrival ? 2
+          : !zerg_settling_deferred ? 3
+          : !drone_morphed ? 4
+          : !zerg_construction_visual ? 25
+          : !zerg_blood_burst_started ? 26
           : !zerg_completed
               ? static_cast<int>(20 +
                                  zerg_building->construction_animation_phase)
+          : !zerg_final_visual ? 27
           : !zerg_idle_animated ? 28
           : !probe_order_started ? 2
           : !warp_deferred_until_arrival ? 3
@@ -5836,6 +5980,20 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       std::uint16_t expected_y{};
       if (parent != nullptr && addon != nullptr && probe_client_ready &&
           addon_center_for_parent(*addon, *parent, expected_x, expected_y)) {
+        const std::uint32_t parent_id = parent->unit_id;
+        // TechTree.cpp's Comsat record requires a completed Academy in
+        // addition to the selected Command Center and no existing add-on.
+        ScenarioUnitPreview academy{};
+        academy.unit_id = status.next_unit_id++;
+        academy.owner = 0U;
+        academy.unit_type = 112U;
+        academy.is_building = true;
+        academy.construction_complete = true;
+        status.units.push_back(academy);
+        parent = find_unit_by_id(status, parent_id);
+        if (parent == nullptr) {
+          return 1;
+        }
         clear_selection(status);
         parent->selected = true;
         status.player_minerals = 10000;
