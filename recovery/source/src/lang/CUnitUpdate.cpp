@@ -4,6 +4,7 @@
 #include "starcraft/lang/cunit_build.hpp"
 #include "starcraft/lang/cunit_harvest.hpp"
 #include "starcraft/lang/cunit_path_collide.hpp"
+#include "starcraft/lang/cunit_terran.hpp"
 #include "starcraft/lang/cunit_zerg.hpp"
 #include "starcraft/lang/damage.hpp"
 #include "starcraft/lang/flingy.hpp"
@@ -271,10 +272,29 @@ bool advance_building_construction_animation(
       return true;
     }
     break;
-  case 5:
+  case 5: {
+    // sub_423210 state five calls CUnitGUI.cpp::sub_42BA80(this, 0)
+    // before action 15. Terran construction therefore hands off from the
+    // units.dat construction image to the real building at three-fifths
+    // life; it does not wait until the completion order.
+    const auto terran_types = starcraft::lang::terran_buildable_unit_types();
+    const bool terran_building =
+        std::find(terran_types.unit_types,
+                  terran_types.unit_types + terran_types.count,
+                  building.unit_type) !=
+        terran_types.unit_types + terran_types.count;
+    if (const BuildableUnitVisual *const buildable =
+            find_buildable_unit(status, building.unit_type);
+        terran_building && buildable != nullptr &&
+        buildable->asset_index != SIZE_MAX &&
+        building.asset_index != buildable->asset_index) {
+      (void)replace_preview_primary_image(status, building,
+                                          buildable->asset_index);
+    }
     (void)restart_unit_animation(status, building, 15U);
     building.construction_animation_phase = 6U;
     return true;
+  }
   case 6:
     if (building.hit_points > 4U * building.max_hit_points / 5U) {
       building.construction_animation_phase = 7U;
@@ -294,8 +314,14 @@ bool collect_building_obstacles(
   try {
     output.reserve(status.units.size());
     for (const ScenarioUnitPreview &unit : status.units) {
+      const bool active_construction_target =
+          ignored_unit != nullptr &&
+          (ignored_unit->active_order == ActiveUnitOrder::construct ||
+           ignored_unit->active_order == ActiveUnitOrder::terran_build_exit) &&
+          ignored_unit->order_target_id == unit.unit_id;
       if (&unit == ignored_unit || !unit.alive || !unit.is_building ||
-          unit.selection_width == 0 || unit.selection_height == 0) {
+          active_construction_target || unit.selection_width == 0 ||
+          unit.selection_height == 0) {
         continue;
       }
       // CUnitPathCollide.cpp::sub_43AC00/sub_43AD40 build the blocking
@@ -406,7 +432,12 @@ find_live_unit_collision(const BootstrapStatus &status,
                          const ScenarioUnitPreview &mover, const int proposed_x,
                          const int proposed_y) noexcept {
   for (const ScenarioUnitPreview &obstacle : status.units) {
+    const bool active_construction_target =
+        (mover.active_order == ActiveUnitOrder::construct ||
+         mover.active_order == ActiveUnitOrder::terran_build_exit) &&
+        mover.order_target_id == obstacle.unit_id;
     if (&obstacle != &mover && obstacle.alive && !obstacle.sprite_hidden &&
+        !active_construction_target &&
         mover.hangar_parent_id != obstacle.unit_id &&
         obstacle.hangar_parent_id != mover.unit_id &&
         is_airborne(obstacle) == is_airborne(mover) &&
@@ -421,7 +452,8 @@ const ScenarioUnitPreview *find_live_unit_footprint_collision(
     const BootstrapStatus &status, const ScenarioUnitPreview &mover,
     const int proposed_x, const int proposed_y) noexcept {
   for (const ScenarioUnitPreview &obstacle : status.units) {
-    if (&obstacle != &mover && obstacle.alive && !obstacle.sprite_hidden &&
+    if (obstacle.unit_id != mover.unit_id && obstacle.alive &&
+        !obstacle.sprite_hidden &&
         is_airborne(obstacle) == is_airborne(mover) &&
         unit_footprints_overlap_at(mover, proposed_x, proposed_y, obstacle)) {
       return &obstacle;
@@ -1796,7 +1828,18 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       }
       continue;
     }
-    if (worker.moving) {
+    if (worker.moving &&
+        worker.active_order != ActiveUnitOrder::construct) {
+      continue;
+    }
+    if (worker.active_order == ActiveUnitOrder::terran_build_exit) {
+      cancel_unit_order(status, worker);
+      changed = true;
+      continue;
+    }
+    if (worker.active_order == ActiveUnitOrder::terran_build) {
+      (void)complete_terran_build_order(status, worker);
+      changed = true;
       continue;
     }
     if (worker.active_order == ActiveUnitOrder::protoss_build) {
@@ -1853,6 +1896,11 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
         continue;
       }
       cancel_unit_order(status, worker);
+      changed = true;
+      continue;
+    }
+    if (worker.active_order == ActiveUnitOrder::construct) {
+      (void)advance_terran_construction_order(status, worker, *target);
       changed = true;
       continue;
     }
@@ -2142,57 +2190,6 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
         worker.active_order = ActiveUnitOrder::none;
         worker.order_target_id = 0U;
         worker.action_phase = 0U;
-      }
-      changed = true;
-      continue;
-    }
-
-    if (worker.active_order == ActiveUnitOrder::construct) {
-      if (!target->is_building || target->owner != worker.owner ||
-          target->construction_complete ||
-          target->construction_ticks_total == 0U) {
-        cancel_unit_order(status, worker);
-        changed = true;
-        continue;
-      }
-      target->construction_builder_id = worker.unit_id;
-      if (worker.action_phase == 0U) {
-        // CUnitBuild.cpp::sub_422160 runs the worker's construction animation
-        // while applying the target's +168 fixed-point build increment.
-        (void)restart_unit_animation(status, worker, 15);
-        worker.action_phase = 1;
-      }
-      if (target->construction_ticks_remaining != 0U) {
-        --target->construction_ticks_remaining;
-      }
-      const std::uint32_t initial_life =
-          (std::max)(1U, target->max_hit_points / 10U);
-      const std::uint32_t elapsed = target->construction_ticks_total -
-                                    target->construction_ticks_remaining;
-      target->hit_points =
-          initial_life + static_cast<std::uint32_t>(
-                             static_cast<std::uint64_t>(target->max_hit_points -
-                                                        initial_life) *
-                             elapsed / target->construction_ticks_total);
-      (void)advance_building_construction_animation(status, *target);
-      if (target->construction_ticks_remaining == 0U) {
-        target->hit_points = target->max_hit_points;
-        target->construction_complete = true;
-        target->construction_builder_id = 0;
-        // CUnitInit.cpp::sub_42EBB0 dispatches animation 16 at completion.
-        (void)restart_unit_animation(status, *target, 16U);
-        if (is_gas_refinery_type(target->unit_type)) {
-          // The Terran construction-complete branch replaces the SCV's
-          // Build order with HarvestGas on the refinery it just finished.
-          // The ordinary gather state then hides it inside for 62 turns and
-          // ejects it carrying gas through the recovered harvest queue.
-          if (!begin_scv_interaction(status, worker, *target,
-                                     ActiveUnitOrder::gather)) {
-            cancel_unit_order(status, worker);
-          }
-        } else {
-          cancel_unit_order(status, worker);
-        }
       }
       changed = true;
       continue;

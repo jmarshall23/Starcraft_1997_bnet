@@ -421,6 +421,8 @@ enum class ActiveUnitOrder : std::uint8_t {
   construct,
   gather,
   return_cargo,
+  terran_build,
+  terran_build_exit,
   protoss_build,
   zerg_build,
   enter_transport,
@@ -896,6 +898,9 @@ struct BootstrapStatus {
       player_upgrade_levels{};
   std::uint16_t failed_runtime_unit_type{0xFFFFU};
   std::uint32_t next_unit_id{1};
+  // net_misc.cpp::sub_479790/sub_4797B0 owns the synchronized gameplay RNG.
+  // Construction uses it for the SCV's working point and welding duration.
+  std::uint32_t synchronized_random_state{1U};
   std::uint32_t player_minerals{50};
   std::uint32_t player_gas{};
   std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
@@ -1460,6 +1465,15 @@ issue_scv_return_cargo(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool update_building_placement(BootstrapStatus &status,
                                              int game_x, int game_y) noexcept;
 [[nodiscard]] bool place_current_building(BootstrapStatus &status) noexcept;
+[[nodiscard]] bool begin_terran_build_order(
+    BootstrapStatus &status, ScenarioUnitPreview &scv,
+    const BuildableUnitVisual &buildable, std::uint16_t center_x,
+    std::uint16_t center_y, bool charge_resources) noexcept;
+[[nodiscard]] bool complete_terran_build_order(
+    BootstrapStatus &status, ScenarioUnitPreview &scv) noexcept;
+[[nodiscard]] bool advance_terran_construction_order(
+    BootstrapStatus &status, ScenarioUnitPreview &scv,
+    ScenarioUnitPreview &building) noexcept;
 [[nodiscard]] bool begin_protoss_build_order(
     BootstrapStatus &status, ScenarioUnitPreview &probe,
     const BuildableUnitVisual &buildable, std::uint16_t center_x,

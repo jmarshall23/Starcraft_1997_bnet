@@ -435,48 +435,10 @@ bool start_ai_building(BootstrapStatus &status, AiPlayerRuntime &ai,
   if (ai.race == 0U) {
     return begin_zerg_build_order(status, *worker, buildable, x, y, true);
   }
-  std::uint32_t &minerals = status.player_mineral_stock[ai.owner];
-  std::uint32_t &gas = status.player_gas_stock[ai.owner];
-  if (minerals < buildable.simulation.mineral_cost ||
-      gas < buildable.simulation.gas_cost) {
-    return false;
-  }
-  const std::uint32_t worker_id = worker->unit_id;
-  ScenarioUnitPreview building{};
-  building.unit_id = status.next_unit_id++;
-  building.owner = ai.owner;
-  if (!configure_preview_type(status, building, buildable.unit_type)) return false;
-  minerals -= buildable.simulation.mineral_cost;
-  gas -= buildable.simulation.gas_cost;
-  building.x = x;
-  building.y = y;
-  building.x_fixed = static_cast<std::int32_t>(x) << 8U;
-  building.y_fixed = static_cast<std::int32_t>(y) << 8U;
-  building.construction_complete = false;
-  building.construction_ticks_total = static_cast<std::uint16_t>((
-      std::max)(1U, static_cast<unsigned>(buildable.simulation.build_time) >> 1U));
-  building.construction_ticks_remaining = building.construction_ticks_total;
-  building.hit_points = (std::max)(1U, building.max_hit_points / 10U);
-  building.construction_builder_id = worker_id;
-  if (buildable.unit_type == 110U) {
-    for (ScenarioUnitPreview &geyser : status.units) {
-      if (geyser.alive && geyser.unit_type == 188U &&
-          std::abs(static_cast<int>(geyser.x) - x) <= 16 &&
-          std::abs(static_cast<int>(geyser.y) - y) <= 16) {
-        building.resource_amount = geyser.resource_amount;
-        geyser.alive = false;
-        geyser.selected = false;
-        break;
-      }
-    }
-  }
-  const std::uint32_t building_id = building.unit_id;
-  status.units.push_back(std::move(building));
-  worker = find_unit_by_id(status, worker_id);
-  ScenarioUnitPreview *created = find_unit_by_id(status, building_id);
-  return worker != nullptr && created != nullptr &&
-         begin_scv_interaction(status, *worker, *created,
-                               ActiveUnitOrder::construct);
+  // Terran AI uses the same sub_422DF0 move-then-create order as a player
+  // SCV. This keeps its timing, construction image, and welding movement from
+  // diverging into the former instant-building shortcut.
+  return begin_terran_build_order(status, *worker, buildable, x, y, true);
 }
 
 bool satisfy_ai_build_request(BootstrapStatus &status, AiPlayerRuntime &ai,

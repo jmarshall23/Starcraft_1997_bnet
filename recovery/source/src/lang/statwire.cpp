@@ -150,6 +150,10 @@ const char *active_order_text(const ActiveUnitOrder order) noexcept {
     return "Repairing";
   case ActiveUnitOrder::construct:
     return "Building";
+  case ActiveUnitOrder::terran_build:
+    return "Moving to Build";
+  case ActiveUnitOrder::terran_build_exit:
+    return "Leaving Build Site";
   case ActiveUnitOrder::gather:
     return "Gathering";
   case ActiveUnitOrder::return_cargo:

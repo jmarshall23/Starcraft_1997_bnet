@@ -5126,6 +5126,19 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         const bool placed =
             status.placement_valid && place_current_building(status);
         refinery_probe_stage = placed ? 5 : refinery_probe_stage;
+        ScenarioUnitPreview *builder = find_unit_by_id(status, worker_id);
+        const bool deferred =
+            placed && builder != nullptr &&
+            builder->active_order == ActiveUnitOrder::terran_build &&
+            builder->construction_target_type == 110U;
+        if (deferred) {
+          builder->x = builder->movement_final_x;
+          builder->y = builder->movement_final_y;
+          builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
+          builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
+          stop_unit_movement(status, *builder);
+          (void)advance_unit_actions(status);
+        }
         const ScenarioUnitPreview *const consumed =
             find_unit_by_id(status, geyser_id);
         const auto created =
@@ -5135,24 +5148,19 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                   unit.resource_amount == resource_amount;
                          });
         refinery_placement_verified =
-            placed && consumed == nullptr && created != status.units.rend();
+            deferred && consumed == nullptr && created != status.units.rend();
         refinery_probe_stage = consumed == nullptr ? 6 : refinery_probe_stage;
         refinery_probe_stage =
             created != status.units.rend() ? 7 : refinery_probe_stage;
         if (refinery_placement_verified) {
-          ScenarioUnitPreview *const builder =
-              find_unit_by_id(status, worker_id);
+          builder = find_unit_by_id(status, worker_id);
           ScenarioUnitPreview &completed_refinery = *created;
           refinery_placement_verified =
               builder != nullptr &&
               builder->active_order == ActiveUnitOrder::construct;
           if (refinery_placement_verified) {
             completed_refinery.construction_ticks_remaining = 1U;
-            builder->x = builder->movement_final_x;
-            builder->y = builder->movement_final_y;
-            builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
-            builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
-            stop_unit_movement(status, *builder);
+            builder->action_phase = 4U;
             (void)advance_unit_actions(status);
             refinery_placement_verified =
                 completed_refinery.construction_complete &&
@@ -5281,6 +5289,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         status.active_command_card = 0;
         status.player_minerals = 10000;
         status.player_gas = 10000;
+        const std::uint32_t scv_id = scv_pointer->unit_id;
         const std::size_t command_centers_before = static_cast<std::size_t>(
             std::count_if(status.units.begin(), status.units.end(),
                           [](const ScenarioUnitPreview &unit) {
@@ -5311,13 +5320,32 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON,
                        client_point(placement_game_x, placement_game_y));
         }
+        ScenarioUnitPreview *builder = find_unit_by_id(status, scv_id);
+        const std::size_t command_centers_deferred = static_cast<std::size_t>(
+            std::count_if(status.units.begin(), status.units.end(),
+                          [](const ScenarioUnitPreview &unit) {
+                            return unit.unit_type == 106;
+                          }));
+        const bool moving_to_site =
+            builder != nullptr &&
+            builder->active_order == ActiveUnitOrder::terran_build &&
+            builder->moving &&
+            command_centers_deferred == command_centers_before;
+        if (moving_to_site) {
+          builder->x = builder->movement_final_x;
+          builder->y = builder->movement_final_y;
+          builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
+          builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
+          stop_unit_movement(status, *builder);
+          (void)advance_unit_actions(status);
+        }
         const std::size_t command_centers_after = static_cast<std::size_t>(
             std::count_if(status.units.begin(), status.units.end(),
                           [](const ScenarioUnitPreview &unit) {
                             return unit.unit_type == 106;
                           }));
         building_placement_verified =
-            valid_target && !status.placement_active &&
+            valid_target && !status.placement_active && moving_to_site &&
             command_centers_after == command_centers_before + 1U;
       }
     }
@@ -5902,16 +5930,41 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         }
         construction_probe_stage = site_found ? 4 : construction_probe_stage;
         status.placement_valid = site_found;
+        const std::size_t unit_count_before = status.units.size();
+        const std::uint32_t worker_id = worker->unit_id;
         const bool placed = site_found && place_current_building(status);
         construction_probe_stage = placed ? 5 : construction_probe_stage;
-        ScenarioUnitPreview *const created =
-            placed && !status.units.empty() ? &status.units.back() : nullptr;
-        ScenarioUnitPreview *const builder =
-            created == nullptr
-                ? nullptr
-                : find_unit_by_id(status, created->construction_builder_id);
+        ScenarioUnitPreview *builder = find_unit_by_id(status, worker_id);
+        const bool deferred =
+            placed && status.units.size() == unit_count_before &&
+            builder != nullptr &&
+            builder->active_order == ActiveUnitOrder::terran_build &&
+            builder->construction_target_type == 106U && builder->moving;
+        if (deferred) {
+          builder->x = builder->movement_final_x;
+          builder->y = builder->movement_final_y;
+          builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
+          builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
+          stop_unit_movement(status, *builder);
+          (void)advance_unit_actions(status);
+        }
+        builder = find_unit_by_id(status, worker_id);
+        ScenarioUnitPreview *created{};
+        for (ScenarioUnitPreview &unit : status.units) {
+          if (unit.alive && unit.unit_type == 106U &&
+              !unit.construction_complete &&
+              unit.construction_builder_id == worker_id) {
+            created = &unit;
+            break;
+          }
+        }
+        const bool construction_image_started =
+            created != nullptr &&
+            command_center->construction_asset_index != SIZE_MAX &&
+            created->asset_index == command_center->construction_asset_index &&
+            created->asset_index != command_center->asset_index;
         const bool started =
-            created != nullptr && created->unit_type == 106U &&
+            deferred && created != nullptr && created->unit_type == 106U &&
             !created->construction_complete &&
             created->construction_ticks_total != 0U &&
             created->construction_ticks_remaining ==
@@ -5920,13 +5973,15 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 (std::max)(1U, created->max_hit_points / 10U) &&
             builder != nullptr &&
             builder->active_order == ActiveUnitOrder::construct &&
-            builder->order_target_id == created->unit_id;
+            builder->order_target_id == created->unit_id &&
+            builder->action_phase == 3U && construction_image_started;
         construction_probe_stage =
             created != nullptr ? 6 : construction_probe_stage;
         construction_probe_stage =
             builder != nullptr ? 7 : construction_probe_stage;
         construction_probe_stage = started ? 8 : construction_probe_stage;
         bool advanced{};
+        bool scv_work_cycle_verified{};
         bool incomplete_card_gated{};
         if (started) {
           clear_selection(status);
@@ -5934,11 +5989,9 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           incomplete_card_gated = command_card_for(status).count == 0U;
           created->selected = false;
           builder->selected = true;
-          builder->x = builder->movement_final_x;
-          builder->y = builder->movement_final_y;
-          builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
-          builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
-          stop_unit_movement(status, *builder);
+          // sub_422DF0 creates the building with state three; the following
+          // sub_422540 call enters state four without applying build life.
+          advance_probe_frame();
           const std::uint16_t remaining_before =
               created->construction_ticks_remaining;
           const std::uint32_t life_before = created->hit_points;
@@ -5946,7 +5999,25 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           advanced =
               created->construction_ticks_remaining + 1U == remaining_before &&
               created->hit_points > life_before &&
-              !created->construction_complete;
+              !created->construction_complete && builder->moving &&
+              builder->action_phase == 5U;
+          // State five advances to six while the SCV follows the randomized
+          // point chosen across the construction sprite. Settle it at that
+          // recovered point, then require the face-and-weld states 7/8.
+          advance_probe_frame();
+          builder->x = builder->build_target_x;
+          builder->y = builder->build_target_y;
+          builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
+          builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
+          stop_unit_movement(status, *builder);
+          advance_probe_frame();
+          for (unsigned turn = 0U;
+               turn < 16U && builder->action_phase != 8U; ++turn) {
+            advance_probe_frame();
+          }
+          scv_work_cycle_verified =
+              builder->action_phase == 8U && builder->last_animation == 15U &&
+              builder->action_timer >= 30U && builder->action_timer <= 93U;
           construction_probe_stage = advanced ? 9 : construction_probe_stage;
           if (construction_status_probe) {
             created->construction_ticks_remaining = static_cast<std::uint16_t>(
@@ -5996,7 +6067,8 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 created->construction_animation_phase == 5U;
             const bool played_three =
                 advance_building_construction_animation(status, *created) &&
-                created->construction_animation_phase == 6U;
+                created->construction_animation_phase == 6U &&
+                created->asset_index == command_center->asset_index;
             created->hit_points = 4U * created->max_hit_points / 5U + 1U;
             const bool crossed_four =
                 advance_building_construction_animation(status, *created) &&
@@ -6005,8 +6077,36 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 crossed_one && played_one && crossed_two && played_two &&
                 crossed_three && played_three && crossed_four &&
                 created->iscript_ready;
+            // Finish from inside the footprint to prove the recovered
+            // CUnitPathCollide handoff visibly routes the SCV clear instead
+            // of leaving it embedded when construction collision is restored.
+            builder->x = created->x;
+            builder->y = created->y;
+            builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
+            builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
+            stop_unit_movement(status, *builder);
             created->construction_ticks_remaining = 1;
             advance_probe_frame();
+            const bool escape_started =
+                builder->active_order ==
+                    ActiveUnitOrder::terran_build_exit &&
+                builder->order_target_id == created->unit_id &&
+                builder->moving;
+            bool post_build_escape_verified{};
+            if (escape_started) {
+              builder->x = builder->movement_final_x;
+              builder->y = builder->movement_final_y;
+              builder->x_fixed =
+                  static_cast<std::int32_t>(builder->x) << 8U;
+              builder->y_fixed =
+                  static_cast<std::int32_t>(builder->y) << 8U;
+              stop_unit_movement(status, *builder);
+              (void)advance_unit_actions(status);
+              post_build_escape_verified =
+                  builder->active_order == ActiveUnitOrder::none &&
+                  !unit_rectangles_overlap_at(*builder, builder->x, builder->y,
+                                              *created);
+            }
             const std::uint16_t idle_program_before =
                 created->iscript_state.program_counter;
             const std::uint8_t idle_sleep_before =
@@ -6041,12 +6141,16 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                            : construction_probe_stage;
             construction_verified =
                 incomplete_card_gated && advanced &&
+                scv_work_cycle_verified &&
+                post_build_escape_verified &&
                 construction_animation_verified &&
                 building_idle_animation_verified &&
                 created->construction_complete &&
                 created->construction_ticks_remaining == 0U &&
                 created->hit_points == created->max_hit_points &&
                 created->construction_builder_id == 0U &&
+                created->asset_index == command_center->asset_index &&
+                created->last_animation == 16U &&
                 builder->active_order == ActiveUnitOrder::none &&
                 command_card_for(status).count == 4U;
             construction_probe_stage =

@@ -123,6 +123,13 @@ bool advance_addon_construction(BootstrapStatus &status) noexcept {
     if (addon.construction_ticks_remaining == 0U) {
       addon.hit_points = addon.max_hit_points;
       addon.construction_complete = true;
+      if (const BuildableUnitVisual *const buildable =
+              find_buildable_unit(status, addon.unit_type);
+          buildable != nullptr && buildable->asset_index != SIZE_MAX &&
+          addon.asset_index != buildable->asset_index) {
+        (void)replace_preview_primary_image(status, addon,
+                                            buildable->asset_index);
+      }
       (void)restart_unit_animation(status, addon, 16U);
     }
     changed = true;
@@ -483,6 +490,20 @@ bool place_current_building(BootstrapStatus &status) noexcept {
     }
     worker_id = selected_source->unit_id;
   }
+  if (terran_worker) {
+    ScenarioUnitPreview *const scv = find_unit_by_id(status, worker_id);
+    if (scv == nullptr ||
+        !begin_terran_build_order(status, *scv, *buildable,
+                                  status.placement_x, status.placement_y,
+                                  true)) {
+      return false;
+    }
+    status.placement_active = false;
+    status.placement_valid = false;
+    status.placement_unit_type = 0xFFFFU;
+    status.active_command_card = 0U;
+    return true;
+  }
   if (protoss_worker) {
     ScenarioUnitPreview *const probe = find_unit_by_id(status, worker_id);
     if (probe == nullptr ||
@@ -557,7 +578,12 @@ bool place_current_building(BootstrapStatus &status) noexcept {
       building.construction_builder_id = terran_worker ? worker_id : 0U;
       building.addon_parent_id = parent_id;
       building.construction_animation_phase = 0U;
-      return true;
+      // CUnitInit.cpp::sub_42E6B0 invokes sub_42BA80(this, 1) as part of
+      // incomplete building creation. Add-ons use the same Terran
+      // construction image lifecycle even though their parent advances them.
+      return buildable->construction_asset_index == SIZE_MAX ||
+             replace_preview_primary_image(
+                 status, building, buildable->construction_asset_index);
     };
 
     ScenarioUnitPreview building{};
@@ -589,13 +615,6 @@ bool place_current_building(BootstrapStatus &status) noexcept {
     status.placement_unit_type = 0xFFFFU;
     status.nydus_parent_id = 0U;
     status.active_command_card = 0;
-    ScenarioUnitPreview *const worker = find_unit_by_id(status, worker_id);
-    ScenarioUnitPreview *const created = find_unit_by_id(status, building_id);
-    if (!addon && terran_worker && worker != nullptr && created != nullptr &&
-        !begin_scv_interaction(status, *worker, *created,
-                               ActiveUnitOrder::construct)) {
-      created->construction_builder_id = 0;
-    }
     return true;
   } catch (...) {
     return false;
