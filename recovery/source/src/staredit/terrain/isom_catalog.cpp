@@ -441,13 +441,15 @@ bool IsomCatalog::load_definition(const std::uint16_t tileset_id) noexcept {
         explicit_groups_[18U] = {18U};
         source_terrain_types_[34U] = 33U;
         source_terrain_types_[35U] = 34U;
-        source_terrain_types_[28U] = 21U;
-        source_terrain_types_[21U] = 27U;
+        source_terrain_types_[21U] = 21U;
         source_terrain_types_[27U] = 26U;
+        source_terrain_types_[28U] = 27U;
         source_terrain_types_[31U] = 30U;
-        for (std::uint16_t group = 0U; group < 1024U; group += 2U) {
-          explicit_groups_[22U].push_back(group);
-        }
+        // The beta CV5 has no Dirt/Mud transition block.  Leaving this type
+        // unavailable is essential: treating every terrain group as a
+        // substitute produces a syntactically complete but corrupt ISOM
+        // catalog and makes the radial solver consume the whole map.
+        source_terrain_types_[22U] = 0U;
         compressed_type_map_ = {
             5,35,0, 35,5,2,20,27,28,34,22,0,
             2,34,35,20,27,28,22,0,
@@ -565,17 +567,17 @@ bool IsomCatalog::load_definition(const std::uint16_t tileset_id) noexcept {
         source_terrain_types_[34U] = 33U;
         source_terrain_types_[35U] = 34U;
         source_terrain_types_[23U] = 22U;
-        source_terrain_types_[28U] = 23U;
-        source_terrain_types_[29U] = 27U;
+        source_terrain_types_[24U] = 23U;
         source_terrain_types_[25U] = 24U;
-        source_terrain_types_[32U] = 25U;
-        source_terrain_types_[24U] = 28U;
-        source_terrain_types_[26U] = 29U;
-        source_terrain_types_[30U] = 31U;
+        source_terrain_types_[26U] = 25U;
+        source_terrain_types_[28U] = 27U;
+        source_terrain_types_[29U] = 28U;
+        source_terrain_types_[30U] = 29U;
+        source_terrain_types_[32U] = 31U;
         source_terrain_types_[33U] = 32U;
-        for (std::uint16_t group = 0U; group < 1024U; group += 2U) {
-          explicit_groups_[22U].push_back(group);
-        }
+        // Mud and its transition were added after these beta Jungle assets.
+        // Do not synthesize the missing transition out of unrelated groups.
+        source_terrain_types_[22U] = 0U;
         compressed_type_map_ = {
             5,35,0, 35,5,2,23,28,34,22,0,
             2,34,35,23,28,22,0,
@@ -680,6 +682,18 @@ bool IsomCatalog::generate_links(
       return false;
     }
   }
+  const std::size_t solid_end = terrain_types_.size() / 2U;
+  bool direct_type_layout = true;
+  for (std::size_t type = 1U; type <= solid_end; ++type) {
+    if (explicit_groups_[type].empty()) {
+      continue;
+    }
+    const std::uint16_t group_id = explicit_groups_[type].front();
+    if (group_id >= groups.size() || groups[group_id].terrain_type != type) {
+      direct_type_layout = false;
+      break;
+    }
+  }
   for (std::size_t type = 1U; type < groups_by_type.size(); ++type) {
     if (!explicit_groups_[type].empty()) {
       for (const std::uint16_t group_id : explicit_groups_[type]) {
@@ -687,11 +701,26 @@ bool IsomCatalog::generate_links(
           diagnostic_code_ = 20U + static_cast<std::uint32_t>(type);
           return false;
         }
-        groups_by_type[type].push_back(group_id);
+        const auto& group = groups[group_id];
+        const bool empty_group = group.terrain_type == 0U &&
+                                 std::all_of(
+                                     group.directional_links.begin(),
+                                     group.directional_links.end(),
+                                     [](const std::uint16_t link) {
+                                       return link == 0U;
+                                     });
+        if (!empty_group) {
+          groups_by_type[type].push_back(group_id);
+        }
       }
       continue;
     }
-    const std::uint16_t source_type = source_terrain_types_[type];
+    // Retail CV5 uses the logical StarEdit terrain-type numbers directly.
+    // The licensed beta archives omit expansion terrains and shift several
+    // transition blocks, which is what source_terrain_types_ describes.
+    const std::uint16_t source_type =
+        direct_type_layout ? static_cast<std::uint16_t>(type)
+                           : source_terrain_types_[type];
     if (source_type == 0U) {
       continue;
     }
@@ -704,7 +733,25 @@ bool IsomCatalog::generate_links(
     }
   }
 
-  const std::size_t solid_end = terrain_types_.size() / 2U;
+  std::vector<std::vector<std::uint16_t>> transition_solids(
+      terrain_types_.size());
+  for (std::size_t cursor = 0U;
+       cursor < compressed_type_map_.size() &&
+       compressed_type_map_[cursor] != 0U;) {
+    const std::uint16_t transition = compressed_type_map_[cursor++];
+    while (cursor < compressed_type_map_.size() &&
+           compressed_type_map_[cursor] != 0U) {
+      const std::uint16_t neighbor = compressed_type_map_[cursor++];
+      if (transition > solid_end && transition < transition_solids.size() &&
+          neighbor <= solid_end && neighbor < terrain_types_.size() &&
+          terrain_types_[neighbor].isom_value != 0U) {
+        transition_solids[transition].push_back(neighbor);
+      }
+    }
+    if (cursor < compressed_type_map_.size()) {
+      ++cursor;
+    }
+  }
   std::size_t link_count = 1U;
   for (std::size_t type = 1U; type < terrain_types_.size(); ++type) {
     const std::uint16_t start = terrain_types_[type].isom_value;
@@ -721,9 +768,12 @@ bool IsomCatalog::generate_links(
     if (info.isom_value == 0U) {
       continue;
     }
-    if (groups_by_type[type].empty() || info.isom_value >= links_.size()) {
+    if (info.isom_value >= links_.size()) {
       diagnostic_code_ = 100U + static_cast<std::uint32_t>(type);
       return false;
+    }
+    if (groups_by_type[type].empty()) {
+      continue;
     }
     const auto& directional =
         groups[groups_by_type[type].front()].directional_links;
@@ -746,10 +796,12 @@ bool IsomCatalog::generate_links(
     if (start == 0U) {
       continue;
     }
-    if (groups_by_type[type].empty() ||
-        static_cast<std::size_t>(start) + kShapeCount > links_.size()) {
+    if (static_cast<std::size_t>(start) + kShapeCount > links_.size()) {
       diagnostic_code_ = 200U + static_cast<std::uint32_t>(type);
       return false;
+    }
+    if (groups_by_type[type].empty()) {
+      continue;
     }
     std::array<std::array<std::size_t, kQuadrantCount>, kShapeCount>
         shape_groups{};
@@ -914,7 +966,12 @@ bool IsomCatalog::generate_links(
       shape_at(jut_in_south).quadrants[0].link_id = link_id;
       shape_at(jut_in_south).quadrants[1].link_id = link_id;
     };
-    for (std::size_t solid = 1U; solid <= solid_end; ++solid) {
+    // A beta tileset can reuse a soft CV5 edge number for more than one
+    // height family (for example Jungle and High Jungle both use 7).  Only
+    // the two solid nodes directly connected to this transition are valid
+    // endpoints; considering every solid lets a later, unrelated brush
+    // overwrite the correct logical link id.
+    for (const std::uint16_t solid : transition_solids[type]) {
       const std::uint16_t isom = terrain_types_[solid].isom_value;
       if (isom == 0U || isom >= links_.size()) {
         continue;

@@ -42,6 +42,14 @@ bool IsomTopology::build(
            left.terrain_type, left.directional_links,
            left.stack_connections, hash});
       candidates_[hash].push_back(left_group);
+      // Older/beta CV5 archives use different numeric terrain-type IDs for
+      // several otherwise identical transition groups.  ISOM edge links are
+      // stable across those layouts, so retain an edge-only lookup alongside
+      // the exact retail-style hash.  Exact matches remain preferred.
+      const std::uint32_t edge_hash = hash & ~std::uint32_t{0x3FU};
+      if (edge_hash != hash) {
+        candidates_[edge_hash].push_back(left_group);
+      }
       if (left.terrain_type != 0U && !terrain_types[left.terrain_type]) {
         terrain_types[left.terrain_type] = true;
         ++terrain_type_count_;
@@ -71,7 +79,12 @@ const std::vector<IsomGroupPair>& IsomTopology::group_pairs() const noexcept {
 const std::vector<std::uint16_t>* IsomTopology::candidates(
     const std::uint32_t hash) const noexcept {
   const auto found = candidates_.find(hash);
-  return valid_ && found != candidates_.end() ? &found->second : nullptr;
+  if (valid_ && found != candidates_.end()) {
+    return &found->second;
+  }
+  const auto edge_only = candidates_.find(hash & ~std::uint32_t{0x3FU});
+  return valid_ && edge_only != candidates_.end() ? &edge_only->second
+                                                  : nullptr;
 }
 
 std::uint32_t IsomTopology::group_pair_hash(

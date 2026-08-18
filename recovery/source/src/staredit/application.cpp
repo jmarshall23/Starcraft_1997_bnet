@@ -746,6 +746,86 @@ int run_new_map_variants_probe(
       }
     }
   }
+
+  constexpr std::array<NewMapSettings, 5> terrain_settings{{
+      {64U, 64U, 0U, 0U}, {64U, 64U, 1U, 0U},
+      {64U, 64U, 2U, 0U}, {64U, 64U, 3U, 0U},
+      {64U, 64U, 4U, 1U},
+  }};
+  for (const NewMapSettings& setting : terrain_settings) {
+    const std::filesystem::path scenario_template =
+        setting.tileset_id == 1U
+            ? data_root / L"maps" / L"96x96_space4.scm"
+            : setting.tileset_id == 3U
+                  ? data_root / L"maps" / L"96x96_ash4.scm"
+                  : data_root / L"maps" / L"96x96_wasteland4.scm";
+    EditorDocument terrain_document{};
+    std::wstring terrain_error{};
+    if (!terrain_document.create_blank(
+            scenario_template, data_root, setting.width, setting.height,
+            setting.tileset_id, new_map_terrain_name(setting), terrain_error)) {
+      return 20 + setting.tileset_id;
+    }
+    std::vector<std::uint16_t> baseline{};
+    baseline.reserve(static_cast<std::size_t>(terrain_document.width()) *
+                     terrain_document.height());
+    for (std::uint16_t y = 0U; y < terrain_document.height(); ++y) {
+      for (std::uint16_t x = 0U; x < terrain_document.width(); ++x) {
+        std::uint16_t tile{};
+        if (!terrain_document.tile_at(x, y, tile)) {
+          return 25;
+        }
+        baseline.push_back(tile);
+      }
+    }
+    const std::vector<std::uint16_t> terrain_brushes =
+        terrain_document.terrain_brushes();
+    for (const std::uint16_t brush : terrain_brushes) {
+      if (!terrain_document.begin_tile_edit() ||
+          !terrain_document.paint_terrain(32U, 32U, brush, 3U) ||
+          !terrain_document.commit_tile_edit()) {
+        terrain_document.cancel_tile_edit();
+        return 26;
+      }
+      std::size_t changed{};
+      std::size_t zero{};
+      for (std::uint16_t y = 0U; y < terrain_document.height(); ++y) {
+        for (std::uint16_t x = 0U; x < terrain_document.width(); ++x) {
+          std::uint16_t tile{};
+          if (!terrain_document.tile_at(x, y, tile)) {
+            return 27;
+          }
+          const std::size_t index =
+              static_cast<std::size_t>(y) * terrain_document.width() + x;
+          changed += tile != baseline[index] ? 1U : 0U;
+          zero += tile == 0U ? 1U : 0U;
+        }
+      }
+      if (zero != 0U || changed > baseline.size() / 4U) {
+        return 28;
+      }
+      if (changed == 0U) {
+        if (terrain_document.modified()) {
+          return 29;
+        }
+        continue;
+      }
+      if (!terrain_document.undo() || terrain_document.modified()) {
+        return 30;
+      }
+      for (std::uint16_t y = 0U; y < terrain_document.height(); ++y) {
+        for (std::uint16_t x = 0U; x < terrain_document.width(); ++x) {
+          std::uint16_t tile{};
+          const std::size_t index =
+              static_cast<std::size_t>(y) * terrain_document.width() + x;
+          if (!terrain_document.tile_at(x, y, tile) ||
+              tile != baseline[index]) {
+            return 31;
+          }
+        }
+      }
+    }
+  }
   return 0;
 }
 
