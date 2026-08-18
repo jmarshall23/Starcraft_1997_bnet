@@ -234,6 +234,9 @@ void process_server_line(BattleRuntime &runtime,
     runtime.password.clear();
     set_status(runtime, "Logon accepted. Requesting channels...");
     (void)SrvBeginChat(runtime);
+  } else if (command == "PLAYER_STATS" && fields.size() >= 4U) {
+    (void)parse_integer(fields[2], runtime.account_wins);
+    (void)parse_integer(fields[3], runtime.account_losses);
   } else if (command == "CHANNEL_LIST_BEGIN") {
     runtime.channels.clear();
   } else if (command == "CHANNEL" && fields.size() >= 3U) {
@@ -288,6 +291,8 @@ void process_server_line(BattleRuntime &runtime,
     runtime.game_host = command == "GAME_CREATED";
     runtime.game_started = false;
     runtime.game_aborted = false;
+    runtime.game_result_reported = false;
+    runtime.game_finished = false;
     runtime.lobby_players.clear();
     runtime.lobby_slots.clear();
     runtime.committed_turns.clear();
@@ -352,6 +357,8 @@ void process_server_line(BattleRuntime &runtime,
     runtime.outgoing_turns.clear();
     runtime.game_started = true;
     runtime.game_aborted = false;
+    runtime.game_result_reported = false;
+    runtime.game_finished = false;
     runtime.pending_game_start = true;
     set_status(runtime, "The synchronized game is starting.");
   } else if (command == "TURN_COMMIT" && fields.size() >= 4U &&
@@ -373,11 +380,27 @@ void process_server_line(BattleRuntime &runtime,
     } catch (...) {
       set_status(runtime, "A synchronized turn could not be buffered.");
     }
+  } else if (command == "GAME_RESULT_ACCEPTED") {
+    set_status(runtime, "The server accepted this match result.");
+  } else if (command == "GAME_FINISHED" && fields.size() >= 5U) {
+    (void)parse_integer(fields[2], runtime.winning_player_slot);
+    runtime.game_identifier = 0U;
+    runtime.game_host = false;
+    runtime.game_started = false;
+    runtime.game_finished = true;
+    runtime.pending_game_start = false;
+    runtime.committed_turns.clear();
+    runtime.outgoing_turns.clear();
+    const std::string winner = decode_field(fields[3]);
+    set_status(runtime, winner + " won the match (" +
+                            std::string{fields[4]} + ").");
   } else if (command == "LEFT_GAME") {
     runtime.game_identifier = 0U;
     runtime.game_host = false;
     runtime.game_started = false;
     runtime.game_aborted = false;
+    runtime.game_result_reported = false;
+    runtime.game_finished = false;
     runtime.pending_game_lobby = false;
     runtime.pending_game_start = false;
     runtime.lobby_players.clear();
@@ -570,6 +593,8 @@ void SrvDisconnect(BattleRuntime &runtime) noexcept {
   runtime.game_host = false;
   runtime.game_started = false;
   runtime.game_aborted = false;
+  runtime.game_result_reported = false;
+  runtime.game_finished = false;
   runtime.lobby_players.clear();
   runtime.lobby_slots.clear();
   runtime.committed_turns.clear();
@@ -667,6 +692,20 @@ bool SrvSubmitTurn(BattleRuntime &runtime, const std::uint32_t turn,
     set_status(runtime, "A synchronized turn could not be encoded.");
     return false;
   }
+}
+
+bool SrvReportGameResult(BattleRuntime &runtime,
+                         const std::uint8_t winner_slot) noexcept {
+  if (!runtime.authenticated || !runtime.game_started ||
+      runtime.game_result_reported || winner_slot >= 12U) {
+    return false;
+  }
+  const std::string winner = std::to_string(winner_slot);
+  if (!send_line(runtime, "GAME_RESULT", {winner})) {
+    return false;
+  }
+  runtime.game_result_reported = true;
+  return true;
 }
 
 bool SrvTakeCommittedTurn(BattleRuntime &runtime, const std::uint32_t turn,

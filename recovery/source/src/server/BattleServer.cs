@@ -24,11 +24,17 @@ internal sealed class GameLobby
     public required LobbySlotKind[] Slots { get; init; }
     public required int[] Races { get; init; }
     public Dictionary<ClientSession, int> Players { get; } = [];
+    public Dictionary<int, string> Participants { get; } = [];
+    public Dictionary<int, int> ResultReports { get; } = [];
     public SortedDictionary<uint, Dictionary<int, string>> PendingTurns { get; } = [];
     public bool Started { get; set; }
     public uint Seed { get; set; }
     public uint NextCommitTurn { get; set; }
 }
+
+internal sealed record GameResolution(int Identifier, int WinnerSlot,
+                                      string WinnerName, string Reason,
+                                      List<ClientSession> Targets);
 
 internal sealed class ClientSession(TcpClient client)
 {
@@ -219,6 +225,12 @@ internal sealed class BattleServer(string bindAddress, int port,
             case "TURN":
                 await SubmitTurnAsync(session, fields).ConfigureAwait(false);
                 break;
+            case "GAME_RESULT":
+                await SubmitGameResultAsync(session, fields).ConfigureAwait(false);
+                break;
+            case "GET_STATS":
+                await SendStatsAsync(session).ConfigureAwait(false);
+                break;
             case "PING":
                 await session.SendAsync("PONG");
                 break;
@@ -249,6 +261,7 @@ internal sealed class BattleServer(string bindAddress, int port,
         }
         session.AccountName = fields[1];
         await session.SendAsync("LOGON_OK", session.AccountName);
+        await SendStatsAsync(session).ConfigureAwait(false);
     }
 
     private async Task ListChannelsAsync(ClientSession session)
@@ -341,7 +354,8 @@ internal sealed class BattleServer(string bindAddress, int port,
               int Players, int MaximumPlayers)> snapshot;
         lock (gate)
         {
-            snapshot = games.Values.OrderBy(game => game.Identifier)
+            snapshot = games.Values.Where(game => !game.Started)
+                .OrderBy(game => game.Identifier)
                 .Select(game => (game.Identifier, game.Name, game.Host,
                                  game.Map, game.Players.Count,
                                  game.MaximumPlayers))
@@ -535,6 +549,12 @@ internal sealed class BattleServer(string bindAddress, int port,
                 game.Started = true;
                 game.Seed = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
                 game.NextCommitTurn = 0;
+                game.Participants.Clear();
+                game.ResultReports.Clear();
+                foreach ((ClientSession player, int slot) in game.Players)
+                {
+                    game.Participants[slot] = player.AccountName!;
+                }
                 targets = game.Players.Keys.ToList();
             }
         }
@@ -553,12 +573,15 @@ internal sealed class BattleServer(string bindAddress, int port,
     {
         GameLobby? remainingGame = null;
         List<ClientSession> peers = [];
+        GameResolution? resolution = null;
         bool closed = false;
+        bool aborted = false;
         lock (gate)
         {
             if (session.GameIdentifier is int identifier &&
                 games.TryGetValue(identifier, out GameLobby? game))
             {
+                List<ClientSession> matchTargets = game.Players.Keys.ToList();
                 int slot = -1;
                 if (game.Players.TryGetValue(session, out int assignedSlot))
                 {
@@ -571,20 +594,34 @@ internal sealed class BattleServer(string bindAddress, int port,
                     game.Slots[slot] = LobbySlotKind.Open;
                 }
                 peers = game.Players.Keys.ToList();
-                closed = game.Started || game.Players.Count == 0 ||
-                    string.Equals(game.Host, session.AccountName,
-                                  StringComparison.OrdinalIgnoreCase);
-                if (closed)
+                if (game.Started)
                 {
-                    games.Remove(identifier);
-                    foreach (ClientSession peer in peers)
+                    closed = true;
+                    if (game.Participants.Count == 2 && game.Players.Count == 1)
                     {
-                        peer.GameIdentifier = null;
+                        int winnerSlot = game.Players.Values.Single();
+                        resolution = FinishGameLocked(game, winnerSlot,
+                                                      "FORFEIT", matchTargets);
+                    }
+                    else
+                    {
+                        AbortGameLocked(game, matchTargets);
+                        aborted = true;
                     }
                 }
                 else
                 {
-                    remainingGame = game;
+                    closed = game.Players.Count == 0 ||
+                        string.Equals(game.Host, session.AccountName,
+                                      StringComparison.OrdinalIgnoreCase);
+                    if (closed)
+                    {
+                        AbortGameLocked(game, matchTargets);
+                    }
+                    else
+                    {
+                        remainingGame = game;
+                    }
                 }
             }
             else
@@ -593,14 +630,100 @@ internal sealed class BattleServer(string bindAddress, int port,
             }
         }
         await session.SendAsync("LEFT_GAME");
-        if (closed)
+        if (resolution is not null)
+        {
+            await SendResolutionAsync(resolution).ConfigureAwait(false);
+        }
+        else if (closed)
         {
             await BroadcastAsync(peers, "GAME_ABORTED",
-                                 "The host closed the game.");
+                                 aborted ? "A player left the active game."
+                                         : "The host closed the game.");
         }
         else if (remainingGame is not null)
         {
             await SendLobbyRosterAsync(remainingGame).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SubmitGameResultAsync(ClientSession session,
+                                             string[] fields)
+    {
+        if (fields.Length < 2 || !int.TryParse(fields[1], out int winnerSlot))
+        {
+            await session.SendAsync("ERROR", "GAME_RESULT",
+                                    "Invalid winning player slot.");
+            return;
+        }
+
+        GameResolution? resolution = null;
+        GameLobby? game = null;
+        List<ClientSession> abortTargets = [];
+        string? error = null;
+        lock (gate)
+        {
+            if (session.GameIdentifier is not int identifier ||
+                !games.TryGetValue(identifier, out game) ||
+                !game.Started ||
+                !game.Players.TryGetValue(session, out int reporterSlot))
+            {
+                error = "No active game.";
+            }
+            else if (!game.Participants.ContainsKey(winnerSlot))
+            {
+                error = "The winning slot is not an active player.";
+            }
+            else if (game.ResultReports.TryGetValue(reporterSlot,
+                                                    out int previousWinner))
+            {
+                if (previousWinner != winnerSlot)
+                {
+                    error = "A different result was already submitted.";
+                }
+            }
+            else
+            {
+                game.ResultReports.Add(reporterSlot, winnerSlot);
+            }
+
+            if (error is null && resolution is null &&
+                game is not null &&
+                game.ResultReports.Count == game.Participants.Count)
+            {
+                int[] winners = game.ResultReports.Values.Distinct().ToArray();
+                if (winners.Length == 1)
+                {
+                    resolution = FinishGameLocked(game, winners[0], "RESULT");
+                }
+                else
+                {
+                    abortTargets = game.Players.Keys.ToList();
+                    AbortGameLocked(game, abortTargets);
+                    error = "Clients disagreed about the match result.";
+                }
+            }
+        }
+        if (error is not null)
+        {
+            if (abortTargets.Count != 0)
+            {
+                await BroadcastAsync(abortTargets, "GAME_ABORTED", error)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await session.SendAsync("ERROR", "GAME_RESULT", error);
+            }
+            return;
+        }
+        if (resolution is not null)
+        {
+            await SendResolutionAsync(resolution).ConfigureAwait(false);
+        }
+        else
+        {
+            await session.SendAsync("GAME_RESULT_ACCEPTED",
+                                    winnerSlot.ToString());
         }
     }
 
@@ -676,6 +799,7 @@ internal sealed class BattleServer(string bindAddress, int port,
         List<ClientSession> channelPeers = [];
         List<ClientSession> gamePeers = [];
         GameLobby? remainingGame = null;
+        GameResolution? resolution = null;
         bool gameAborted = false;
         int departedSlot = -1;
         lock (gate)
@@ -688,6 +812,7 @@ internal sealed class BattleServer(string bindAddress, int port,
             if (session.GameIdentifier is int identifier &&
                 games.TryGetValue(identifier, out GameLobby? game))
             {
+                List<ClientSession> matchTargets = game.Players.Keys.ToList();
                 if (game.Players.TryGetValue(session, out int assignedSlot))
                 {
                     departedSlot = assignedSlot;
@@ -699,20 +824,33 @@ internal sealed class BattleServer(string bindAddress, int port,
                     game.Slots[departedSlot] = LobbySlotKind.Open;
                 }
                 gamePeers = game.Players.Keys.ToList();
-                gameAborted = game.Started || game.Players.Count == 0 ||
-                    string.Equals(game.Host, session.AccountName,
-                                  StringComparison.OrdinalIgnoreCase);
-                if (gameAborted)
+                if (game.Started)
                 {
-                    games.Remove(identifier);
-                    foreach (ClientSession peer in gamePeers)
+                    if (game.Participants.Count == 2 && game.Players.Count == 1)
                     {
-                        peer.GameIdentifier = null;
+                        int winnerSlot = game.Players.Values.Single();
+                        resolution = FinishGameLocked(game, winnerSlot,
+                                                      "FORFEIT", matchTargets);
+                    }
+                    else
+                    {
+                        AbortGameLocked(game, matchTargets);
+                        gameAborted = true;
                     }
                 }
                 else
                 {
-                    remainingGame = game;
+                    gameAborted = game.Players.Count == 0 ||
+                        string.Equals(game.Host, session.AccountName,
+                                      StringComparison.OrdinalIgnoreCase);
+                    if (gameAborted)
+                    {
+                        AbortGameLocked(game, matchTargets);
+                    }
+                    else
+                    {
+                        remainingGame = game;
+                    }
                 }
             }
         }
@@ -720,7 +858,11 @@ internal sealed class BattleServer(string bindAddress, int port,
         {
             await BroadcastAsync(channelPeers, "USER_LEAVE", session.AccountName);
         }
-        if (gameAborted)
+        if (resolution is not null)
+        {
+            await SendResolutionAsync(resolution).ConfigureAwait(false);
+        }
+        else if (gameAborted)
         {
             await BroadcastAsync(gamePeers, "GAME_ABORTED",
                                  "A player left the game.");
@@ -729,6 +871,74 @@ internal sealed class BattleServer(string bindAddress, int port,
         {
             await SendLobbyRosterAsync(remainingGame).ConfigureAwait(false);
         }
+    }
+
+    private GameResolution FinishGameLocked(GameLobby game, int winnerSlot,
+                                            string reason,
+                                            List<ClientSession>? targets = null)
+    {
+        string winnerName = game.Participants[winnerSlot];
+        string[] losers = game.Participants
+            .Where(participant => participant.Key != winnerSlot)
+            .Select(participant => participant.Value)
+            .ToArray();
+        if (!accounts.RecordGame(winnerName, losers))
+        {
+            throw new InvalidOperationException("The game result could not be recorded.");
+        }
+        List<ClientSession> recipients = targets ?? game.Players.Keys.ToList();
+        games.Remove(game.Identifier);
+        foreach (ClientSession player in recipients)
+        {
+            player.GameIdentifier = null;
+        }
+        Console.WriteLine($"Game {game.Identifier} finished: {winnerName} won ({reason}).");
+        return new GameResolution(game.Identifier, winnerSlot, winnerName,
+                                  reason, recipients);
+    }
+
+    private void AbortGameLocked(GameLobby game, List<ClientSession> targets)
+    {
+        games.Remove(game.Identifier);
+        foreach (ClientSession player in targets)
+        {
+            player.GameIdentifier = null;
+        }
+    }
+
+    private async Task SendResolutionAsync(GameResolution resolution)
+    {
+        await BroadcastAsync(resolution.Targets, "GAME_FINISHED",
+                             resolution.Identifier.ToString(),
+                             resolution.WinnerSlot.ToString(),
+                             resolution.WinnerName, resolution.Reason)
+            .ConfigureAwait(false);
+        foreach (ClientSession target in resolution.Targets)
+        {
+            if (target.AccountName is not null)
+            {
+                try
+                {
+                    await SendStatsAsync(target).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is IOException or
+                                                  SocketException or
+                                                  ObjectDisposedException)
+                {
+                }
+            }
+        }
+    }
+
+    private async Task SendStatsAsync(ClientSession session)
+    {
+        if (session.AccountName is null)
+        {
+            return;
+        }
+        AccountStats stats = accounts.GetStats(session.AccountName);
+        await session.SendAsync("PLAYER_STATS", session.AccountName,
+                                stats.Wins.ToString(), stats.Losses.ToString());
     }
 
     private static async Task BroadcastAsync(IEnumerable<ClientSession> targets,
@@ -741,7 +951,9 @@ internal sealed class BattleServer(string bindAddress, int port,
             {
                 await target.SendAsync(command, fields).ConfigureAwait(false);
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is IOException or
+                                              SocketException or
+                                              ObjectDisposedException)
             {
             }
         }

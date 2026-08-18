@@ -92,6 +92,46 @@ bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   }
   SelectObject(state.device_context, previous);
   DeleteObject(font);
+  state.battle_font_display_lists = glGenLists(96);
+  // battle.snp's extended dialog templates explicitly request 13-point,
+  // 700-weight Times New Roman. The recovered renderer has a fixed logical
+  // surface, so preserve the original 96-DPI 13-point height (17 pixels)
+  // instead of inheriting desktop DPI scaling.
+  constexpr int battle_font_height = 17;
+  const HFONT battle_font = CreateFontA(
+      -battle_font_height, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+      DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+      ANTIALIASED_QUALITY, VARIABLE_PITCH | FF_ROMAN, "Times New Roman");
+  if (!font_ready || state.battle_font_display_lists == 0U ||
+      battle_font == nullptr) {
+    if (battle_font != nullptr) {
+      DeleteObject(battle_font);
+    }
+    return false;
+  }
+  const HGDIOBJ previous_battle =
+      SelectObject(state.device_context, battle_font);
+  std::array<GLYPHMETRICSFLOAT, 96> battle_font_metrics{};
+  const bool battle_font_ready =
+      wglUseFontOutlinesA(state.device_context, 32, 96,
+                          state.battle_font_display_lists, 0.0F, 0.0F,
+                          WGL_FONT_POLYGONS,
+                          battle_font_metrics.data()) != FALSE;
+  for (std::size_t index = 0; index < battle_font_metrics.size(); ++index) {
+    state.battle_font_advances[index] =
+        battle_font_metrics[index].gmfCellIncX;
+  }
+  float battle_outline_height{};
+  for (const GLYPHMETRICSFLOAT &metric : battle_font_metrics) {
+    battle_outline_height =
+        (std::max)(battle_outline_height, metric.gmfBlackBoxY);
+  }
+  if (battle_outline_height > 0.0F) {
+    state.battle_font_outline_scale =
+        static_cast<float>(battle_font_height) / battle_outline_height;
+  }
+  SelectObject(state.device_context, previous_battle);
+  DeleteObject(battle_font);
   state.glue_font_display_lists = glGenLists(96);
   const HFONT glue_font = CreateFontA(
       -20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -123,7 +163,8 @@ bool initialize_opengl(const HWND window, RecoveryWindowState &state) noexcept {
   }
   SelectObject(state.device_context, previous_glue);
   DeleteObject(glue_font);
-  return glue_font_ready && initialize_debug_console(window, state);
+  return battle_font_ready && glue_font_ready &&
+         initialize_debug_console(window, state);
 }
 
 void shutdown_opengl(const HWND window, RecoveryWindowState &state) noexcept {
@@ -136,6 +177,10 @@ void shutdown_opengl(const HWND window, RecoveryWindowState &state) noexcept {
     if (state.glue_font_display_lists != 0) {
       glDeleteLists(state.glue_font_display_lists, 96);
       state.glue_font_display_lists = 0;
+    }
+    if (state.battle_font_display_lists != 0) {
+      glDeleteLists(state.battle_font_display_lists, 96);
+      state.battle_font_display_lists = 0;
     }
     wglMakeCurrent(nullptr, nullptr);
     wglDeleteContext(state.rendering_context);

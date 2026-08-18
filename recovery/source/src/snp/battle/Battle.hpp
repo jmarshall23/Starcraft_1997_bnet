@@ -141,8 +141,11 @@ struct BattleRuntime {
   std::uint32_t game_seed{1U};
   std::uint32_t simulation_turn{};
   std::uint32_t next_turn_to_submit{};
+  std::uint32_t account_wins{};
+  std::uint32_t account_losses{};
   std::uint8_t local_player_slot{};
   std::uint8_t game_player_count{};
+  std::uint8_t winning_player_slot{};
   std::size_t selected_channel{};
   std::size_t selected_game{};
   std::size_t selected_map{};
@@ -159,6 +162,8 @@ struct BattleRuntime {
   bool game_host{};
   bool game_started{};
   bool game_aborted{};
+  bool game_result_reported{};
+  bool game_finished{};
   bool connect_pending{};
   bool local_server_launch_attempted{};
   // DrawBattleNet marks this only after the recovered connect dialog artwork
@@ -255,6 +260,8 @@ void SrvDisconnect(BattleRuntime &runtime) noexcept;
 [[nodiscard]] bool SrvStartGame(BattleRuntime &runtime) noexcept;
 [[nodiscard]] bool SrvSubmitTurn(BattleRuntime &runtime, std::uint32_t turn,
                                  const std::vector<std::uint8_t> &payload) noexcept;
+[[nodiscard]] bool SrvReportGameResult(BattleRuntime &runtime,
+                                       std::uint8_t winner_slot) noexcept;
 [[nodiscard]] bool SrvTakeCommittedTurn(BattleRuntime &runtime,
                                         std::uint32_t turn,
                                         CommittedTurn &commit) noexcept;

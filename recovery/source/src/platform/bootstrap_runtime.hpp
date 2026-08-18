@@ -1081,10 +1081,13 @@ struct RecoveryWindowState {
   std::uint16_t pressed_command_position{};
   std::uint16_t hovered_command_position{};
   GLuint font_display_lists{};
+  GLuint battle_font_display_lists{};
   GLuint glue_font_display_lists{};
   std::array<float, 96> font_advances{};
+  std::array<float, 96> battle_font_advances{};
   std::array<float, 96> glue_font_advances{};
   float font_outline_scale{10.0F};
+  float battle_font_outline_scale{17.0F};
   float glue_font_outline_scale{20.0F};
   ALCdevice *audio_device{};
   ALCcontext *audio_context{};

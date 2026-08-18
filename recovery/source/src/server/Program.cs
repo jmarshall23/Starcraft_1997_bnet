@@ -73,10 +73,20 @@ internal static class Program
             string path = Path.Combine(directory, "accounts.json");
             var store = new AccountStore(path);
             if (!store.Create("Tester", "secret", out _) ||
+                !store.Create("Opponent", "secret", out _) ||
                 !store.Authenticate("tester", "secret") ||
-                store.Authenticate("Tester", "wrong"))
+                store.Authenticate("Tester", "wrong") ||
+                !store.RecordGame("Tester", ["Opponent"]))
             {
                 return 11;
+            }
+            var reloaded = new AccountStore(path);
+            AccountStats winner = reloaded.GetStats("tester");
+            AccountStats loser = reloaded.GetStats("opponent");
+            if (winner != new AccountStats(1, 0) ||
+                loser != new AccountStats(0, 1))
+            {
+                return 12;
             }
             return 0;
         }

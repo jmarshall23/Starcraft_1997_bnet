@@ -8,7 +8,11 @@ internal sealed class AccountRecord
     public required string Name { get; init; }
     public required string Salt { get; init; }
     public required string PasswordHash { get; init; }
+    public int Wins { get; set; }
+    public int Losses { get; set; }
 }
+
+internal readonly record struct AccountStats(int Wins, int Losses);
 
 internal sealed class AccountStore
 {
@@ -71,6 +75,40 @@ internal sealed class AccountStore
         byte[] expected = Convert.FromBase64String(account.PasswordHash);
         byte[] actual = Hash(password, Convert.FromBase64String(account.Salt));
         return CryptographicOperations.FixedTimeEquals(actual, expected);
+    }
+
+    public AccountStats GetStats(string name)
+    {
+        lock (gate)
+        {
+            return accounts.TryGetValue(name, out AccountRecord? account)
+                       ? new AccountStats(account.Wins, account.Losses)
+                       : default;
+        }
+    }
+
+    public bool RecordGame(string winner, IEnumerable<string> losers)
+    {
+        string[] uniqueLosers = losers
+            .Where(name => !string.Equals(name, winner,
+                                          StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        lock (gate)
+        {
+            if (!accounts.TryGetValue(winner, out AccountRecord? winnerAccount) ||
+                uniqueLosers.Any(name => !accounts.ContainsKey(name)))
+            {
+                return false;
+            }
+            ++winnerAccount.Wins;
+            foreach (string loser in uniqueLosers)
+            {
+                ++accounts[loser].Losses;
+            }
+            Save();
+            return true;
+        }
     }
 
     private static bool ValidName(string name) =>

@@ -18,6 +18,10 @@ void ChatChannelJoined(BattleRuntime &runtime,
   runtime.screen = BattleScreen::chat_room;
   runtime.edit_control = EditControl::chat_input;
   runtime.chat_lines.clear();
+  ChatReceiveMsg(runtime, "Battle.net",
+                 "Record: " + std::to_string(runtime.account_wins) +
+                     " wins, " + std::to_string(runtime.account_losses) +
+                     " losses.");
   runtime.status = "Joined " + runtime.current_channel + ".";
 }
 

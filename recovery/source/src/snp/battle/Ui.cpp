@@ -36,6 +36,8 @@ constexpr UiRect dialog_rect(const int x, const int y, const int width,
 }
 
 constexpr int kChildDialogY = 57;
+constexpr int kBattleFontLogicalHeight = 17;
+constexpr int kBattleLineSpacing = 20;
 constexpr std::int16_t kConnectCancel = 2;
 constexpr std::int16_t kLogonName = 1020;
 constexpr std::int16_t kLogonPassword = 1011;
@@ -76,7 +78,16 @@ constexpr std::int16_t kGameRowBase = 2200;
 constexpr std::int16_t kMapRowBase = 2400;
 constexpr std::int16_t kUserRowBase = 2600;
 
-constexpr UiRect kConnectCancelRect{263, 259, 373, 288};
+constexpr int kConnectDialogX = (640 - dlu_x(112)) / 2;
+constexpr int kConnectDialogY = (480 - dlu_y(61)) / 2;
+constexpr UiRect kConnectMessageRect{
+    kConnectDialogX + dlu_x(7), kConnectDialogY + dlu_y(9),
+    kConnectDialogX + dlu_x(7 + 98),
+    kConnectDialogY + dlu_y(9 + 27)};
+constexpr UiRect kConnectCancelRect{
+    kConnectDialogX + dlu_x(34), kConnectDialogY + dlu_y(39),
+    kConnectDialogX + dlu_x(34 + 44),
+    kConnectDialogY + dlu_y(39 + 12)};
 
 constexpr UiRect kLogonNameRect = dialog_rect(22, 87, 88, 14);
 constexpr UiRect kLogonPasswordRect = dialog_rect(23, 114, 85, 12);
@@ -246,13 +257,36 @@ bool load_button_sheet(starcraft::runtime::StormModule &storm,
 void draw_label(const RecoveryWindowState &state, const std::string_view text,
                 const int x, const int y, const bool highlighted = false,
                 const bool large = false) noexcept {
-  // Battle.snp's UiSetFont uses Win32 fonts (and falls back to Arial). Keep
-  // that separate from StarCraft's FNT/TFont glue renderer.
-  draw_game_text_gl(state, text, static_cast<float>(x),
-                    static_cast<float>(y) * hud_vertical_scale(),
-                    highlighted ? 255U : 218U,
-                    highlighted ? 208U : 218U,
-                    highlighted ? 88U : 218U, large);
+  if (state.battle_font_display_lists == 0U || text.empty()) {
+    return;
+  }
+  std::string printable;
+  try {
+    printable.reserve(text.size());
+    for (const unsigned char character : text) {
+      printable.push_back(character >= 32U && character < 128U
+                              ? static_cast<char>(character)
+                              : '?');
+    }
+  } catch (...) {
+    return;
+  }
+  glDisable(GL_TEXTURE_2D);
+  glColor4ub(highlighted ? 255U : 218U,
+             highlighted ? 208U : 218U,
+             highlighted ? 88U : 218U, 255U);
+  glMatrixMode(GL_MODELVIEW);
+  glPushMatrix();
+  glTranslatef(static_cast<float>(x), scaled_y(y), 0.0F);
+  glScalef(state.battle_font_outline_scale,
+           -state.battle_font_outline_scale * hud_vertical_scale(), 1.0F);
+  glListBase(state.battle_font_display_lists - 32U);
+  glCallLists(static_cast<GLsizei>(printable.size()), GL_UNSIGNED_BYTE,
+              printable.data());
+  glPopMatrix();
+  glColor4ub(255U, 255U, 255U, 255U);
+  glEnable(GL_TEXTURE_2D);
+  (void)large;
 }
 
 float label_width(const RecoveryWindowState &state,
@@ -263,7 +297,8 @@ float label_width(const RecoveryWindowState &state,
         character >= 32U && character < 128U
             ? character - 32U
             : static_cast<std::size_t>('?' - 32);
-    width += state.font_advances[index] * state.font_outline_scale;
+    width += state.battle_font_advances[index] *
+             state.battle_font_outline_scale;
   }
   return width;
 }
@@ -274,8 +309,27 @@ void draw_centered_label(const RecoveryWindowState &state,
   const int x = static_cast<int>((rect.left + rect.right -
                                   label_width(state, text)) /
                                  2.0F);
-  const int y = (rect.top + rect.bottom + 9) / 2;
+  const int y = (rect.top + rect.bottom + kBattleFontLogicalHeight) / 2;
   draw_label(state, text, x, y, highlighted);
+}
+
+void draw_connect_message(const RecoveryWindowState &state) noexcept {
+  constexpr std::array<std::string_view, 2> lines{{
+      "Searching for the fastest", "Battle.net server..."}};
+  const int first_baseline =
+      (kConnectMessageRect.top + kConnectMessageRect.bottom +
+       kBattleFontLogicalHeight - kBattleLineSpacing) /
+      2;
+  for (std::size_t index = 0U; index < lines.size(); ++index) {
+    const int x = static_cast<int>(
+        (kConnectMessageRect.left + kConnectMessageRect.right -
+         label_width(state, lines[index])) /
+        2.0F);
+    draw_label(state, lines[index], x,
+               first_baseline +
+                   static_cast<int>(index) * kBattleLineSpacing,
+               true);
+  }
 }
 
 void draw_button(const RecoveryWindowState &state,
@@ -341,7 +395,8 @@ void draw_edit(const RecoveryWindowState &state, const BattleRuntime &runtime,
   if (runtime.edit_control == control && (GetTickCount() / 500U) % 2U == 0U) {
     display.push_back('|');
   }
-  draw_label(state, display, rect.left + 5, rect.bottom - 3,
+  draw_label(state, display, rect.left + 5,
+             (rect.top + rect.bottom + kBattleFontLogicalHeight) / 2,
              runtime.edit_control == control);
 }
 
@@ -379,8 +434,7 @@ void draw_connecting(const RecoveryWindowState &state,
   draw_frame(art.small_popup, popup_x, popup_y,
              static_cast<float>(art.small_popup.width),
              static_cast<float>(art.small_popup.height));
-  draw_label(state, "Searching for the fastest", 217, 205, true);
-  draw_label(state, "Battle.net server...", 240, 225, true);
+  draw_connect_message(state);
   draw_button(state, runtime, kConnectCancel, kConnectCancelRect, "Cancel",
               art.small_buttons);
 }
@@ -485,8 +539,9 @@ void draw_chat(const RecoveryWindowState &state,
                                 : 0U;
   for (std::size_t index = first; index < runtime.chat_lines.size(); ++index) {
     draw_label(state, runtime.chat_lines[index], kChatMessagesRect.left + 4,
-               kChatMessagesRect.top + 15 +
-                   static_cast<int>(index - first) * 16);
+               kChatMessagesRect.top + kBattleFontLogicalHeight +
+                   static_cast<int>(index - first) *
+                       kBattleFontLogicalHeight);
   }
   for (std::size_t index = 0U; index < runtime.users.size() && index < 11U;
        ++index) {
