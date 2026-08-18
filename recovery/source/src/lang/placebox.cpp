@@ -278,7 +278,8 @@ bool update_building_placement(BootstrapStatus &status, const int game_x,
   status.placement_x = static_cast<std::uint16_t>(snapped_left + half_width);
   status.placement_y = static_cast<std::uint16_t>(snapped_top + half_height);
   status.placement_valid = placement_is_valid(
-      status, *buildable, status.placement_x, status.placement_y);
+      status, *buildable, status.placement_x, status.placement_y,
+      status.command_player);
   return true;
 }
 
@@ -442,10 +443,10 @@ bool place_current_building(BootstrapStatus &status) noexcept {
   const bool nydus_exit = status.nydus_parent_id != 0U &&
                           buildable->unit_type == 134U;
   if ((!nydus_exit &&
-       !resource_cost_available(status, buildable->simulation.mineral_cost,
+      !resource_cost_available(status, buildable->simulation.mineral_cost,
                                 buildable->simulation.gas_cost)) ||
       !placement_is_valid(status, *buildable, status.placement_x,
-                          status.placement_y)) {
+                          status.placement_y, status.command_player)) {
     status.placement_valid = false;
     return false;
   }
@@ -456,7 +457,8 @@ bool place_current_building(BootstrapStatus &status) noexcept {
   bool terran_worker{};
   bool zerg_worker{};
   bool protoss_worker{};
-  if (selected_source == nullptr || selected_source->owner != 0) {
+  if (selected_source == nullptr ||
+      selected_source->owner != status.command_player) {
     return false;
   }
   if (nydus_exit) {
@@ -561,7 +563,7 @@ bool place_current_building(BootstrapStatus &status) noexcept {
       building.y = status.placement_y;
       building.x_fixed = static_cast<std::int32_t>(building.x) << 8U;
       building.y_fixed = static_cast<std::int32_t>(building.y) << 8U;
-      building.owner = 0U;
+      building.owner = selected_source->owner;
       building.is_building = true;
       // CUnitInit.cpp::sub_42E6B0 and CUnitBuild.cpp::sub_422D20 initialize
       // unfinished life at exactly one tenth maximum. CUnit+172 is the
@@ -607,8 +609,9 @@ bool place_current_building(BootstrapStatus &status) noexcept {
       status.units[geyser_index].selected = false;
     }
     if (!nydus_exit) {
-      status.player_minerals -= buildable->simulation.mineral_cost;
-      status.player_gas -= buildable->simulation.gas_cost;
+      spend_player_resources(status, selected_source->owner,
+                             buildable->simulation.mineral_cost,
+                             buildable->simulation.gas_cost);
     }
     status.placement_active = false;
     status.placement_valid = false;
@@ -636,7 +639,7 @@ void draw_building_placement_gl(const BootstrapStatus &status) {
   ghost.x = status.placement_x;
   ghost.y = status.placement_y;
   ghost.unit_type = buildable->unit_type;
-  ghost.owner = 0;
+  ghost.owner = status.command_player;
   ghost.asset_index = buildable->asset_index;
   ghost.selection_width = buildable->placement_width;
   ghost.selection_height = buildable->placement_height;

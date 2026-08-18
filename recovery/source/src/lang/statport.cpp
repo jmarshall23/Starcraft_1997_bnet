@@ -42,7 +42,20 @@ selected_portrait(const BootstrapStatus &status) noexcept {
                             asset.owner == selected->owner &&
                             asset.portrait.ready;
                    });
-  return portrait == status.portraits.end() ? nullptr : &*portrait;
+  if (portrait != status.portraits.end()) {
+    return &*portrait;
+  }
+  // Multiplayer-created enemy/allied types may not have had that exact
+  // owner tint cached during map load. Portdata chooses the same unit video;
+  // player color is not encoded in the SMK, so any ready owner variant is a
+  // faithful fallback and prevents foreign structures from losing portraits.
+  const auto fallback =
+      std::find_if(status.portraits.begin(), status.portraits.end(),
+                   [selected](const UnitPortraitAsset &asset) {
+                     return asset.unit_type == selected->unit_type &&
+                            asset.portrait.ready;
+                   });
+  return fallback == status.portraits.end() ? nullptr : &*fallback;
 }
 
 UnitPortraitAsset *selected_portrait(BootstrapStatus &status) noexcept {
@@ -57,7 +70,16 @@ UnitPortraitAsset *selected_portrait(BootstrapStatus &status) noexcept {
                             asset.owner == selected->owner &&
                             asset.portrait.ready;
                    });
-  return portrait == status.portraits.end() ? nullptr : &*portrait;
+  if (portrait != status.portraits.end()) {
+    return &*portrait;
+  }
+  const auto fallback =
+      std::find_if(status.portraits.begin(), status.portraits.end(),
+                   [selected](const UnitPortraitAsset &asset) {
+                     return asset.unit_type == selected->unit_type &&
+                            asset.portrait.ready;
+                   });
+  return fallback == status.portraits.end() ? nullptr : &*fallback;
 }
 
 void draw_selected_portrait_gl(const BootstrapStatus &status) {

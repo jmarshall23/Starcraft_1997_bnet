@@ -6,6 +6,7 @@ get_filename_component(STARCRAFT_RECOVERY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.
 set(LIBSMACKER_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/libsmacker")
 set(OPENAL_SOFT_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/openal-soft")
 set(IMGUI_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/imgui")
+set(LUA_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/lua")
 
 if(NOT WIN32)
   message(FATAL_ERROR "The recovered target is Win32-only.")
@@ -120,6 +121,50 @@ if(MSVC)
   target_compile_definitions(vendored_libsmacker PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# Lua is embedded as a private, static strategy runtime.  The standalone
+# interpreter/compiler entry points (lua.c and luac.c) are intentionally not
+# part of the game target.
+add_library(vendored_lua STATIC
+  "${LUA_ROOT}/src/lapi.c"
+  "${LUA_ROOT}/src/lauxlib.c"
+  "${LUA_ROOT}/src/lbaselib.c"
+  "${LUA_ROOT}/src/lcode.c"
+  "${LUA_ROOT}/src/lcorolib.c"
+  "${LUA_ROOT}/src/lctype.c"
+  "${LUA_ROOT}/src/ldblib.c"
+  "${LUA_ROOT}/src/ldebug.c"
+  "${LUA_ROOT}/src/ldo.c"
+  "${LUA_ROOT}/src/ldump.c"
+  "${LUA_ROOT}/src/lfunc.c"
+  "${LUA_ROOT}/src/lgc.c"
+  "${LUA_ROOT}/src/linit.c"
+  "${LUA_ROOT}/src/liolib.c"
+  "${LUA_ROOT}/src/llex.c"
+  "${LUA_ROOT}/src/lmathlib.c"
+  "${LUA_ROOT}/src/lmem.c"
+  "${LUA_ROOT}/src/loadlib.c"
+  "${LUA_ROOT}/src/lobject.c"
+  "${LUA_ROOT}/src/lopcodes.c"
+  "${LUA_ROOT}/src/loslib.c"
+  "${LUA_ROOT}/src/lparser.c"
+  "${LUA_ROOT}/src/lstate.c"
+  "${LUA_ROOT}/src/lstring.c"
+  "${LUA_ROOT}/src/lstrlib.c"
+  "${LUA_ROOT}/src/ltable.c"
+  "${LUA_ROOT}/src/ltablib.c"
+  "${LUA_ROOT}/src/ltm.c"
+  "${LUA_ROOT}/src/lundump.c"
+  "${LUA_ROOT}/src/lutf8lib.c"
+  "${LUA_ROOT}/src/lvm.c"
+  "${LUA_ROOT}/src/lzio.c"
+)
+target_include_directories(vendored_lua PUBLIC "${LUA_ROOT}/src")
+set_target_properties(vendored_lua PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+if(MSVC)
+  target_compile_definitions(vendored_lua PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(vendored_lua PRIVATE /W3)
+endif()
+
 target_include_directories(starcraft_core PUBLIC include)
 target_compile_features(starcraft_core PUBLIC cxx_std_17)
 target_compile_definitions(starcraft_core PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -159,6 +204,7 @@ add_executable(StarCraftRecovery WIN32
   src/lang/CUnitPSpellsRuntime.cpp
   src/lang/CUnitSpellsRuntime.cpp
   src/lang/CUnitProtossRuntime.cpp
+  src/lang/CAI.cpp
   src/lang/SAI_MainRuntime.cpp
   src/lang/CUnitUpgradeRuntime.cpp
   src/lang/CUnitUpdate.cpp
@@ -182,6 +228,7 @@ add_executable(StarCraftRecovery WIN32
   src/lang/map_load.cpp
   src/lang/mask.cpp
   src/lang/minimap.cpp
+  src/lang/netcmd_runtime.cpp
   src/lang/Music.cpp
   src/lang/placebox.cpp
   src/lang/playflic.cpp
@@ -208,7 +255,7 @@ target_include_directories(
 )
 target_link_libraries(
   StarCraftRecovery
-  PRIVATE starcraft_core vendored_libsmacker OpenAL::OpenAL user32 kernel32 gdi32 opengl32 ws2_32
+  PRIVATE starcraft_core vendored_libsmacker vendored_lua OpenAL::OpenAL user32 kernel32 gdi32 opengl32 ws2_32
 )
 set_target_properties(StarCraftRecovery PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${STARCRAFT_RECOVERY_ROOT}"

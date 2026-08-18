@@ -10,6 +10,7 @@ namespace {
 
 constexpr int kMaximumCatchUpFrames = 3;
 constexpr std::int32_t kClockResyncThresholdMilliseconds = 200;
+constexpr std::uint32_t kNetworkInputDelayTurns = 3U;
 
 void drain_pending_game_sounds(RecoveryWindowState &state) noexcept {
   if (state.status == nullptr) {
@@ -67,6 +68,10 @@ void drain_pending_game_sounds(RecoveryWindowState &state) noexcept {
     state.game_dialog.match_active = false;
     state.game_dialog.paused = false;
     state.game_dialog.observer_mode = false;
+    if (state.glue.online_lobby) {
+      battle::SrvDisconnect(state.glue.battle_net);
+      state.glue.online_lobby = false;
+    }
     glues_enter_screen(state.glue, GlueScreen::main_menu, clock);
     if (state.music_playing) {
       alSourceStop(state.music_source);
@@ -97,12 +102,54 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
     return false;
   }
 
+  const bool network_game =
+      state.glue.online_lobby && state.glue.battle_net.game_started;
+  battle::CommittedTurn committed_turn{};
+  if (network_game) {
+    battle::BattleRuntime &network = state.glue.battle_net;
+    (void)battle::SrvProcessClientReq(network);
+    if (network.game_aborted || !network.connected) {
+      status->system_message = network.status.empty()
+                                   ? "The network game was disconnected."
+                                   : network.status;
+      status->system_message_until = clock + 6000U;
+      return false;
+    }
+    const std::uint32_t submission_horizon =
+        network.simulation_turn + kNetworkInputDelayTurns;
+    while (network.next_turn_to_submit <= submission_horizon) {
+      std::vector<std::uint8_t> outgoing_payload{};
+      (void)take_network_outgoing_payload(
+          network, network.next_turn_to_submit, outgoing_payload);
+      if (!battle::SrvSubmitTurn(network, network.next_turn_to_submit,
+                                 outgoing_payload)) {
+        return false;
+      }
+      ++network.next_turn_to_submit;
+    }
+    if (!battle::SrvTakeCommittedTurn(network, network.simulation_turn,
+                                      committed_turn)) {
+      return false;
+    }
+    if (!apply_network_committed_turn(*status, committed_turn)) {
+      status->system_message = "The synchronized command stream was invalid.";
+      status->system_message_until = clock + 6000U;
+      network.game_aborted = true;
+      return false;
+    }
+  }
+
+  const std::uint32_t simulation_clock =
+      network_game
+          ? state.glue.battle_net.simulation_turn * kSimulationTickMilliseconds
+          : clock;
+
   const starcraft::lang::IScriptProgramView program{
       status->iscript_bytes.data(), status->iscript_bytes.size()};
   (void)advance_camera_scroll(state);
   (void)advance_zerg_larvae(*status);
-  (void)advance_ai_players(*status, clock);
-  (void)advance_unit_production(*status, clock);
+  (void)advance_ai_players(*status, simulation_clock);
+  (void)advance_unit_production(*status, simulation_clock);
   (void)advance_technology_research(*status);
   advance_resource_display(*status);
   (void)advance_unit_movement(*status);
@@ -112,6 +159,7 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
   (void)advance_addon_construction(*status);
   (void)advance_protoss_building_construction(*status);
   (void)advance_zerg_building_construction(*status);
+  (void)advance_building_damage_states(*status);
   (void)play_pending_resource_error(state);
   evaluate_melee_outcome(state);
   // This is an O(creep-source-count) state check on ordinary turns. Terrain
@@ -122,7 +170,7 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
   // source crosses an MTXM tile. The recovered source snapshot preserves
   // that scheduling and leaves explored history intact between rebuilds.
   (void)rebuild_fog_of_war(*status);
-  (void)advance_selected_portrait(*status, clock);
+  (void)advance_selected_portrait(*status, simulation_clock);
 
   for (std::size_t index = 0; index < status->units.size(); ++index) {
     ScenarioUnitPreview &unit = status->units[index];
@@ -145,6 +193,8 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
     const UnitRenderAsset &asset = status->unit_assets[unit.asset_index];
     const std::uint32_t previous_weapon_events =
         unit.iscript_state.weapon_event_count;
+    const std::uint32_t previous_unit_events =
+        unit.iscript_state.unit_event_count;
     const std::uint32_t previous_sound_events =
         unit.iscript_state.sound_event_count;
     const std::uint32_t previous_overlay_events =
@@ -157,7 +207,7 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
         unit.iscript_state.sprite_event_count;
     const auto result = program.tick(
         unit.iscript_state,
-        clock ^ static_cast<std::uint32_t>(index * 0x9E3779B9U), 256,
+        simulation_clock ^ static_cast<std::uint32_t>(index * 0x9E3779B9U), 256,
         nullptr, status->scenario.tileset_id());
     if (unit.iscript_state.sound_event_count != previous_sound_events) {
       (void)queue_positional_game_sound(
@@ -180,6 +230,13 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
           previous_velocity_events) {
         unit.movement_speed = unit.iscript_state.flingy_velocity;
       }
+      if ((unit.iscript_state.weapon_event_count != previous_weapon_events ||
+           unit.iscript_state.unit_event_count != previous_unit_events) &&
+          unit.active_order == ActiveUnitOrder::attack &&
+          unit.attack_fire_pending) {
+        (void)fire_pending_unit_weapon(*status, unit,
+                                       unit.iscript_state.weapon_event);
+      }
       if (unit.iscript_state.weapon_event_count != previous_weapon_events &&
           unit.active_order == ActiveUnitOrder::gather &&
           (unit.iscript_state.weapon_event == 8U ||
@@ -197,15 +254,28 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
     if (unit.overlay_ready && !asset.overlay_frames.empty()) {
       const std::uint32_t previous_overlay_sound_events =
           unit.overlay_iscript_state.sound_event_count;
+      const std::uint32_t previous_overlay_weapon_events =
+          unit.overlay_iscript_state.weapon_event_count;
+      const std::uint32_t previous_overlay_unit_events =
+          unit.overlay_iscript_state.unit_event_count;
       const auto overlay_result = program.tick(
           unit.overlay_iscript_state,
-          clock ^ static_cast<std::uint32_t>(index * 0x85EBCA6BU) ^
+          simulation_clock ^ static_cast<std::uint32_t>(index * 0x85EBCA6BU) ^
               0x5A5A5A5AU,
           256, &unit.iscript_state, status->scenario.tileset_id());
       if (unit.overlay_iscript_state.sound_event_count !=
           previous_overlay_sound_events) {
         (void)queue_positional_game_sound(
             *status, unit.overlay_iscript_state.sound_event, unit.x, unit.y);
+      }
+      if ((unit.overlay_iscript_state.weapon_event_count !=
+               previous_overlay_weapon_events ||
+           unit.overlay_iscript_state.unit_event_count !=
+               previous_overlay_unit_events) &&
+          unit.active_order == ActiveUnitOrder::attack &&
+          unit.attack_fire_pending) {
+        (void)fire_pending_unit_weapon(
+            *status, unit, unit.overlay_iscript_state.weapon_event);
       }
       unit.iscript_state.image_target_flags |=
           unit.overlay_iscript_state.image_target_flags;
@@ -230,9 +300,13 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
           status->unit_assets[unit.dynamic_overlay_asset_index];
       const std::uint32_t previous_dynamic_sound_events =
           unit.dynamic_overlay_iscript_state.sound_event_count;
+      const std::uint32_t previous_dynamic_weapon_events =
+          unit.dynamic_overlay_iscript_state.weapon_event_count;
+      const std::uint32_t previous_dynamic_unit_events =
+          unit.dynamic_overlay_iscript_state.unit_event_count;
       const auto dynamic_result = program.tick(
           unit.dynamic_overlay_iscript_state,
-          clock ^ static_cast<std::uint32_t>(index * 0xC2B2AE35U) ^
+          simulation_clock ^ static_cast<std::uint32_t>(index * 0xC2B2AE35U) ^
               0x3C3C3C3CU,
           256, &unit.iscript_state, status->scenario.tileset_id());
       if (unit.dynamic_overlay_iscript_state.sound_event_count !=
@@ -240,6 +314,15 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
         (void)queue_positional_game_sound(
             *status, unit.dynamic_overlay_iscript_state.sound_event, unit.x,
             unit.y);
+      }
+      if ((unit.dynamic_overlay_iscript_state.weapon_event_count !=
+               previous_dynamic_weapon_events ||
+           unit.dynamic_overlay_iscript_state.unit_event_count !=
+               previous_dynamic_unit_events) &&
+          unit.active_order == ActiveUnitOrder::attack &&
+          unit.attack_fire_pending) {
+        (void)fire_pending_unit_weapon(
+            *status, unit, unit.dynamic_overlay_iscript_state.weapon_event);
       }
       unit.iscript_state.image_target_flags |=
           unit.dynamic_overlay_iscript_state.image_target_flags;
@@ -270,8 +353,11 @@ bool advance_game_loop_frame(const HWND window, RecoveryWindowState &state,
       unit.dying = false;
     }
   }
-  (void)advance_transient_images(*status, clock);
+  (void)advance_transient_images(*status, simulation_clock);
   drain_pending_game_sounds(state);
+  if (network_game) {
+    ++state.glue.battle_net.simulation_turn;
+  }
   return true;
 }
 

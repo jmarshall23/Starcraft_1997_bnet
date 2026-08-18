@@ -97,13 +97,13 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
       sprites.reserve(status->units.size() + status->transient_images.size());
       for (const ScenarioUnitPreview &unit : status->units) {
         if (sprite_intersects_world_viewport(*status, unit) &&
-            fog_unit_visible(*status, unit)) {
+            fog_unit_visible(*status, unit, status->local_player)) {
           sprites.push_back(&unit);
         }
       }
       for (const ScenarioUnitPreview &effect : status->transient_images) {
         if (sprite_intersects_world_viewport(*status, effect) &&
-            fog_unit_visible(*status, effect)) {
+            fog_unit_visible(*status, effect, status->local_player)) {
           sprites.push_back(&effect);
         }
       }
@@ -118,7 +118,7 @@ bool render_opengl(const HWND window, RecoveryWindowState &state) noexcept {
       }
     } catch (...) {
       for (const ScenarioUnitPreview &unit : status->units) {
-        if (fog_unit_visible(*status, unit)) {
+        if (fog_unit_visible(*status, unit, status->local_player)) {
           draw_scenario_unit_gl(*status, unit);
         }
       }

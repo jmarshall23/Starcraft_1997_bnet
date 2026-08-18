@@ -13,7 +13,8 @@ bool pylon_power_display_active(const BootstrapStatus &status) noexcept {
     return true;
   }
   for (const ScenarioUnitPreview &unit : status.units) {
-    if (unit.alive && unit.owner == 0U && unit.unit_type == 156U &&
+    if (unit.alive && unit.owner == status.local_player &&
+        unit.unit_type == 156U &&
         unit.construction_complete && unit.selected) {
       return true;
     }
@@ -29,7 +30,8 @@ void draw_pylon_power_fields_gl(const BootstrapStatus &status) {
   const UnitRenderAsset &asset =
       status.unit_assets[status.pylon_power_asset_index];
   for (const ScenarioUnitPreview &pylon : status.units) {
-    if (!pylon.alive || pylon.owner != 0U || pylon.unit_type != 156U ||
+    if (!pylon.alive || pylon.owner != status.local_player ||
+        pylon.unit_type != 156U ||
         !pylon.construction_complete) {
       continue;
     }

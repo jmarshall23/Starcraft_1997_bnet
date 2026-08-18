@@ -974,9 +974,17 @@ BattleUiAction UiNotification(BattleRuntime &runtime) noexcept {
     return BattleUiAction::redraw;
   }
   const bool changed = runtime.connected && SrvProcessClientReq(runtime);
+  if (runtime.pending_game_lobby_exit) {
+    runtime.pending_game_lobby_exit = false;
+    return BattleUiAction::leave_game_lobby;
+  }
   if (runtime.pending_game_lobby) {
     runtime.pending_game_lobby = false;
     return BattleUiAction::enter_game_lobby;
+  }
+  if (runtime.pending_game_start) {
+    runtime.pending_game_start = false;
+    return BattleUiAction::start_game;
   }
   return changed ? BattleUiAction::redraw : BattleUiAction::none;
 }

@@ -50,6 +50,8 @@ class MultiplayerScenario final {
   [[nodiscard]] bool configure_player(std::size_t player,
                                       std::uint8_t ownership,
                                       std::uint8_t race) noexcept;
+  [[nodiscard]] bool randomize_melee_start_locations(
+      std::uint32_t seed) noexcept;
 
  private:
   std::uint16_t width_{};

@@ -39,14 +39,64 @@ void post_resource_error(BootstrapStatus &status, const bool gas) noexcept {
   ++status.resource_error_count;
 }
 
+std::uint32_t player_minerals_for(const BootstrapStatus &status,
+                                  const std::uint8_t player) noexcept {
+  if (player == 0U) {
+    return status.player_minerals;
+  }
+  return player < status.player_mineral_stock.size()
+             ? status.player_mineral_stock[player]
+             : 0U;
+}
+
+std::uint32_t player_gas_for(const BootstrapStatus &status,
+                             const std::uint8_t player) noexcept {
+  if (player == 0U) {
+    return status.player_gas;
+  }
+  return player < status.player_gas_stock.size()
+             ? status.player_gas_stock[player]
+             : 0U;
+}
+
+void spend_player_resources(BootstrapStatus &status,
+                            const std::uint8_t player,
+                            const std::uint32_t minerals,
+                            const std::uint32_t gas) noexcept {
+  if (player == 0U) {
+    status.player_minerals -= minerals;
+    status.player_gas -= gas;
+    status.player_mineral_stock[0] = status.player_minerals;
+    status.player_gas_stock[0] = status.player_gas;
+  } else if (player < status.player_mineral_stock.size()) {
+    status.player_mineral_stock[player] -= minerals;
+    status.player_gas_stock[player] -= gas;
+  }
+}
+
+void refund_player_resources(BootstrapStatus &status,
+                             const std::uint8_t player,
+                             const std::uint32_t minerals,
+                             const std::uint32_t gas) noexcept {
+  if (player == 0U) {
+    status.player_minerals += minerals;
+    status.player_gas += gas;
+    status.player_mineral_stock[0] = status.player_minerals;
+    status.player_gas_stock[0] = status.player_gas;
+  } else if (player < status.player_mineral_stock.size()) {
+    status.player_mineral_stock[player] += minerals;
+    status.player_gas_stock[player] += gas;
+  }
+}
+
 bool resource_cost_available(BootstrapStatus &status,
                              const std::uint32_t minerals,
                              const std::uint32_t gas) noexcept {
-  if (status.player_minerals < minerals) {
+  if (player_minerals_for(status, status.command_player) < minerals) {
     post_resource_error(status, false);
     return false;
   }
-  if (status.player_gas < gas) {
+  if (player_gas_for(status, status.command_player) < gas) {
     post_resource_error(status, true);
     return false;
   }
@@ -68,18 +118,27 @@ void advance_resource_display(BootstrapStatus &status) noexcept {
         (std::clamp)(next, static_cast<std::int64_t>(0),
                      static_cast<std::int64_t>(UINT32_MAX)));
   };
-  approach(status.displayed_gas, status.player_gas);
-  approach(status.displayed_minerals, status.player_minerals);
+  const std::uint32_t gas =
+      status.local_player == 0U
+          ? status.player_gas
+          : status.player_gas_stock[status.local_player];
+  const std::uint32_t minerals =
+      status.local_player == 0U
+          ? status.player_minerals
+          : status.player_mineral_stock[status.local_player];
+  approach(status.displayed_gas, gas);
+  approach(status.displayed_minerals, minerals);
 }
 
 std::array<std::uint32_t, 2>
-local_supply(const BootstrapStatus &status) noexcept {
-  if (!status.unit_traits_ready || status.local_race >= 3U) {
+player_supply(const BootstrapStatus &status, const std::uint8_t owner,
+              const std::uint8_t race_value) noexcept {
+  if (!status.unit_traits_ready || race_value >= 3U || owner >= 8U) {
     return {{0U, 0U}};
   }
   starcraft::lang::UnitTraitsTable effective_traits = status.unit_traits;
   starcraft::lang::MeleeUnitTypes local_types{};
-  if (!starcraft::lang::melee_unit_types(status.local_race, local_types)) {
+  if (!starcraft::lang::melee_unit_types(race_value, local_types)) {
     return {{0U, 0U}};
   }
   // Explicit requested retail compatibility override; the licensed beta DAT
@@ -108,10 +167,10 @@ local_supply(const BootstrapStatus &status) noexcept {
                                                      effective_traits, counts);
     }
   }
-  const auto race = static_cast<starcraft::lang::Race>(status.local_race);
-  std::uint32_t used = starcraft::lang::supply_used(race, 0U, counts.supply);
+  const auto race = static_cast<starcraft::lang::Race>(race_value);
+  std::uint32_t used = starcraft::lang::supply_used(race, owner, counts.supply);
   for (const ScenarioUnitPreview &producer : status.units) {
-    if (!producer.alive || producer.owner != 0U) {
+    if (!producer.alive || producer.owner != owner) {
       continue;
     }
     for (std::size_t index = 0; index < producer.production_queue.count();
@@ -124,8 +183,13 @@ local_supply(const BootstrapStatus &status) noexcept {
   }
   return {{
       used,
-      starcraft::lang::supply_provided_capped(race, 0U, counts.supply),
+      starcraft::lang::supply_provided_capped(race, owner, counts.supply),
   }};
+}
+
+std::array<std::uint32_t, 2>
+local_supply(const BootstrapStatus &status) noexcept {
+  return player_supply(status, status.local_player, status.local_race);
 }
 
 std::size_t resource_supply_icon_frame(const std::uint8_t race) noexcept {

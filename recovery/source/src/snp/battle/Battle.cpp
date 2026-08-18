@@ -26,6 +26,10 @@ bool UiInitialize(BattleRuntime &runtime) noexcept {
   runtime.hovered_control = -1;
   runtime.pressed_control = -1;
   runtime.pending_game_lobby = false;
+  runtime.pending_game_lobby_exit = false;
+  runtime.pending_game_start = false;
+  runtime.game_started = false;
+  runtime.game_aborted = false;
   runtime.connect_pending = false;
   runtime.connect_artwork_presented = false;
   return SrvInitialize(runtime);

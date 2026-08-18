@@ -130,7 +130,7 @@ constexpr std::uint8_t kFogLight = kFullLight >> 1U;
 [[nodiscard]] std::uint8_t tile_light(const BootstrapStatus &status,
                                       const int tile_x,
                                       const int tile_y) noexcept {
-  switch (raw_fog_tile_state(status, tile_x, tile_y, 0U)) {
+  switch (raw_fog_tile_state(status, tile_x, tile_y, status.local_player)) {
   case FogTileState::visible:
     return kFullLight;
   case FogTileState::explored:
@@ -385,7 +385,8 @@ bool rebuild_fog_render_surfaces(BootstrapStatus &status) noexcept {
               static_cast<std::size_t>(status.minimap_content_y + y) * 128U +
               status.minimap_content_x + x;
           const FogTileState state =
-              raw_fog_tile_state(status, tile_x, tile_y, 0U);
+              raw_fog_tile_state(status, tile_x, tile_y,
+                                 status.local_player);
           if (state == FogTileState::unexplored) {
             status.fogged_minimap.bgra[pixel] = 0xFF000000U;
           } else if (state == FogTileState::explored) {

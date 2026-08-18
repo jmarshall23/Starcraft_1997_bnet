@@ -38,6 +38,8 @@ enum class BattleUiAction : std::uint8_t {
   redraw,
   leave_battle_net,
   enter_game_lobby,
+  leave_game_lobby,
+  start_game,
 };
 
 enum class EditControl : std::uint8_t {
@@ -74,6 +76,39 @@ struct BattleMapEntry {
   std::uint32_t players{};
 };
 
+struct LobbyPlayer {
+  std::uint8_t slot{};
+  std::string name{};
+};
+
+enum class LobbySlotKind : std::uint8_t {
+  closed,
+  open,
+  computer,
+  human,
+};
+
+struct LobbySlotEntry {
+  std::uint8_t slot{};
+  LobbySlotKind kind{LobbySlotKind::closed};
+  std::uint8_t race{1U};
+};
+
+struct PlayerTurnPayload {
+  std::uint8_t slot{};
+  std::vector<std::uint8_t> payload{};
+};
+
+struct CommittedTurn {
+  std::uint32_t turn{};
+  std::vector<PlayerTurnPayload> players{};
+};
+
+struct PendingOutgoingTurn {
+  std::uint32_t turn{};
+  std::vector<std::uint8_t> payload{};
+};
+
 struct BattleRuntime {
   BattleScreen screen{BattleScreen::connecting};
   EditControl edit_control{EditControl::account_name};
@@ -98,6 +133,16 @@ struct BattleRuntime {
   std::vector<std::string> chat_lines{};
   std::vector<GameEntry> games{};
   std::vector<BattleMapEntry> available_maps{};
+  std::vector<LobbyPlayer> lobby_players{};
+  std::vector<LobbySlotEntry> lobby_slots{};
+  std::vector<CommittedTurn> committed_turns{};
+  std::vector<PendingOutgoingTurn> outgoing_turns{};
+  std::uint32_t game_identifier{};
+  std::uint32_t game_seed{1U};
+  std::uint32_t simulation_turn{};
+  std::uint32_t next_turn_to_submit{};
+  std::uint8_t local_player_slot{};
+  std::uint8_t game_player_count{};
   std::size_t selected_channel{};
   std::size_t selected_game{};
   std::size_t selected_map{};
@@ -109,7 +154,13 @@ struct BattleRuntime {
   bool connected{};
   bool authenticated{};
   bool pending_game_lobby{};
+  bool pending_game_lobby_exit{};
+  bool pending_game_start{};
+  bool game_host{};
+  bool game_started{};
+  bool game_aborted{};
   bool connect_pending{};
+  bool local_server_launch_attempted{};
   // DrawBattleNet marks this only after the recovered connect dialog artwork
   // has reached the OpenGL surface. UiNotification is then allowed to enter
   // COnnect.cpp and begin socket discovery on the following loop iteration.
@@ -197,6 +248,16 @@ void SrvDisconnect(BattleRuntime &runtime) noexcept;
                                            std::uint32_t maximum_players) noexcept;
 [[nodiscard]] bool SrvNotifyJoin(BattleRuntime &runtime,
                                  std::uint32_t game_identifier) noexcept;
+[[nodiscard]] bool SrvSetLobbySlot(BattleRuntime &runtime, std::uint8_t slot,
+                                   LobbySlotKind kind,
+                                   std::uint8_t race) noexcept;
+[[nodiscard]] bool SrvLeaveGame(BattleRuntime &runtime) noexcept;
+[[nodiscard]] bool SrvStartGame(BattleRuntime &runtime) noexcept;
+[[nodiscard]] bool SrvSubmitTurn(BattleRuntime &runtime, std::uint32_t turn,
+                                 const std::vector<std::uint8_t> &payload) noexcept;
+[[nodiscard]] bool SrvTakeCommittedTurn(BattleRuntime &runtime,
+                                        std::uint32_t turn,
+                                        CommittedTurn &commit) noexcept;
 [[nodiscard]] bool SrvProcessClientReq(BattleRuntime &runtime) noexcept;
 
 } // namespace battle

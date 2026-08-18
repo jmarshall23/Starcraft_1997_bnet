@@ -5,11 +5,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <queue>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -77,6 +81,57 @@ struct OpenNodeLater {
     return left.index > right.index;
   }
 };
+
+struct SearchWorkspace {
+  std::vector<std::uint8_t> passability{};
+  std::vector<std::uint8_t> passability_epoch{};
+  std::vector<std::uint8_t> goal_epoch{};
+  std::vector<std::uint8_t> cost_epoch{};
+  std::vector<std::uint8_t> closed_epoch{};
+  std::vector<int> cost{};
+  std::vector<int> parent{};
+  std::vector<OpenNode> open{};
+  std::vector<PathPoint> reversed{};
+  std::uint8_t epoch{};
+
+  bool prepare(const std::size_t node_count) {
+    if (passability.size() != node_count) {
+      passability.assign(node_count, 0U);
+      passability_epoch.assign(node_count, 0U);
+      goal_epoch.assign(node_count, 0U);
+      cost_epoch.assign(node_count, 0U);
+      closed_epoch.assign(node_count, 0U);
+      cost.resize(node_count);
+      parent.resize(node_count);
+      epoch = 1U;
+    } else {
+      ++epoch;
+      if (epoch == 0U) {
+        std::fill(passability_epoch.begin(), passability_epoch.end(),
+                  std::uint8_t{0});
+        std::fill(goal_epoch.begin(), goal_epoch.end(), std::uint8_t{0});
+        std::fill(cost_epoch.begin(), cost_epoch.end(), std::uint8_t{0});
+        std::fill(closed_epoch.begin(), closed_epoch.end(), std::uint8_t{0});
+        epoch = 1U;
+      }
+    }
+    open.clear();
+    reversed.clear();
+    return true;
+  }
+};
+
+bool find_unit_path_with_workspace(
+    const PathingMap& map,
+    const std::uint16_t start_x,
+    const std::uint16_t start_y,
+    const std::uint16_t target_x,
+    const std::uint16_t target_y,
+    const std::uint16_t mover_width,
+    const std::uint16_t mover_height,
+    const std::vector<PathObstacle>& obstacles,
+    std::vector<PathPoint>& output,
+    SearchWorkspace& workspace) noexcept;
 
 }  // namespace
 
@@ -239,6 +294,25 @@ bool find_unit_path(
     const std::uint16_t mover_height,
     const std::vector<PathObstacle>& obstacles,
     std::vector<PathPoint>& output) noexcept {
+  SearchWorkspace workspace{};
+  return find_unit_path_with_workspace(
+      map, start_x, start_y, target_x, target_y, mover_width, mover_height,
+      obstacles, output, workspace);
+}
+
+namespace {
+
+bool find_unit_path_with_workspace(
+    const PathingMap& map,
+    const std::uint16_t start_x,
+    const std::uint16_t start_y,
+    const std::uint16_t target_x,
+    const std::uint16_t target_y,
+    const std::uint16_t mover_width,
+    const std::uint16_t mover_height,
+    const std::vector<PathObstacle>& obstacles,
+    std::vector<PathPoint>& output,
+    SearchWorkspace& workspace) noexcept {
   output.clear();
   if (!map.valid() || start_x >= map.pixel_width() || start_y >= map.pixel_height() ||
       target_x >= map.pixel_width() || target_y >= map.pixel_height()) {
@@ -263,8 +337,10 @@ bool find_unit_path(
     const int grid_width = map.minitile_width();
     const int grid_height = map.minitile_height();
     const int node_count = grid_width * grid_height;
-    std::vector<std::int8_t> passability_cache(
-        static_cast<std::size_t>(node_count), -1);
+    if (!workspace.prepare(static_cast<std::size_t>(node_count))) {
+      return false;
+    }
+    const std::uint8_t epoch = workspace.epoch;
     auto node_x = [grid_width](const int index) { return index % grid_width; };
     auto node_y = [grid_width](const int index) { return index / grid_width; };
     auto center_x = [](const int x) { return x * kMinitilePixels + kMinitilePixels / 2; };
@@ -273,15 +349,17 @@ bool find_unit_path(
       if (x < 0 || y < 0 || x >= grid_width || y >= grid_height) {
         return false;
       }
-      std::int8_t &cached = passability_cache[static_cast<std::size_t>(
-          y * grid_width + x)];
-      if (cached < 0) {
-        cached = path_position_passable(map, center_x(x), center_y(y),
-                                        mover_width, mover_height, obstacles)
-                     ? 1
-                     : 0;
+      const std::size_t index =
+          static_cast<std::size_t>(y * grid_width + x);
+      if (workspace.passability_epoch[index] != epoch) {
+        workspace.passability[index] =
+            path_position_passable(map, center_x(x), center_y(y), mover_width,
+                                   mover_height, obstacles)
+                ? 1U
+                : 0U;
+        workspace.passability_epoch[index] = epoch;
       }
-      return cached != 0;
+      return workspace.passability[index] != 0U;
     };
 
     int start_cell_x = start_x / kMinitilePixels;
@@ -309,7 +387,6 @@ bool find_unit_path(
 
     const int target_cell_x = target_x / kMinitilePixels;
     const int target_cell_y = target_y / kMinitilePixels;
-    std::vector<std::uint8_t> goal(static_cast<std::size_t>(node_count));
     bool goal_found{};
     for (int radius = 0; radius < (std::max)(grid_width, grid_height) && !goal_found;
          ++radius) {
@@ -320,7 +397,8 @@ bool find_unit_path(
               !cell_passable(x, y)) {
             continue;
           }
-          goal[static_cast<std::size_t>(y * grid_width + x)] = 1;
+          workspace.goal_epoch[static_cast<std::size_t>(y * grid_width + x)] =
+              epoch;
           goal_found = true;
         }
       }
@@ -331,14 +409,20 @@ bool find_unit_path(
 
     const int start_index = start_cell_y * grid_width + start_cell_x;
     constexpr int infinity = (std::numeric_limits<int>::max)() / 4;
-    std::vector<int> cost(static_cast<std::size_t>(node_count), infinity);
-    std::vector<int> parent(static_cast<std::size_t>(node_count), -1);
-    std::vector<std::uint8_t> closed(static_cast<std::size_t>(node_count));
-    std::priority_queue<OpenNode, std::vector<OpenNode>, OpenNodeLater> open;
-    cost[start_index] = 0;
+    const auto node_cost = [&](const int index) noexcept {
+      return workspace.cost_epoch[static_cast<std::size_t>(index)] == epoch
+                 ? workspace.cost[static_cast<std::size_t>(index)]
+                 : infinity;
+    };
+    workspace.cost[static_cast<std::size_t>(start_index)] = 0;
+    workspace.parent[static_cast<std::size_t>(start_index)] = -1;
+    workspace.cost_epoch[static_cast<std::size_t>(start_index)] = epoch;
     const int initial_heuristic = octile_distance(
         start_cell_x, start_cell_y, target_cell_x, target_cell_y);
-    open.push({initial_heuristic, initial_heuristic, start_index});
+    const OpenNodeLater later{};
+    workspace.open.push_back(
+        {initial_heuristic, initial_heuristic, start_index});
+    std::push_heap(workspace.open.begin(), workspace.open.end(), later);
 
     // CUnitPath's area queue at 0x00495A70 expands the same eight compass
     // neighbors and conditionally suppresses corner transitions. Keep a fixed
@@ -348,14 +432,17 @@ bool find_unit_path(
         {{0, 1}},  {{-1, 1}}, {{-1, 0}}, {{-1, -1}},
     }};
     int reached{-1};
-    while (!open.empty()) {
-      const OpenNode current = open.top();
-      open.pop();
-      if (closed[current.index] != 0) {
+    while (!workspace.open.empty()) {
+      std::pop_heap(workspace.open.begin(), workspace.open.end(), later);
+      const OpenNode current = workspace.open.back();
+      workspace.open.pop_back();
+      const std::size_t current_index =
+          static_cast<std::size_t>(current.index);
+      if (workspace.closed_epoch[current_index] == epoch) {
         continue;
       }
-      closed[current.index] = 1;
-      if (goal[current.index] != 0) {
+      workspace.closed_epoch[current_index] = epoch;
+      if (workspace.goal_epoch[current_index] == epoch) {
         reached = current.index;
         break;
       }
@@ -374,47 +461,52 @@ bool find_unit_path(
           continue;
         }
         const int next_index = next_y * grid_width + next_x;
-        const int next_cost = cost[current.index] +
+        const int next_cost = node_cost(current.index) +
                               (diagonal ? kDiagonalCost : kStraightCost);
-        if (next_cost >= cost[next_index]) {
+        if (next_cost >= node_cost(next_index)) {
           continue;
         }
-        cost[next_index] = next_cost;
-        parent[next_index] = current.index;
+        const std::size_t next = static_cast<std::size_t>(next_index);
+        workspace.cost[next] = next_cost;
+        workspace.parent[next] = current.index;
+        workspace.cost_epoch[next] = epoch;
         const int heuristic = octile_distance(
             next_x, next_y, target_cell_x, target_cell_y);
-        open.push({next_cost + heuristic, heuristic, next_index});
+        workspace.open.push_back(
+            {next_cost + heuristic, heuristic, next_index});
+        std::push_heap(workspace.open.begin(), workspace.open.end(), later);
       }
     }
     if (reached < 0) {
       return false;
     }
 
-    std::vector<PathPoint> reversed;
-    for (int node = reached; node != start_index && node >= 0; node = parent[node]) {
-      reversed.push_back({
+    for (int node = reached; node != start_index && node >= 0;
+         node = workspace.parent[static_cast<std::size_t>(node)]) {
+      workspace.reversed.push_back({
           static_cast<std::uint16_t>(center_x(node_x(node))),
           static_cast<std::uint16_t>(center_y(node_y(node))),
       });
     }
-    if (reversed.empty()) {
+    if (workspace.reversed.empty()) {
       if (exact_target_passable) {
         output.push_back({target_x, target_y});
       }
       return !output.empty();
     }
-    std::reverse(reversed.begin(), reversed.end());
+    std::reverse(workspace.reversed.begin(), workspace.reversed.end());
     if (exact_target_passable) {
-      reversed.back() = {target_x, target_y};
+      workspace.reversed.back() = {target_x, target_y};
     }
 
     int cursor_x = start_x;
     int cursor_y = start_y;
     std::size_t begin{};
-    while (begin < reversed.size()) {
+    while (begin < workspace.reversed.size()) {
       std::size_t furthest = begin;
-      for (std::size_t candidate = reversed.size(); candidate > begin; --candidate) {
-        const PathPoint& point = reversed[candidate - 1U];
+      for (std::size_t candidate = workspace.reversed.size(); candidate > begin;
+           --candidate) {
+        const PathPoint& point = workspace.reversed[candidate - 1U];
         if (segment_passable(
                 map,
                 cursor_x,
@@ -428,9 +520,9 @@ bool find_unit_path(
           break;
         }
       }
-      output.push_back(reversed[furthest]);
-      cursor_x = reversed[furthest].x;
-      cursor_y = reversed[furthest].y;
+      output.push_back(workspace.reversed[furthest]);
+      cursor_x = workspace.reversed[furthest].x;
+      cursor_y = workspace.reversed[furthest].y;
       begin = furthest + 1U;
     }
     return !output.empty();
@@ -438,6 +530,188 @@ bool find_unit_path(
     output.clear();
     return false;
   }
+}
+
+}  // namespace
+
+class PathfindingExecutor::Impl final {
+ public:
+  explicit Impl(std::size_t requested_workers) {
+    if (requested_workers == 0U) {
+      const unsigned hardware = std::thread::hardware_concurrency();
+      requested_workers = hardware > 2U ? hardware - 2U : 1U;
+      requested_workers = (std::min)(requested_workers, std::size_t{4U});
+    }
+    requested_workers = (std::max)(requested_workers, std::size_t{1U});
+    try {
+      workers_.reserve(requested_workers);
+      for (std::size_t index = 0U; index < requested_workers; ++index) {
+        workers_.emplace_back([this] { worker_loop(); });
+      }
+    } catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        stopping_ = true;
+      }
+      work_ready_.notify_all();
+      for (std::thread& worker : workers_) {
+        if (worker.joinable()) {
+          worker.join();
+        }
+      }
+      workers_.clear();
+    }
+  }
+
+  ~Impl() {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      stopping_ = true;
+    }
+    work_ready_.notify_all();
+    for (std::thread& worker : workers_) {
+      if (worker.joinable()) {
+        worker.join();
+      }
+    }
+  }
+
+  bool find_paths(const PathingMap& map,
+                  const std::vector<PathRequest>& requests,
+                  std::vector<PathResult>& results) noexcept {
+    std::lock_guard<std::mutex> submit_lock(submit_mutex_);
+    try {
+      results.clear();
+      results.resize(requests.size());
+      if (requests.empty()) {
+        return true;
+      }
+      if (workers_.empty()) {
+        for (std::size_t index = 0U; index < requests.size(); ++index) {
+          find_one(map, requests[index], results[index], serial_workspace_);
+        }
+        return true;
+      }
+
+      std::uint64_t batch{};
+      {
+        std::lock_guard<std::mutex> state_lock(state_mutex_);
+        map_ = &map;
+        requests_ = &requests;
+        results_ = &results;
+        next_request_.store(0U, std::memory_order_relaxed);
+        remaining_workers_.store(workers_.size(), std::memory_order_relaxed);
+        batch = ++batch_generation_;
+      }
+      work_ready_.notify_all();
+
+      std::unique_lock<std::mutex> state_lock(state_mutex_);
+      batch_finished_.wait(state_lock, [&] {
+        return completed_generation_ >= batch || stopping_;
+      });
+      map_ = nullptr;
+      requests_ = nullptr;
+      results_ = nullptr;
+      return completed_generation_ >= batch;
+    } catch (...) {
+      results.clear();
+      return false;
+    }
+  }
+
+  std::size_t worker_count() const noexcept {
+    return workers_.empty() ? 1U : workers_.size();
+  }
+
+ private:
+  static void find_one(const PathingMap& map, const PathRequest& request,
+                       PathResult& result,
+                       SearchWorkspace& workspace) noexcept {
+    result.request_id = request.request_id;
+    result.found = find_unit_path_with_workspace(
+        map, request.start_x, request.start_y, request.target_x,
+        request.target_y, request.mover_width, request.mover_height,
+        request.obstacles, result.path, workspace);
+  }
+
+  void worker_loop() noexcept {
+    SearchWorkspace workspace{};
+    std::uint64_t observed_generation{};
+    for (;;) {
+      const PathingMap* map{};
+      const std::vector<PathRequest>* requests{};
+      std::vector<PathResult>* results{};
+      std::uint64_t generation{};
+      {
+        std::unique_lock<std::mutex> lock(state_mutex_);
+        work_ready_.wait(lock, [&] {
+          return stopping_ || batch_generation_ != observed_generation;
+        });
+        if (stopping_) {
+          return;
+        }
+        generation = batch_generation_;
+        observed_generation = generation;
+        map = map_;
+        requests = requests_;
+        results = results_;
+      }
+
+      if (map != nullptr && requests != nullptr && results != nullptr) {
+        for (;;) {
+          const std::size_t index =
+              next_request_.fetch_add(1U, std::memory_order_relaxed);
+          if (index >= requests->size()) {
+            break;
+          }
+          find_one(*map, (*requests)[index], (*results)[index], workspace);
+        }
+      }
+
+      if (remaining_workers_.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
+        {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          completed_generation_ = generation;
+        }
+        batch_finished_.notify_one();
+      }
+    }
+  }
+
+  std::vector<std::thread> workers_{};
+  SearchWorkspace serial_workspace_{};
+  std::mutex submit_mutex_{};
+  mutable std::mutex state_mutex_{};
+  std::condition_variable work_ready_{};
+  std::condition_variable batch_finished_{};
+  std::atomic<std::size_t> next_request_{0U};
+  std::atomic<std::size_t> remaining_workers_{0U};
+  const PathingMap* map_{};
+  const std::vector<PathRequest>* requests_{};
+  std::vector<PathResult>* results_{};
+  std::uint64_t batch_generation_{};
+  std::uint64_t completed_generation_{};
+  bool stopping_{};
+};
+
+PathfindingExecutor::PathfindingExecutor(const std::size_t worker_count) noexcept {
+  try {
+    impl_ = std::make_unique<Impl>(worker_count);
+  } catch (...) {
+    impl_.reset();
+  }
+}
+
+PathfindingExecutor::~PathfindingExecutor() = default;
+
+bool PathfindingExecutor::find_paths(
+    const PathingMap& map, const std::vector<PathRequest>& requests,
+    std::vector<PathResult>& results) noexcept {
+  return impl_ != nullptr && impl_->find_paths(map, requests, results);
+}
+
+std::size_t PathfindingExecutor::worker_count() const noexcept {
+  return impl_ == nullptr ? 1U : impl_->worker_count();
 }
 
 }  // namespace starcraft::lang

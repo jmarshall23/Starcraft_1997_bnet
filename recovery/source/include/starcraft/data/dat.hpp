@@ -182,6 +182,8 @@ class CoreDataSet final {
   [[nodiscard]] bool extract_unit_traits(starcraft::lang::UnitTraitsTable& traits) const noexcept;
   [[nodiscard]] std::string image_grp_path(std::uint16_t image_id) const;
   [[nodiscard]] std::string
+  image_damage_overlay_path(std::uint16_t image_id) const;
+  [[nodiscard]] std::string
   image_special_overlay_path(std::uint16_t image_id) const;
   [[nodiscard]] bool image_iscript_id(
       std::uint16_t image_id,
@@ -236,12 +238,18 @@ class CoreDataSet final {
   [[nodiscard]] bool weapon_simulation_traits(
       std::uint16_t weapon,
       WeaponSimulationTraits& traits) const noexcept;
+  [[nodiscard]] bool weapon_display_traits(
+      std::uint16_t weapon, std::uint16_t& label_string_id,
+      std::uint16_t& icon) const noexcept;
   [[nodiscard]] bool order_spell_traits(
       std::uint16_t order, std::uint8_t& weapon, std::uint8_t& technology,
       std::uint8_t& animation) const noexcept;
   [[nodiscard]] bool upgrade_research_traits(
       std::uint16_t upgrade,
       UpgradeResearchTraits& traits) const noexcept;
+  [[nodiscard]] bool upgrade_display_traits(
+      std::uint16_t upgrade, std::uint16_t& label_string_id,
+      std::uint16_t& icon) const noexcept;
   [[nodiscard]] std::string unit_portrait_path(
       std::uint16_t unit_type,
       std::uint8_t owner,

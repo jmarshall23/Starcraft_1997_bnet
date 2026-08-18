@@ -25,8 +25,10 @@ namespace {
          (static_cast<std::uint32_t>(bytes[3]) << 24U);
 }
 
-[[nodiscard]] bool decode_special_overlay_locations(
-    const std::vector<std::uint8_t> &bytes, UnitRenderAsset &asset) {
+[[nodiscard]] bool decode_overlay_locations(
+    const std::vector<std::uint8_t> &bytes, std::uint32_t &output_frame_count,
+    std::uint32_t &output_point_count,
+    std::vector<std::int8_t> &output_points) {
   if (bytes.size() < 8U) {
     return false;
   }
@@ -54,9 +56,9 @@ namespace {
             static_cast<std::int8_t>(bytes[offset + index]);
       }
     }
-    asset.special_overlay_frame_count = frame_count;
-    asset.special_overlay_point_count = point_count;
-    asset.special_overlay_points = std::move(points);
+    output_frame_count = frame_count;
+    output_point_count = point_count;
+    output_points = std::move(points);
     return true;
   } catch (...) {
     return false;
@@ -155,7 +157,22 @@ bool load_unit_render_asset(starcraft::runtime::StormModule &storm,
   if (!asset.special_overlay_path.empty()) {
     std::vector<std::uint8_t> locations;
     if (!storm.load_file(asset.special_overlay_path.c_str(), locations) ||
-        !decode_special_overlay_locations(locations, asset)) {
+        !decode_overlay_locations(locations,
+                                  asset.special_overlay_frame_count,
+                                  asset.special_overlay_point_count,
+                                  asset.special_overlay_points)) {
+      return false;
+    }
+  }
+
+  asset.damage_overlay_path = data.image_damage_overlay_path(image_id);
+  if (!asset.damage_overlay_path.empty()) {
+    std::vector<std::uint8_t> locations;
+    if (!storm.load_file(asset.damage_overlay_path.c_str(), locations) ||
+        !decode_overlay_locations(locations,
+                                  asset.damage_overlay_frame_count,
+                                  asset.damage_overlay_point_count,
+                                  asset.damage_overlay_points)) {
       return false;
     }
   }

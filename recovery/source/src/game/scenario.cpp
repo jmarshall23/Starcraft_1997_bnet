@@ -152,4 +152,41 @@ bool MultiplayerScenario::configure_player(const std::size_t player,
   return true;
 }
 
+bool MultiplayerScenario::randomize_melee_start_locations(
+    std::uint32_t seed) noexcept {
+  if (!valid_) {
+    return false;
+  }
+
+  std::array<std::size_t, 8> active_players{};
+  std::array<ScenarioStartLocation, 8> available_starts{};
+  std::size_t active_count{};
+  std::size_t start_count{};
+  for (std::size_t player = 0; player < 8U; ++player) {
+    if (players_[player].ownership != 0U) {
+      active_players[active_count++] = player;
+    }
+    if (start_locations_[player].present) {
+      available_starts[start_count++] = start_locations_[player];
+    }
+  }
+  if (active_count == 0U || start_count < active_count) {
+    return false;
+  }
+
+  // net_misc.cpp::sub_4797B0 supplies StarCraft's synchronized 15-bit LCG.
+  // Shuffle every authored melee marker, including currently closed slots, so
+  // a two-player match on a four-player map can begin at any two locations.
+  for (std::size_t remaining = start_count; remaining > 1U; --remaining) {
+    seed = 22695477U * seed + 1U;
+    const std::uint32_t random = (seed >> 16U) & 0x7FFFU;
+    const std::size_t other = random % remaining;
+    std::swap(available_starts[remaining - 1U], available_starts[other]);
+  }
+  for (std::size_t index = 0; index < active_count; ++index) {
+    start_locations_[active_players[index]] = available_starts[index];
+  }
+  return true;
+}
+
 }  // namespace starcraft::game

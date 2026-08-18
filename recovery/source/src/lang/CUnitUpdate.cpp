@@ -392,9 +392,13 @@ collision_body_for(const ScenarioUnitPreview &mover, const int mover_x,
 bool unit_footprints_overlap_at(const ScenarioUnitPreview &mover,
                                 const int mover_x, const int mover_y,
                                 const ScenarioUnitPreview &obstacle) noexcept {
-  if (!obstacle.alive || obstacle.sprite_hidden || mover.selection_width == 0 ||
-      mover.selection_height == 0 || obstacle.selection_width == 0 ||
-      obstacle.selection_height == 0) {
+  const auto has_collision_shape = [](const ScenarioUnitPreview &unit) {
+    return (unit.selection_width != 0U && unit.selection_height != 0U) ||
+           unit.collision_left != 0U || unit.collision_top != 0U ||
+           unit.collision_right != 0U || unit.collision_bottom != 0U;
+  };
+  if (!obstacle.alive || obstacle.sprite_hidden ||
+      !has_collision_shape(mover) || !has_collision_shape(obstacle)) {
     return false;
   }
   const starcraft::lang::UnitCollisionRect moving =
@@ -410,9 +414,13 @@ bool unit_footprints_overlap_at(const ScenarioUnitPreview &mover,
 bool unit_rectangles_overlap_at(const ScenarioUnitPreview &mover,
                                 const int mover_x, const int mover_y,
                                 const ScenarioUnitPreview &obstacle) noexcept {
-  if (!obstacle.alive || obstacle.sprite_hidden || mover.selection_width == 0 ||
-      mover.selection_height == 0 || obstacle.selection_width == 0 ||
-      obstacle.selection_height == 0) {
+  const auto has_collision_shape = [](const ScenarioUnitPreview &unit) {
+    return (unit.selection_width != 0U && unit.selection_height != 0U) ||
+           unit.collision_left != 0U || unit.collision_top != 0U ||
+           unit.collision_right != 0U || unit.collision_bottom != 0U;
+  };
+  if (!obstacle.alive || obstacle.sprite_hidden ||
+      !has_collision_shape(mover) || !has_collision_shape(obstacle)) {
     return false;
   }
   return starcraft::lang::unit_collision_rects_overlap(
@@ -542,6 +550,16 @@ bool settle_created_unit(BootstrapStatus &status, ScenarioUnitPreview &unit,
 bool is_gas_refinery_type(const std::uint16_t unit_type) noexcept {
   // CUnitHarvest.cpp::sub_42C310/sub_42C340 use this exact three-type test.
   return unit_type == 110U || unit_type == 149U || unit_type == 157U;
+}
+
+bool is_harvestable_resource_source(
+    const ScenarioUnitPreview &unit) noexcept {
+  // CUnitHarvest.cpp::sub_42C310/sub_42C340 identify an owned, completed gas
+  // building by its three unit IDs in addition to the generic resource-source
+  // DAT flag. Keep that recovered test explicit so a Refinery remains a valid
+  // right-click target through the construction-image/normal-image handoff.
+  return (unit.dat_flags & 0x2000U) != 0U ||
+         is_gas_refinery_type(unit.unit_type);
 }
 
 bool eject_worker_from_refinery(BootstrapStatus &status,
@@ -676,6 +694,84 @@ bool plan_scv_path(BootstrapStatus &status, ScenarioUnitPreview &unit,
   return true;
 }
 
+bool plan_scv_paths_batch(
+    BootstrapStatus &status,
+    const std::vector<ScenarioUnitPreview *> &units,
+    const std::uint16_t target_x,
+    const std::uint16_t target_y,
+    std::vector<bool> &planned) noexcept {
+  try {
+    planned.assign(units.size(), false);
+    if (units.empty()) {
+      return true;
+    }
+    std::vector<starcraft::lang::PathRequest> requests;
+    requests.reserve(units.size());
+    for (std::size_t index = 0U; index < units.size(); ++index) {
+      ScenarioUnitPreview *const unit = units[index];
+      if (unit == nullptr) {
+        continue;
+      }
+      if (is_airborne(*unit)) {
+        planned[index] = plan_scv_path(status, *unit, target_x, target_y);
+        continue;
+      }
+      starcraft::lang::PathRequest request{};
+      request.request_id = index;
+      request.start_x = unit->x;
+      request.start_y = unit->y;
+      request.target_x = target_x;
+      request.target_y = target_y;
+      request.mover_width = unit->selection_width;
+      request.mover_height = unit->selection_height;
+      if (!collect_building_obstacles(status, unit, request.obstacles)) {
+        continue;
+      }
+      requests.push_back(std::move(request));
+    }
+
+    if (requests.empty()) {
+      return true;
+    }
+    static starcraft::lang::PathfindingExecutor executor{};
+    std::vector<starcraft::lang::PathResult> results;
+    if (!executor.find_paths(status.pathing_map, requests, results)) {
+      results.clear();
+      results.resize(requests.size());
+      for (std::size_t index = 0U; index < requests.size(); ++index) {
+        const starcraft::lang::PathRequest &request = requests[index];
+        results[index].request_id = request.request_id;
+        results[index].found = starcraft::lang::find_unit_path(
+            status.pathing_map, request.start_x, request.start_y,
+            request.target_x, request.target_y, request.mover_width,
+            request.mover_height, request.obstacles, results[index].path);
+      }
+    }
+    for (starcraft::lang::PathResult &result : results) {
+      if (!result.found || result.path.empty() ||
+          result.request_id >= units.size() ||
+          units[result.request_id] == nullptr) {
+        continue;
+      }
+      ScenarioUnitPreview &unit = *units[result.request_id];
+      unit.movement_path = std::move(result.path);
+      unit.movement_path_index = 0U;
+      unit.movement_final_x = unit.movement_path.back().x;
+      unit.movement_final_y = unit.movement_path.back().y;
+      unit.movement_target_x = unit.movement_path.front().x;
+      unit.movement_target_y = unit.movement_path.front().y;
+      unit.path_recheck_ticks = 0U;
+      unit.x_fixed = static_cast<std::int32_t>(unit.x) << 8U;
+      unit.y_fixed = static_cast<std::int32_t>(unit.y) << 8U;
+      planned[result.request_id] = true;
+    }
+    return true;
+  } catch (...) {
+    planned.clear();
+    return false;
+  }
+}
+
 void stop_unit_movement(BootstrapStatus &status,
                         ScenarioUnitPreview &unit) noexcept {
   unit.moving = false;
@@ -726,8 +822,13 @@ void cancel_unit_order(BootstrapStatus &status,
   unit.active_order = ActiveUnitOrder::none;
   unit.order_target_id = 0;
   unit.harvest_source_id = 0;
+  unit.attack_move_target_x = 0U;
+  unit.attack_move_target_y = 0U;
+  unit.attack_move_resume = false;
   unit.action_timer = 0;
   unit.action_phase = 0;
+  unit.attack_fire_pending = false;
+  unit.attack_fire_timeout = 0U;
   unit.pending_technology = 28U;
   unit.pending_technology_x = 0U;
   unit.pending_technology_y = 0U;
@@ -736,9 +837,15 @@ void cancel_unit_order(BootstrapStatus &status,
 std::size_t issue_scv_move_order(BootstrapStatus &status,
                                  const std::uint16_t target_x,
                                  const std::uint16_t target_y) noexcept {
-  std::size_t issued{};
+  std::vector<ScenarioUnitPreview *> candidates;
+  try {
+    candidates.reserve(status.units.size());
+  } catch (...) {
+    return 0U;
+  }
   for (ScenarioUnitPreview &unit : status.units) {
-    if (!unit.selected || !unit.alive || unit.owner != 0 || unit.is_building ||
+    if (!unit.selected || !unit.alive ||
+        unit.owner != status.command_player || unit.is_building ||
         unit.unit_type == starcraft::lang::zerg_larva_type ||
         unit.movement_top_speed == 0U || unit.movement_acceleration == 0U) {
       continue;
@@ -746,7 +853,15 @@ std::size_t issue_scv_move_order(BootstrapStatus &status,
     if (unit.sprite_hidden) {
       cancel_unit_order(status, unit);
     }
-    if (!plan_scv_path(status, unit, target_x, target_y)) {
+    candidates.push_back(&unit);
+  }
+
+  std::vector<bool> planned;
+  (void)plan_scv_paths_batch(status, candidates, target_x, target_y, planned);
+  std::size_t issued{};
+  for (std::size_t index = 0U; index < candidates.size(); ++index) {
+    ScenarioUnitPreview &unit = *candidates[index];
+    if (index >= planned.size() || !planned[index]) {
       cancel_unit_order(status, unit);
       continue;
     }
@@ -759,7 +874,59 @@ std::size_t issue_scv_move_order(BootstrapStatus &status,
     unit.moving = true;
     unit.active_order = ActiveUnitOrder::move;
     unit.order_target_id = 0;
+    unit.attack_move_target_x = 0U;
+    unit.attack_move_target_y = 0U;
+    unit.attack_move_resume = false;
     unit.action_timer = 0;
+    ++issued;
+  }
+  return issued;
+}
+
+std::size_t issue_scv_attack_move_order(BootstrapStatus &status,
+                                        const std::uint16_t target_x,
+                                        const std::uint16_t target_y) noexcept {
+  std::vector<ScenarioUnitPreview *> candidates;
+  try {
+    candidates.reserve(status.units.size());
+  } catch (...) {
+    return 0U;
+  }
+  for (ScenarioUnitPreview &unit : status.units) {
+    const bool can_attack = unit.has_ground_weapon || unit.has_air_weapon ||
+                            unit.unit_type == 72U || unit.unit_type == 82U ||
+                            unit.unit_type == 83U;
+    if (!unit.selected || !unit.alive ||
+        unit.owner != status.command_player ||
+        unit.is_building || unit.unit_type == starcraft::lang::zerg_larva_type ||
+        unit.movement_top_speed == 0U || unit.movement_acceleration == 0U ||
+        !can_attack) {
+      continue;
+    }
+    if (unit.sprite_hidden) {
+      cancel_unit_order(status, unit);
+    }
+    candidates.push_back(&unit);
+  }
+
+  std::vector<bool> planned;
+  (void)plan_scv_paths_batch(status, candidates, target_x, target_y, planned);
+  std::size_t issued{};
+  for (std::size_t index = 0U; index < candidates.size(); ++index) {
+    ScenarioUnitPreview &unit = *candidates[index];
+    if (index >= planned.size() || !planned[index]) {
+      cancel_unit_order(status, unit);
+      continue;
+    }
+    unit.movement_speed = 0U;
+    unit.moving = true;
+    unit.active_order = ActiveUnitOrder::attack_move;
+    unit.order_target_id = 0U;
+    unit.attack_move_target_x = target_x;
+    unit.attack_move_target_y = target_y;
+    unit.attack_move_resume = false;
+    unit.action_timer = 0U;
+    (void)restart_unit_animation(status, unit, 11U);
     ++issued;
   }
   return issued;
@@ -1053,7 +1220,8 @@ std::size_t unload_transport_units(BootstrapStatus &status,
 bool plan_scv_interaction_path(BootstrapStatus &status,
                                ScenarioUnitPreview &worker,
                                const ScenarioUnitPreview &target,
-                               const int interaction_range) noexcept {
+                               const int interaction_range,
+                               const ActiveUnitOrder order) noexcept {
   const bool worker_dat_extents =
       worker.collision_left != 0U || worker.collision_top != 0U ||
       worker.collision_right != 0U || worker.collision_bottom != 0U;
@@ -1127,7 +1295,18 @@ bool plan_scv_interaction_path(BootstrapStatus &status,
         points.push_back(point);
       }
     };
-    for (int gap = 0; gap <= interaction_range; ++gap) {
+    // sub_425910 supplies both the usable minimum and maximum range to the
+    // attack-position search. Ranged units prefer the outer usable ring; the
+    // old bootstrap enumerated gap zero first, making an entire Marine group
+    // converge on the nearest pixel of a building's collision rectangle.
+    const bool ranged_attack = order == ActiveUnitOrder::attack &&
+                               interaction_range > 8;
+    const int first_gap = ranged_attack ? interaction_range : 0;
+    const int last_gap = ranged_attack ? 0 : interaction_range;
+    const int gap_step = ranged_attack ? -8 : 1;
+    for (int gap = first_gap;
+         ranged_attack ? gap >= last_gap : gap <= last_gap;
+         gap += gap_step) {
       const int left_x = target_left - worker_right - 1 - gap;
       const int right_x = target_right + worker_left + 1 + gap;
       for (int y = vertical_begin; y <= vertical_end; y += 8) {
@@ -1148,23 +1327,80 @@ bool plan_scv_interaction_path(BootstrapStatus &status,
   } catch (...) {
     return false;
   }
-  std::sort(points.begin(), points.end(),
-            [&worker](const starcraft::lang::PathPoint &a,
-                      const starcraft::lang::PathPoint &b) {
+  std::stable_sort(points.begin(), points.end(),
+            [&worker, &target, interaction_range,
+             order](const starcraft::lang::PathPoint &a,
+                    const starcraft::lang::PathPoint &b) {
+              ScenarioUnitPreview a_terminal = worker;
+              ScenarioUnitPreview b_terminal = worker;
+              a_terminal.x = a.x;
+              a_terminal.y = a.y;
+              b_terminal.x = b.x;
+              b_terminal.y = b.y;
+              const std::int64_t a_range_error =
+                  order == ActiveUnitOrder::attack
+                      ? (std::abs)(unit_edge_distance(a_terminal, target) -
+                                   interaction_range)
+                      : 0;
+              const std::int64_t b_range_error =
+                  order == ActiveUnitOrder::attack
+                      ? (std::abs)(unit_edge_distance(b_terminal, target) -
+                                   interaction_range)
+                      : 0;
               const std::int64_t a_dx = static_cast<int>(a.x) - worker.x;
               const std::int64_t a_dy = static_cast<int>(a.y) - worker.y;
               const std::int64_t b_dx = static_cast<int>(b.x) - worker.x;
               const std::int64_t b_dy = static_cast<int>(b.y) - worker.y;
-              return a_dx * a_dx + a_dy * a_dy < b_dx * b_dx + b_dy * b_dy;
+              const std::int64_t a_score =
+                  a_range_error * a_range_error * 0x100000LL +
+                  a_dx * a_dx + a_dy * a_dy;
+              const std::int64_t b_score =
+                  b_range_error * b_range_error * 0x100000LL +
+                  b_dx * b_dx + b_dy * b_dy;
+              if (a_score != b_score) {
+                return a_score < b_score;
+              }
+              // Make equal-distance formation choices deterministic without
+              // making every selected attacker choose the same side first.
+              return ((static_cast<std::uint32_t>(a.x) * 257U + a.y +
+                       worker.unit_id * 17U) & 0xFFFFU) <
+                     ((static_cast<std::uint32_t>(b.x) * 257U + b.y +
+                       worker.unit_id * 17U) & 0xFFFFU);
             });
   for (const starcraft::lang::PathPoint &point : points) {
+    const auto slot_reserved = [&](const int x, const int y) noexcept {
+      if (order != ActiveUnitOrder::attack) {
+        return false;
+      }
+      for (const ScenarioUnitPreview &other : status.units) {
+        if (!other.alive || other.sprite_hidden || is_airborne(other) ||
+            other.unit_id == worker.unit_id ||
+            other.active_order != ActiveUnitOrder::attack ||
+            other.order_target_id != target.unit_id) {
+          continue;
+        }
+        ScenarioUnitPreview reserved = other;
+        if (other.moving) {
+          reserved.x = other.movement_final_x;
+          reserved.y = other.movement_final_y;
+        }
+        if (unit_footprints_overlap_at(worker, x, y, reserved)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (slot_reserved(point.x, point.y)) {
+      continue;
+    }
     if (!plan_scv_path(status, worker, point.x, point.y)) {
       continue;
     }
     ScenarioUnitPreview terminal = worker;
     terminal.x = worker.movement_final_x;
     terminal.y = worker.movement_final_y;
-    if (unit_edge_distance(terminal, target) <= interaction_range) {
+    if (unit_edge_distance(terminal, target) <= interaction_range &&
+        !slot_reserved(terminal.x, terminal.y)) {
       return true;
     }
   }
@@ -1183,22 +1419,40 @@ bool begin_scv_interaction(BootstrapStatus &status, ScenarioUnitPreview &worker,
   if (worker.sprite_hidden) {
     cancel_unit_order(status, worker);
   }
+  const bool direct_refinery_entry =
+      order == ActiveUnitOrder::gather &&
+      is_gas_refinery_type(target.unit_type) &&
+      unit_edge_distance(worker, target) <= interaction_range;
+  const bool direct_attack =
+      order == ActiveUnitOrder::attack &&
+      unit_edge_distance(worker, target) <= interaction_range;
   if (!worker.alive || worker.is_building || worker.movement_top_speed == 0U ||
       (worker_only_order && (worker.dat_flags & 0x08U) == 0U) ||
-      !target.alive || !plan_scv_interaction_path(
-                           status, worker, target, interaction_range)) {
+      !target.alive ||
+      (!direct_refinery_entry && !direct_attack &&
+       !plan_scv_interaction_path(status, worker, target, interaction_range,
+                                  order))) {
     cancel_unit_order(status, worker);
     return false;
   }
-  if (!worker.moving) {
+  if (direct_refinery_entry || direct_attack) {
+    // CUnitBuild.cpp::sub_422540 completes an SCV-built gas structure by
+    // issuing order 0x4E directly when sub_42C340 recognizes the Refinery.
+    // The builder is already inside its collision rectangle; asking the path
+    // builder to find an approach point first leaves it trapped. The ordinary
+    // order update below admits it to WaitForGas/HarvestGas on the next turn.
+    stop_unit_movement(status, worker);
+  } else if (!worker.moving) {
     worker.movement_speed = 0;
     (void)restart_unit_animation(status, worker, 11);
   }
-  worker.moving = true;
+  worker.moving = !direct_refinery_entry;
   worker.active_order = order;
   worker.order_target_id = target.unit_id;
   worker.action_timer = 0;
   worker.action_phase = 0;
+  worker.attack_fire_pending = false;
+  worker.attack_fire_timeout = 0U;
   if (order == ActiveUnitOrder::gather) {
     worker.harvest_source_id = target.unit_id;
   }
@@ -1228,33 +1482,42 @@ void begin_command_target(BootstrapStatus &status,
 
 std::size_t issue_active_scv_target(BootstrapStatus &status,
                                     const std::uint16_t world_x,
-                                    const std::uint16_t world_y) noexcept {
+                                    const std::uint16_t world_y,
+                                    const std::uint32_t target_unit_id) noexcept {
   if (!status.command_target_active) {
     return 0;
   }
-  const ScenarioUnitPreview *hit{};
-  std::uint64_t best_distance = UINT64_MAX;
-  for (const ScenarioUnitPreview &unit : status.units) {
-    if (!unit.alive || unit.sprite_hidden || unit.selected ||
-        !fog_unit_visible(status, unit)) {
-      continue;
+  const ScenarioUnitPreview *hit =
+      target_unit_id != UINT32_MAX && target_unit_id != 0U
+          ? find_unit_by_id(status, target_unit_id)
+          : nullptr;
+  if (target_unit_id == UINT32_MAX) {
+    std::uint64_t best_distance = UINT64_MAX;
+    for (const ScenarioUnitPreview &unit : status.units) {
+      if (!unit.alive || unit.sprite_hidden || unit.selected ||
+          !fog_unit_visible(status, unit, status.command_player)) {
+        continue;
+      }
+      const int half_width = static_cast<int>(unit.selection_width) / 2;
+      const int half_height = static_cast<int>(unit.selection_height) / 2;
+      if (static_cast<int>(world_x) < static_cast<int>(unit.x) - half_width ||
+          static_cast<int>(world_x) > static_cast<int>(unit.x) + half_width ||
+          static_cast<int>(world_y) < static_cast<int>(unit.y) - half_height ||
+          static_cast<int>(world_y) > static_cast<int>(unit.y) + half_height) {
+        continue;
+      }
+      const std::int64_t dx = static_cast<std::int64_t>(world_x) - unit.x;
+      const std::int64_t dy = static_cast<std::int64_t>(world_y) - unit.y;
+      const std::uint64_t distance =
+          static_cast<std::uint64_t>(dx * dx + dy * dy);
+      if (distance < best_distance) {
+        best_distance = distance;
+        hit = &unit;
+      }
     }
-    const int half_width = static_cast<int>(unit.selection_width) / 2;
-    const int half_height = static_cast<int>(unit.selection_height) / 2;
-    if (static_cast<int>(world_x) < static_cast<int>(unit.x) - half_width ||
-        static_cast<int>(world_x) > static_cast<int>(unit.x) + half_width ||
-        static_cast<int>(world_y) < static_cast<int>(unit.y) - half_height ||
-        static_cast<int>(world_y) > static_cast<int>(unit.y) + half_height) {
-      continue;
-    }
-    const std::int64_t dx = static_cast<std::int64_t>(world_x) - unit.x;
-    const std::int64_t dy = static_cast<std::int64_t>(world_y) - unit.y;
-    const std::uint64_t distance =
-        static_cast<std::uint64_t>(dx * dx + dy * dy);
-    if (distance < best_distance) {
-      best_distance = distance;
-      hit = &unit;
-    }
+  }
+  if (hit != nullptr && (!hit->alive || hit->sprite_hidden)) {
+    hit = nullptr;
   }
   const std::uint8_t order =
       hit == nullptr ? status.target_terrain_order : status.target_unit_order;
@@ -1282,7 +1545,8 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
     std::array<std::uint32_t, 12> caster_ids{};
     std::size_t caster_count{};
     for (const ScenarioUnitPreview &candidate : status.units) {
-      if (candidate.selected && candidate.alive && candidate.owner == 0U &&
+      if (candidate.selected && candidate.alive &&
+          candidate.owner == status.command_player &&
           caster_count < caster_ids.size()) {
         caster_ids[caster_count++] = candidate.unit_id;
       }
@@ -1309,8 +1573,10 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
     return cast;
   }
 
-  if (hit == nullptr || order == 7 || order == 15 || order == 0x32 ||
-      order == 0x92U) {
+  if (hit == nullptr && order == 15U) {
+    return issue_scv_attack_move_order(status, target_x, target_y);
+  }
+  if (hit == nullptr || order == 7 || order == 0x32 || order == 0x92U) {
     return issue_scv_move_order(status, target_x, target_y);
   }
 
@@ -1320,7 +1586,7 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
       return 0U;
     }
     for (ScenarioUnitPreview &transport : status.units) {
-      if (!transport.selected || transport.owner != 0U ||
+      if (!transport.selected || transport.owner != status.command_player ||
           !transport_accepts_unit(status, transport, *passenger)) {
         continue;
       }
@@ -1337,14 +1603,15 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
   }
 
   ActiveUnitOrder active_order{ActiveUnitOrder::none};
-  if (order == 9 && hit->owner != 0) {
+  if (order == 9 && hit->owner != status.command_player) {
     active_order = ActiveUnitOrder::attack;
-  } else if (order == 0x24 && hit->owner == 0 && hit->is_building &&
+  } else if (order == 0x24 && hit->owner == status.command_player &&
+             hit->is_building &&
              hit->hit_points < hit->max_hit_points) {
     active_order = hit->construction_complete ? ActiveUnitOrder::repair
                                               : ActiveUnitOrder::construct;
-  } else if (order == 0x4E && (hit->dat_flags & 0x2000U) != 0 &&
-             hit->resource_amount != 0) {
+  } else if (order == 0x4E && is_harvestable_resource_source(*hit) &&
+              hit->resource_amount != 0) {
     active_order = ActiveUnitOrder::gather;
   }
   if (active_order == ActiveUnitOrder::none) {
@@ -1353,7 +1620,8 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
   std::size_t issued{};
   for (ScenarioUnitPreview &worker : status.units) {
     const bool worker_only_order = active_order != ActiveUnitOrder::attack;
-    if (!worker.selected || !worker.alive || worker.owner != 0 ||
+    if (!worker.selected || !worker.alive ||
+        worker.owner != status.command_player ||
         worker.is_building ||
         worker.unit_type == starcraft::lang::zerg_larva_type ||
         worker.movement_top_speed == 0U ||
@@ -1361,6 +1629,11 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
         (active_order == ActiveUnitOrder::attack &&
          !unit_has_weapon_against(worker, *hit))) {
       continue;
+    }
+    if (active_order == ActiveUnitOrder::attack) {
+      worker.attack_move_target_x = 0U;
+      worker.attack_move_target_y = 0U;
+      worker.attack_move_resume = false;
     }
     if (begin_scv_interaction(status, worker, *hit, active_order)) {
       if (active_order == ActiveUnitOrder::construct) {
@@ -1378,14 +1651,14 @@ std::size_t issue_active_scv_target(BootstrapStatus &status,
 
 std::size_t issue_scv_return_cargo(BootstrapStatus &status) noexcept;
 
-std::size_t issue_scv_smart_order(BootstrapStatus &status,
-                                  const std::uint16_t world_x,
-                                  const std::uint16_t world_y) noexcept {
+std::uint32_t smart_order_target_at(const BootstrapStatus &status,
+                                    const std::uint16_t world_x,
+                                    const std::uint16_t world_y) noexcept {
   const ScenarioUnitPreview *hit{};
   std::uint64_t best_distance = UINT64_MAX;
   for (const ScenarioUnitPreview &unit : status.units) {
     if (!unit.alive || unit.sprite_hidden || unit.selected ||
-        !fog_unit_visible(status, unit)) {
+        !fog_unit_visible(status, unit, status.local_player)) {
       continue;
     }
     const int half_width = static_cast<int>(unit.selection_width) / 2;
@@ -1405,30 +1678,50 @@ std::size_t issue_scv_smart_order(BootstrapStatus &status,
       hit = &unit;
     }
   }
+  return hit == nullptr ? 0U : hit->unit_id;
+}
+
+std::size_t issue_scv_smart_order(BootstrapStatus &status,
+                                  const std::uint16_t world_x,
+                                  const std::uint16_t world_y) noexcept {
+  return issue_scv_smart_order_target(
+      status, world_x, world_y,
+      smart_order_target_at(status, world_x, world_y));
+}
+
+std::size_t issue_scv_smart_order_target(
+    BootstrapStatus &status, const std::uint16_t world_x,
+    const std::uint16_t world_y,
+    const std::uint32_t target_unit_id) noexcept {
+  const ScenarioUnitPreview *const hit =
+      target_unit_id == 0U ? nullptr : find_unit_by_id(status, target_unit_id);
   if (hit == nullptr) {
     status.last_issued_order = 7U;
     return issue_scv_move_order(status, world_x, world_y);
   }
 
   ActiveUnitOrder order{ActiveUnitOrder::none};
-  if ((hit->dat_flags & 0x2000U) != 0U && hit->resource_amount != 0U) {
+  if (is_harvestable_resource_source(*hit) && hit->resource_amount != 0U) {
     // rclick.cpp's worker classification selects the harvest order for a
     // resource-bearing target before testing hostile ownership.
     order = ActiveUnitOrder::gather;
     status.last_issued_order = 0x4EU;
-  } else if (hit->owner != 0U && hit->owner != 11U && !hit->cloaked) {
+  } else if (hit->owner != status.command_player && hit->owner != 11U &&
+             !hit->cloaked) {
     order = ActiveUnitOrder::attack;
     status.last_issued_order = 9U;
-  } else if (hit->owner == 0U && hit->is_building &&
+  } else if (hit->owner == status.command_player && hit->is_building &&
              (!hit->construction_complete ||
               hit->hit_points < hit->max_hit_points)) {
     order = hit->construction_complete ? ActiveUnitOrder::repair
                                        : ActiveUnitOrder::construct;
     status.last_issued_order = 0x24U;
-  } else if (hit->owner == 0U && (hit->dat_flags & 0x1000U) != 0U) {
+  } else if (hit->owner == status.command_player &&
+             (hit->dat_flags & 0x1000U) != 0U) {
     status.last_command_opcode = 34U;
     return issue_scv_return_cargo(status);
-  } else if (hit->owner == 0U && hit->cargo_space_provided != 0U) {
+  } else if (hit->owner == status.command_player &&
+             hit->cargo_space_provided != 0U) {
     order = ActiveUnitOrder::enter_transport;
     status.last_issued_order = 89U;
   }
@@ -1441,7 +1734,8 @@ std::size_t issue_scv_smart_order(BootstrapStatus &status,
   for (ScenarioUnitPreview &worker : status.units) {
     const bool worker_only_order = order != ActiveUnitOrder::attack &&
                                    order != ActiveUnitOrder::enter_transport;
-    if (!worker.alive || !worker.selected || worker.owner != 0U ||
+    if (!worker.alive || !worker.selected ||
+        worker.owner != status.command_player ||
         worker.is_building ||
         worker.unit_type == starcraft::lang::zerg_larva_type ||
         worker.movement_top_speed == 0U ||
@@ -1453,6 +1747,11 @@ std::size_t issue_scv_smart_order(BootstrapStatus &status,
       continue;
     }
     if (begin_scv_interaction(status, worker, *hit, order)) {
+      if (order == ActiveUnitOrder::attack) {
+        worker.attack_move_target_x = 0U;
+        worker.attack_move_target_y = 0U;
+        worker.attack_move_resume = false;
+      }
       if (order == ActiveUnitOrder::construct) {
         ScenarioUnitPreview *const building =
             find_unit_by_id(status, worker.order_target_id);
@@ -1685,6 +1984,78 @@ bool advance_unit_movement(BootstrapStatus &status) noexcept {
         unit.movement_speed = unit.movement_speed > acceleration
                                   ? unit.movement_speed - acceleration
                                   : 0U;
+        // sub_439B90's immediate cardinal escape can fail when several
+        // infantry bodies surround the contact point. The original path
+        // object then performs a wider collision-side search before its
+        // byte-17 recheck expires. Preserve the final order target and insert
+        // one deterministic separation waypoint instead of waiting forever.
+        if (unit.collision_wait_ticks == 8U) {
+          constexpr std::array<std::array<int, 2>, 8> offsets{{
+              {{0, -1}}, {{1, 0}},  {{0, 1}},  {{-1, 0}},
+              {{1, -1}}, {{1, 1}}, {{-1, 1}}, {{-1, -1}},
+          }};
+          const int clearance = (std::max)(
+              12, (static_cast<int>(unit.selection_width) +
+                       static_cast<int>(collision->selection_width)) /
+                          2 +
+                      4);
+          const std::size_t first =
+              static_cast<std::size_t>((unit.unit_id + collision->unit_id) & 7U);
+          for (std::size_t attempt = 0U; attempt < offsets.size(); ++attempt) {
+            const auto &offset = offsets[(first + attempt) & 7U];
+            const int waypoint_x = static_cast<int>(unit.x) +
+                                   offset[0] * clearance;
+            const int waypoint_y = static_cast<int>(unit.y) +
+                                   offset[1] * clearance;
+            if (waypoint_x < 0 || waypoint_y < 0 || waypoint_x > UINT16_MAX ||
+                waypoint_y > UINT16_MAX ||
+                !position_passable(waypoint_x, waypoint_y) ||
+                find_live_unit_collision(status, unit, waypoint_x,
+                                         waypoint_y) != nullptr) {
+              continue;
+            }
+            const std::uint8_t escape_direction =
+                starcraft::lang::direction_from_points(
+                    unit.x, unit.y, static_cast<std::uint16_t>(waypoint_x),
+                    static_cast<std::uint16_t>(waypoint_y));
+            const auto candidate = movement_candidate(escape_direction);
+            const int candidate_x = candidate[0] >> 8U;
+            const int candidate_y = candidate[1] >> 8U;
+            if ((candidate_x == unit.x && candidate_y == unit.y) ||
+                !position_passable(candidate_x, candidate_y) ||
+                find_live_unit_collision(status, unit, candidate_x,
+                                         candidate_y) != nullptr) {
+              continue;
+            }
+            try {
+              const std::size_t insertion = (std::min)(
+                  unit.movement_path_index, unit.movement_path.size());
+              unit.movement_path.insert(
+                  unit.movement_path.begin() +
+                      static_cast<std::ptrdiff_t>(insertion),
+                  starcraft::lang::PathPoint{
+                      static_cast<std::uint16_t>(waypoint_x),
+                      static_cast<std::uint16_t>(waypoint_y)});
+              unit.movement_target_x =
+                  static_cast<std::uint16_t>(waypoint_x);
+              unit.movement_target_y =
+                  static_cast<std::uint16_t>(waypoint_y);
+              unit.direction = escape_direction;
+              unit.avoidance_ticks = 1U;
+              unit.collision_wait_ticks = 0U;
+              avoided = true;
+            } catch (...) {
+            }
+            break;
+          }
+        }
+        if (!avoided && unit.collision_wait_ticks >= 24U) {
+          const std::uint16_t final_x = unit.movement_final_x;
+          const std::uint16_t final_y = unit.movement_final_y;
+          if (plan_scv_path(status, unit, final_x, final_y)) {
+            unit.collision_wait_ticks = 0U;
+          }
+        }
         changed = true;
         continue;
       }
@@ -1725,6 +2096,486 @@ void apply_fixed_unit_damage(ScenarioUnitPreview &target,
   }
 }
 
+void apply_combat_unit_damage(BootstrapStatus &status,
+                              ScenarioUnitPreview &target,
+                              const std::uint32_t damage,
+                              const std::uint32_t attacker_id,
+                              const std::uint8_t attacking_owner) noexcept {
+  const std::uint64_t life_before =
+      static_cast<std::uint64_t>(target.hit_points) + target.shield_points +
+      target.defensive_matrix_points;
+  apply_fixed_unit_damage(target, damage);
+  const std::uint64_t life_after =
+      static_cast<std::uint64_t>(target.hit_points) + target.shield_points +
+      target.defensive_matrix_points;
+  if (life_after >= life_before || target.hit_points == 0U ||
+      target.owner == attacking_owner || target.owner == 11U) {
+    return;
+  }
+
+  ScenarioUnitPreview *const attacker = find_unit_by_id(status, attacker_id);
+  if (attacker == nullptr || attacker == &target ||
+      attacker->owner == target.owner || !unit_has_weapon_against(target,
+                                                                  *attacker)) {
+    return;
+  }
+  if (target.active_order == ActiveUnitOrder::attack) {
+    const ScenarioUnitPreview *const current =
+        find_unit_by_id(status, target.order_target_id);
+    if (current != nullptr && current->owner != target.owner) {
+      return;
+    }
+  }
+
+  // CUnitCombat.cpp::sub_4268C0 stores a hostile attacker in CUnit+128 when
+  // the victim can retaliate. Buildings cannot path, so only arm their order
+  // when the attacker is already in weapon range; mobile units use the same
+  // recovered approach-order path as an explicit attack command.
+  if (target.is_building) {
+    if (unit_edge_distance(target, *attacker) <=
+        static_cast<int>(effective_unit_weapon_range_against(status, target,
+                                                             *attacker))) {
+      target.active_order = ActiveUnitOrder::attack;
+      target.order_target_id = attacker->unit_id;
+      target.action_timer = 0U;
+      target.action_phase = 0U;
+      target.attack_fire_pending = false;
+      target.attack_fire_timeout = 0U;
+    }
+    return;
+  }
+  if (target.movement_top_speed != 0U && target.movement_acceleration != 0U) {
+    (void)begin_scv_interaction(status, target, *attacker,
+                                ActiveUnitOrder::attack);
+  }
+}
+
+void apply_weapon_unit_damage(BootstrapStatus &status,
+                              ScenarioUnitPreview &target,
+                              const std::uint32_t raw_damage,
+                              const std::uint8_t weapon_type,
+                              const std::uint32_t attacker_id,
+                              const std::uint8_t attacking_owner) noexcept {
+  if (raw_damage == 0U || weapon_type >= status.weapon_traits.size()) {
+    return;
+  }
+
+  // CUnitCombat.cpp::sub_426E30 consumes the defensive matrix first. Shield
+  // damage then uses Plasma Shields (upgrade 15) as its own armor value and
+  // only the overflow reaches the ordinary armor/damage-class calculation.
+  const std::uint32_t matrix_damage =
+      (std::min)(raw_damage,
+                 static_cast<std::uint32_t>(target.defensive_matrix_points));
+  std::uint32_t layer_damage = raw_damage - matrix_damage;
+  std::uint32_t shield_damage{};
+  if (layer_damage != 0U && target.shield_points >= 256U) {
+    const std::uint32_t shield_level =
+        target.owner < status.player_upgrade_levels.size()
+            ? status.player_upgrade_levels[target.owner][15U]
+            : 0U;
+    const std::uint32_t shield_armor = shield_level << 8U;
+    layer_damage =
+        (std::max)(layer_damage > shield_armor
+                       ? layer_damage - shield_armor
+                       : 128U,
+                   128U);
+    shield_damage = (std::min)(layer_damage, target.shield_points);
+    layer_damage -= shield_damage;
+  }
+
+  std::uint32_t health_damage = layer_damage;
+  const std::uint8_t damage_class =
+      status.weapon_traits[weapon_type].damage_class;
+  if (health_damage != 0U && damage_class >= 1U && damage_class <= 3U &&
+      target.armor_class >= 1U && target.armor_class <= 3U) {
+    health_damage = starcraft::lang::scale_damage(
+        health_damage, static_cast<starcraft::lang::DamageClass>(damage_class),
+        static_cast<starcraft::lang::ArmorClass>(target.armor_class));
+  }
+  if (health_damage != 0U) {
+    const std::uint32_t armor_level =
+        target.owner < status.player_upgrade_levels.size() &&
+                target.armor_upgrade < status.upgrade_levels.size()
+            ? status.player_upgrade_levels[target.owner][target.armor_upgrade]
+            : 0U;
+    const std::uint32_t armor =
+        (static_cast<std::uint32_t>(target.armor) + armor_level) << 8U;
+    health_damage = health_damage > armor ? health_damage - armor : 0U;
+    if (shield_damage == 0U) {
+      health_damage = (std::max)(health_damage, 128U);
+    }
+  }
+
+  apply_combat_unit_damage(status, target,
+                           matrix_damage + shield_damage + health_damage,
+                           attacker_id, attacking_owner);
+}
+
+bool fire_pending_unit_weapon(BootstrapStatus &status,
+                              ScenarioUnitPreview &attacker,
+                              const std::uint8_t) noexcept {
+  if (!attacker.alive || attacker.active_order != ActiveUnitOrder::attack) {
+    attacker.attack_fire_pending = false;
+    attacker.attack_fire_timeout = 0U;
+    return false;
+  }
+  ScenarioUnitPreview *const target =
+      find_unit_by_id(status, attacker.order_target_id);
+  if (target == nullptr || target->owner == attacker.owner || target->cloaked ||
+      !unit_has_weapon_against(attacker, *target)) {
+    attacker.attack_fire_pending = false;
+    attacker.attack_fire_timeout = 0U;
+    return false;
+  }
+  const bool air_target = is_airborne(*target);
+  const std::uint16_t weapon_damage =
+      air_target ? attacker.air_weapon_damage : attacker.weapon_damage;
+  const std::uint16_t weapon_damage_factor =
+      air_target ? attacker.air_weapon_damage_factor
+                 : attacker.weapon_damage_factor;
+  const std::uint8_t weapon_upgrade =
+      air_target ? attacker.air_weapon_upgrade : attacker.weapon_upgrade;
+  const std::uint8_t weapon_cooldown =
+      air_target ? attacker.air_weapon_cooldown : attacker.weapon_cooldown;
+  const std::uint8_t weapon_type =
+      air_target ? attacker.air_weapon : attacker.ground_weapon;
+  if (weapon_damage == 0U || weapon_type >= status.weapon_traits.size()) {
+    attacker.attack_fire_pending = false;
+    attacker.attack_fire_timeout = 0U;
+    return false;
+  }
+
+  const std::uint32_t weapon_level =
+      attacker.owner < status.player_upgrade_levels.size() &&
+              weapon_upgrade < status.upgrade_levels.size()
+          ? status.player_upgrade_levels[attacker.owner][weapon_upgrade]
+          : 0U;
+  const std::uint32_t damage =
+      (static_cast<std::uint32_t>(weapon_damage) +
+       weapon_level * weapon_damage_factor)
+      << 8U;
+
+  bool projectile_fired{};
+  if (status.weapon_traits[weapon_type].has_projectile_graphic) {
+    for (std::uint8_t projectile = 0U;
+         projectile < status.weapon_traits[weapon_type].projectile_count;
+         ++projectile) {
+      projectile_fired =
+          spawn_weapon_projectile(status, attacker, *target, weapon_type,
+                                  attacker.hallucination ? 0U : damage) ||
+          projectile_fired;
+    }
+  }
+  if (!projectile_fired && !attacker.hallucination) {
+    apply_weapon_unit_damage(status, *target, damage, weapon_type,
+                             attacker.unit_id, attacker.owner);
+  }
+
+  const std::uint32_t effective_cooldown =
+      air_target ? weapon_cooldown
+                 : effective_unit_weapon_cooldown(status, attacker);
+  // sub_427610 stores DAT cooldown >> 1 and applies the synchronized -1..+2
+  // variation. Keep the same RNG stream used by construction and AI.
+  status.synchronized_random_state =
+      22695477U * status.synchronized_random_state + 1U;
+  const int cooldown_jitter = static_cast<int>(
+                                  (status.synchronized_random_state >> 16U) &
+                                  3U) -
+                              1;
+  attacker.action_timer = static_cast<std::uint16_t>((std::max)(
+      1, static_cast<int>(effective_cooldown >> 1U) + cooldown_jitter));
+  attacker.attack_fire_pending = false;
+  attacker.attack_fire_timeout = 0U;
+
+  if (attacker.unit_type == 85U) {
+    // Scarab order sub_424CA0 consumes the launched hangar CUnit at its
+    // weapon opcode while the detached action-13 sprite finishes visually.
+    (void)restart_unit_animation(status, attacker, 13U);
+    (void)detach_unit_death_sprite(status, attacker);
+    ScenarioUnitPreview *const parent =
+        find_unit_by_id(status, attacker.hangar_parent_id);
+    if (parent != nullptr) {
+      auto slot = std::find(parent->hangar_unit_ids.begin(),
+                            parent->hangar_unit_ids.end(), attacker.unit_id);
+      if (slot != parent->hangar_unit_ids.end()) {
+        *slot = 0U;
+      }
+    }
+    attacker.alive = false;
+    attacker.sprite_hidden = true;
+    attacker.hangar_parent_id = 0U;
+  }
+
+  if (target->hit_points == 0U) {
+    destroy_unit(status, *target, attacker.owner);
+    attacker.active_order = attacker.attack_move_resume
+                                ? ActiveUnitOrder::attack_move
+                                : ActiveUnitOrder::none;
+    attacker.order_target_id = 0U;
+    attacker.action_phase = 0U;
+    attacker.attack_move_resume = false;
+  }
+  return true;
+}
+
+bool advance_building_damage_states(BootstrapStatus &status) noexcept {
+  bool changed{};
+  const auto asset_for_image = [&status](const std::uint16_t image_id) {
+    const auto asset =
+        std::find_if(status.unit_assets.begin(), status.unit_assets.end(),
+                     [image_id](const UnitRenderAsset &candidate) {
+                       return candidate.image_id == image_id;
+                     });
+    return asset == status.unit_assets.end()
+               ? SIZE_MAX
+               : static_cast<std::size_t>(asset - status.unit_assets.begin());
+  };
+  const auto set_effect_image =
+      [&status, &asset_for_image](ScenarioUnitPreview &effect,
+                                 const std::uint16_t image_id) noexcept {
+        const std::size_t asset_index = asset_for_image(image_id);
+        if (asset_index >= status.unit_assets.size()) {
+          return false;
+        }
+        const UnitRenderAsset &asset = status.unit_assets[asset_index];
+        effect.asset_index = asset_index;
+        effect.iscript_state = asset.initial_iscript_state;
+        effect.overlay_iscript_state = asset.initial_overlay_iscript_state;
+        effect.current_sprite_frame = asset.initial_iscript_state.frame;
+        effect.current_overlay_frame = asset.initial_overlay_iscript_state.frame;
+        effect.iscript_ready = asset.iscript_ready;
+        effect.overlay_ready = asset.overlay_ready;
+        effect.construction_visible = true;
+        return true;
+      };
+
+  for (ScenarioUnitPreview &building : status.units) {
+    if (!building.alive || !building.is_building ||
+        !building.construction_complete || building.max_hit_points == 0U ||
+        building.asset_index >= status.unit_assets.size()) {
+      continue;
+    }
+    const UnitRenderAsset &source = status.unit_assets[building.asset_index];
+    if (source.damage_overlay_frame_count == 0U ||
+        source.damage_overlay_point_count == 0U ||
+        source.damage_overlay_points.empty()) {
+      building.damage_overlay_stage = 0xFFU;
+      continue;
+    }
+    const std::size_t frame = (std::min)(
+        building.current_sprite_frame,
+        static_cast<std::size_t>(source.damage_overlay_frame_count - 1U));
+    std::array<std::uint8_t, 22> valid_points{};
+    std::size_t valid_count{};
+    for (std::uint32_t point = 0U;
+         point < (std::min)(22U, source.damage_overlay_point_count); ++point) {
+      const std::size_t location =
+          (frame * source.damage_overlay_point_count + point) * 2U;
+      if (location + 1U >= source.damage_overlay_points.size()) {
+        break;
+      }
+      const std::int8_t x = source.damage_overlay_points[location];
+      const std::int8_t y = source.damage_overlay_points[location + 1U];
+      if (x != 127 || y != 127) {
+        valid_points[valid_count++] = static_cast<std::uint8_t>(point);
+      }
+    }
+    if (valid_count == 0U) {
+      building.damage_overlay_stage = 0xFFU;
+      continue;
+    }
+    const std::uint8_t maximum_stage = static_cast<std::uint8_t>(
+        (std::min)(254U, static_cast<unsigned>(valid_count * 2U)));
+    const std::uint32_t third = building.max_hit_points / 3U;
+    const std::uint32_t span = building.max_hit_points - third;
+    const std::uint32_t interval = span / (maximum_stage + 1U);
+    if (interval == 0U) {
+      continue;
+    }
+    const std::uint32_t remainder = span % interval;
+    const std::int64_t stage_value =
+        (static_cast<std::int64_t>(building.hit_points) - remainder - third -
+         1) /
+        interval;
+    const std::uint8_t desired_stage = static_cast<std::uint8_t>((std::clamp)(
+        stage_value, std::int64_t{0},
+        static_cast<std::int64_t>(maximum_stage)));
+
+    std::size_t light_count{};
+    std::size_t heavy_count{};
+    for (ScenarioUnitPreview &effect : status.transient_images) {
+      if (!effect.alive || !effect.is_damage_overlay ||
+          effect.damage_overlay_parent_id != building.unit_id) {
+        continue;
+      }
+      const auto point = std::find(valid_points.begin(),
+                                   valid_points.begin() + valid_count,
+                                   effect.damage_overlay_point);
+      if (point == valid_points.begin() + valid_count) {
+        effect.alive = false;
+        changed = true;
+        continue;
+      }
+      const std::size_t location =
+          (frame * source.damage_overlay_point_count +
+           effect.damage_overlay_point) *
+          2U;
+      int x_offset = source.damage_overlay_points[location];
+      if (building.iscript_state.mirrored) {
+        x_offset = -x_offset;
+      }
+      effect.x = static_cast<std::uint16_t>((std::clamp)(
+          static_cast<int>(building.x) + x_offset, 0,
+          static_cast<int>(UINT16_MAX)));
+      effect.y = static_cast<std::uint16_t>((std::clamp)(
+          static_cast<int>(building.y) +
+              source.damage_overlay_points[location + 1U],
+          0, static_cast<int>(UINT16_MAX)));
+      effect.sprite_elevation = static_cast<std::uint8_t>((std::min)(
+          255U, static_cast<unsigned>(building.sprite_elevation) + 1U));
+      effect.damage_overlay_heavy ? ++heavy_count : ++light_count;
+    }
+
+    if (building.damage_overlay_stage == 0xFFU) {
+      building.damage_overlay_stage = maximum_stage;
+    } else {
+      const std::size_t damage_steps =
+          maximum_stage - (std::min)(maximum_stage,
+                                     building.damage_overlay_stage);
+      if (heavy_count != damage_steps / 2U ||
+          light_count != damage_steps % 2U) {
+        for (ScenarioUnitPreview &effect : status.transient_images) {
+          if (effect.alive && effect.is_damage_overlay &&
+              effect.damage_overlay_parent_id == building.unit_id) {
+            effect.alive = false;
+          }
+        }
+        building.damage_overlay_stage = maximum_stage;
+        light_count = 0U;
+        heavy_count = 0U;
+        changed = true;
+      }
+    }
+
+    while (building.damage_overlay_stage > desired_stage) {
+      ScenarioUnitPreview *light{};
+      for (ScenarioUnitPreview &effect : status.transient_images) {
+        if (effect.alive && effect.is_damage_overlay &&
+            effect.damage_overlay_parent_id == building.unit_id &&
+            !effect.damage_overlay_heavy) {
+          light = &effect;
+          break;
+        }
+      }
+      if (light != nullptr) {
+        if (!set_effect_image(
+                *light, static_cast<std::uint16_t>(444U +
+                                                   light->damage_overlay_point))) {
+          break;
+        }
+        light->damage_overlay_heavy = true;
+      } else {
+        std::array<bool, 22> used{};
+        for (const ScenarioUnitPreview &effect : status.transient_images) {
+          if (effect.alive && effect.is_damage_overlay &&
+              effect.damage_overlay_parent_id == building.unit_id &&
+              effect.damage_overlay_point < used.size()) {
+            used[effect.damage_overlay_point] = true;
+          }
+        }
+        status.synchronized_random_state =
+            22695477U * status.synchronized_random_state + 1U;
+        const std::size_t first =
+            ((status.synchronized_random_state >> 16U) & 0x7FFFU) %
+            valid_count;
+        std::uint8_t selected_point{0xFFU};
+        for (std::size_t index = 0U; index < valid_count; ++index) {
+          const std::uint8_t point =
+              valid_points[(first + index) % valid_count];
+          if (!used[point]) {
+            selected_point = point;
+            break;
+          }
+        }
+        if (selected_point == 0xFFU) {
+          break;
+        }
+        ScenarioUnitPreview effect{};
+        effect.unit_id = status.next_unit_id++;
+        effect.owner = building.owner;
+        effect.is_damage_overlay = true;
+        effect.damage_overlay_parent_id = building.unit_id;
+        effect.damage_overlay_point = selected_point;
+        effect.damage_overlay_heavy = false;
+        effect.alive = true;
+        const std::size_t location =
+            (frame * source.damage_overlay_point_count + selected_point) * 2U;
+        int x_offset = source.damage_overlay_points[location];
+        if (building.iscript_state.mirrored) {
+          x_offset = -x_offset;
+        }
+        effect.x = static_cast<std::uint16_t>((std::clamp)(
+            static_cast<int>(building.x) + x_offset, 0,
+            static_cast<int>(UINT16_MAX)));
+        effect.y = static_cast<std::uint16_t>((std::clamp)(
+            static_cast<int>(building.y) +
+                source.damage_overlay_points[location + 1U],
+            0, static_cast<int>(UINT16_MAX)));
+        effect.sprite_elevation = static_cast<std::uint8_t>((std::min)(
+            255U, static_cast<unsigned>(building.sprite_elevation) + 1U));
+        if (!set_effect_image(
+                effect,
+                static_cast<std::uint16_t>(422U + selected_point))) {
+          break;
+        }
+        try {
+          status.transient_images.push_back(std::move(effect));
+        } catch (...) {
+          break;
+        }
+      }
+      --building.damage_overlay_stage;
+      changed = true;
+    }
+
+    while (building.damage_overlay_stage < desired_stage) {
+      ScenarioUnitPreview *effect_to_change{};
+      for (ScenarioUnitPreview &effect : status.transient_images) {
+        if (effect.alive && effect.is_damage_overlay &&
+            effect.damage_overlay_parent_id == building.unit_id &&
+            effect.damage_overlay_heavy) {
+          effect_to_change = &effect;
+          break;
+        }
+      }
+      if (effect_to_change != nullptr) {
+        if (!set_effect_image(
+                *effect_to_change,
+                static_cast<std::uint16_t>(
+                    422U + effect_to_change->damage_overlay_point))) {
+          break;
+        }
+        effect_to_change->damage_overlay_heavy = false;
+      } else {
+        for (ScenarioUnitPreview &effect : status.transient_images) {
+          if (effect.alive && effect.is_damage_overlay &&
+              effect.damage_overlay_parent_id == building.unit_id) {
+            effect_to_change = &effect;
+            break;
+          }
+        }
+        if (effect_to_change == nullptr) {
+          break;
+        }
+        effect_to_change->alive = false;
+      }
+      ++building.damage_overlay_stage;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 void destroy_unit(BootstrapStatus &status, ScenarioUnitPreview &target,
                   const std::uint8_t attacking_owner) noexcept {
   if (!target.alive || target.dying) {
@@ -1757,6 +2608,12 @@ void destroy_unit(BootstrapStatus &status, ScenarioUnitPreview &target,
     }
   }
   target.destroyed_by_owner = attacking_owner;
+  for (ScenarioUnitPreview &effect : status.transient_images) {
+    if (effect.is_damage_overlay &&
+        effect.damage_overlay_parent_id == target.unit_id) {
+      effect.alive = false;
+    }
+  }
   target.selected = false;
   target.active_order = ActiveUnitOrder::none;
   target.moving = false;
@@ -1792,6 +2649,34 @@ void destroy_unit(BootstrapStatus &status, ScenarioUnitPreview &target,
   target.overlay_ready = false;
 }
 
+ScenarioUnitPreview *find_attack_move_target(
+    BootstrapStatus &status, const ScenarioUnitPreview &attacker) noexcept {
+  ScenarioUnitPreview *nearest{};
+  int nearest_distance = INT_MAX;
+  for (ScenarioUnitPreview &candidate : status.units) {
+    if (!candidate.alive || candidate.dying || candidate.sprite_hidden ||
+        candidate.owner == attacker.owner || candidate.owner == 11U ||
+        candidate.cloaked ||
+        !fog_unit_visible(status, candidate, attacker.owner) ||
+        !unit_has_weapon_against(attacker, candidate)) {
+      continue;
+    }
+    const int distance = unit_edge_distance(attacker, candidate);
+    // CUnitCombat.cpp::sub_4288E0 calls sub_43E320 while order 15 is
+    // travelling. That target search uses units.dat's seek range and still
+    // admits anything already inside the applicable weapon range.
+    const std::uint32_t acquisition_range = (std::max)(
+        static_cast<std::uint32_t>(attacker.seek_range) * 32U,
+        effective_unit_weapon_range_against(status, attacker, candidate));
+    if (distance <= static_cast<int>(acquisition_range) &&
+        distance < nearest_distance) {
+      nearest = &candidate;
+      nearest_distance = distance;
+    }
+  }
+  return nearest;
+}
+
 bool advance_unit_actions(BootstrapStatus &status) noexcept {
   bool changed{};
   for (std::size_t worker_index = 0; worker_index < status.units.size();
@@ -1822,6 +2707,56 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       continue;
     }
     if (worker.stasis_ticks != 0U) {
+      continue;
+    }
+    if (worker.active_order == ActiveUnitOrder::attack_move) {
+      if (worker.action_timer != 0U) {
+        --worker.action_timer;
+        continue;
+      }
+      ScenarioUnitPreview *const acquired =
+          find_attack_move_target(status, worker);
+      if (acquired != nullptr) {
+        const std::uint16_t destination_x = worker.attack_move_target_x;
+        const std::uint16_t destination_y = worker.attack_move_target_y;
+        if (begin_scv_interaction(status, worker, *acquired,
+                                  ActiveUnitOrder::attack)) {
+          worker.attack_move_target_x = destination_x;
+          worker.attack_move_target_y = destination_y;
+          worker.attack_move_resume = true;
+        } else {
+          // A transiently unreachable target must not consume order 15.
+          worker.attack_move_target_x = destination_x;
+          worker.attack_move_target_y = destination_y;
+          worker.attack_move_resume = false;
+          worker.active_order = ActiveUnitOrder::attack_move;
+          worker.order_target_id = 0U;
+        }
+        changed = true;
+        continue;
+      }
+      if (worker.moving) {
+        continue;
+      }
+      const int dx = static_cast<int>(worker.attack_move_target_x) - worker.x;
+      const int dy = static_cast<int>(worker.attack_move_target_y) - worker.y;
+      if ((std::abs)(dx) <= 2 && (std::abs)(dy) <= 2) {
+        cancel_unit_order(status, worker);
+        changed = true;
+        continue;
+      }
+      const std::uint16_t destination_x = worker.attack_move_target_x;
+      const std::uint16_t destination_y = worker.attack_move_target_y;
+      if (!plan_scv_path(status, worker, destination_x, destination_y) ||
+          (worker.movement_final_x == worker.x &&
+           worker.movement_final_y == worker.y)) {
+        cancel_unit_order(status, worker);
+      } else {
+        worker.movement_speed = 0U;
+        worker.moving = true;
+        (void)restart_unit_animation(status, worker, 11U);
+      }
+      changed = true;
       continue;
     }
     if (worker.active_order == ActiveUnitOrder::move) {
@@ -1869,6 +2804,14 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
     ScenarioUnitPreview *target =
         find_unit_by_id(status, worker.order_target_id);
     if (target == nullptr || target == &worker) {
+      if (worker.active_order == ActiveUnitOrder::attack &&
+          worker.attack_move_resume) {
+        worker.active_order = ActiveUnitOrder::attack_move;
+        worker.order_target_id = 0U;
+        worker.attack_move_resume = false;
+        changed = true;
+        continue;
+      }
       if (worker.hangar_launched && worker.unit_type == 73U) {
         ScenarioUnitPreview *const parent =
             find_unit_by_id(status, worker.hangar_parent_id);
@@ -2039,7 +2982,13 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       const bool has_weapon = unit_has_weapon_against(worker, *target);
       if (target->dying || target->owner == worker.owner || target->cloaked ||
           !has_weapon) {
-        cancel_unit_order(status, worker);
+        if (worker.attack_move_resume) {
+          worker.active_order = ActiveUnitOrder::attack_move;
+          worker.order_target_id = 0U;
+          worker.attack_move_resume = false;
+        } else {
+          cancel_unit_order(status, worker);
+        }
         changed = true;
         continue;
       }
@@ -2090,108 +3039,52 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
 
       const std::uint16_t weapon_damage =
           air_target ? worker.air_weapon_damage : worker.weapon_damage;
-      const std::uint16_t weapon_damage_factor =
-          air_target ? worker.air_weapon_damage_factor
-                     : worker.weapon_damage_factor;
-      const std::uint8_t weapon_damage_class =
-          air_target ? worker.air_weapon_damage_class
-                     : worker.weapon_damage_class;
-      const std::uint8_t weapon_upgrade =
-          air_target ? worker.air_weapon_upgrade : worker.weapon_upgrade;
-      const std::uint8_t weapon_cooldown =
-          air_target ? worker.air_weapon_cooldown : worker.weapon_cooldown;
       if (weapon_damage == 0U) {
         cancel_unit_order(status, worker);
         changed = true;
         continue;
       }
-      const std::uint32_t weapon_level =
-          worker.owner < status.player_upgrade_levels.size() &&
-                  weapon_upgrade < status.upgrade_levels.size()
-              ? status.player_upgrade_levels[worker.owner]
-                                            [weapon_upgrade]
-              : 0U;
-      std::uint32_t damage =
-          (static_cast<std::uint32_t>(weapon_damage) +
-           weapon_level * weapon_damage_factor)
-          << 8U;
-      if (weapon_damage_class >= 1U && weapon_damage_class <= 3U &&
-          target->armor_class >= 1U &&
-          target->armor_class <= 3U) {
-        damage = starcraft::lang::scale_damage(
-            damage,
-            static_cast<starcraft::lang::DamageClass>(
-                weapon_damage_class),
-            static_cast<starcraft::lang::ArmorClass>(target->armor_class));
+
+      if (worker.attack_fire_pending) {
+        if (worker.attack_fire_timeout != 0U) {
+          --worker.attack_fire_timeout;
+        }
+        if (worker.attack_fire_timeout == 0U) {
+          // A malformed/custom image without an attack opcode must not hold
+          // the CUnit forever. Licensed unit scripts normally fire through
+          // gameloop.cpp before this fallback expires.
+          (void)fire_pending_unit_weapon(status, worker, 0xFFU);
+        }
+        changed = true;
+        continue;
       }
-      const std::uint32_t armor_level =
-          target->owner < status.player_upgrade_levels.size() &&
-                  target->armor_upgrade < status.upgrade_levels.size()
-              ? status.player_upgrade_levels[target->owner]
-                                            [target->armor_upgrade]
-              : 0U;
-      const std::uint32_t armor =
-          (static_cast<std::uint32_t>(target->armor) + armor_level) << 8U;
-      damage = damage > armor ? damage - armor : 128U;
-      damage = (std::max)(damage, 128U);
-      // CUnitCombat.cpp::sub_427610 dispatches distinct ground/air attack
-      // actions, including the Battlecruiser's air-weapon script.
+
+      // CUnitCombat.cpp::sub_427610 dispatches the ground/air image action.
+      // CImage's later 0x1F/0x28..0x2B opcode calls the weapon routine; do not
+      // create a Marine bullet at animation start as the old bootstrap did.
       worker.direction = starcraft::lang::direction_from_points(
           worker.x, worker.y, target->x, target->y);
+      const std::uint32_t previous_weapon_events =
+          worker.iscript_state.weapon_event_count;
+      const std::uint32_t previous_unit_events =
+          worker.iscript_state.unit_event_count;
+      const std::uint32_t previous_overlay_weapon_events =
+          worker.overlay_iscript_state.weapon_event_count;
+      const std::uint32_t previous_overlay_unit_events =
+          worker.overlay_iscript_state.unit_event_count;
       (void)restart_unit_animation(status, worker, air_target ? 6U : 5U);
-
-      const std::uint8_t weapon_type =
-          air_target ? worker.air_weapon : worker.ground_weapon;
-      bool projectile_fired{};
-      if (weapon_type < status.weapon_traits.size() &&
-          status.weapon_traits[weapon_type].has_projectile_graphic) {
-        const std::uint8_t projectile_count =
-            status.weapon_traits[weapon_type].projectile_count;
-        for (std::uint8_t projectile = 0U; projectile < projectile_count;
-             ++projectile) {
-          projectile_fired =
-              spawn_weapon_projectile(status, worker, *target, weapon_type,
-                                      worker.hallucination ? 0U : damage) ||
-              projectile_fired;
-        }
-      }
-      if (!projectile_fired && !worker.hallucination) {
-        apply_fixed_unit_damage(*target, damage);
-      }
-
-      const std::uint32_t effective_cooldown = air_target
-                                                   ? weapon_cooldown
-                                                   : effective_unit_weapon_cooldown(
-                                                         status, worker);
-      worker.action_timer = static_cast<std::uint16_t>(
-          (std::max)(1U, effective_cooldown >> 1U));
-      if (worker.unit_type == 85U) {
-        // Scarab order sub_424CA0 reaches its focus, dispatches action 13,
-        // and waits for the IScript signal that consumes the Scarab. Keep a
-        // visual-only action-13 sprite while removing the hangar CUnit now.
-        (void)restart_unit_animation(status, worker, 13U);
-        (void)detach_unit_death_sprite(status, worker);
-        ScenarioUnitPreview *const parent =
-            find_unit_by_id(status, worker.hangar_parent_id);
-        if (parent != nullptr) {
-          auto slot = std::find(parent->hangar_unit_ids.begin(),
-                                parent->hangar_unit_ids.end(), worker.unit_id);
-          if (slot != parent->hangar_unit_ids.end()) {
-            *slot = 0U;
-          }
-        }
-        worker.alive = false;
-        worker.sprite_hidden = true;
-        worker.hangar_parent_id = 0U;
-      }
-      if (target->hit_points == 0) {
-        destroy_unit(status, *target, worker.owner);
-        // Preserve the just-started attack animation. cancel_unit_order calls
-        // stop_unit_movement, which immediately replaces it with action 12
-        // and made lethal melee attacks appear to have no animation at all.
-        worker.active_order = ActiveUnitOrder::none;
-        worker.order_target_id = 0U;
-        worker.action_phase = 0U;
+      worker.attack_fire_pending = true;
+      worker.attack_fire_timeout = 24U;
+      if (worker.iscript_state.weapon_event_count != previous_weapon_events ||
+          worker.iscript_state.unit_event_count != previous_unit_events) {
+        (void)fire_pending_unit_weapon(status, worker,
+                                       worker.iscript_state.weapon_event);
+      } else if (worker.overlay_iscript_state.weapon_event_count !=
+                     previous_overlay_weapon_events ||
+                 worker.overlay_iscript_state.unit_event_count !=
+                     previous_overlay_unit_events) {
+        (void)fire_pending_unit_weapon(
+            status, worker, worker.overlay_iscript_state.weapon_event);
       }
       changed = true;
       continue;
@@ -2222,16 +3115,18 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
           static_cast<std::uint32_t>(mineral_accumulator / threshold);
       const std::uint32_t gas_charge =
           static_cast<std::uint32_t>(gas_accumulator / threshold);
-      if (mineral_charge > status.player_minerals ||
-          gas_charge > status.player_gas) {
-        post_resource_error(status, mineral_charge <= status.player_minerals &&
-                                        gas_charge != 0U);
+      const std::uint32_t owner_minerals =
+          player_minerals_for(status, worker.owner);
+      const std::uint32_t owner_gas = player_gas_for(status, worker.owner);
+      if (mineral_charge > owner_minerals || gas_charge > owner_gas) {
+        post_resource_error(status,
+                            mineral_charge <= owner_minerals &&
+                                gas_charge != 0U);
         cancel_unit_order(status, worker);
         changed = true;
         continue;
       }
-      status.player_minerals -= mineral_charge;
-      status.player_gas -= gas_charge;
+      spend_player_resources(status, worker.owner, mineral_charge, gas_charge);
       worker.repair_mineral_accumulator =
           static_cast<std::uint32_t>(mineral_accumulator % threshold);
       worker.repair_gas_accumulator =
@@ -2248,7 +3143,8 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
 
     if (worker.active_order == ActiveUnitOrder::gather) {
       const bool gas_refinery = is_gas_refinery_type(target->unit_type);
-      if ((target->dat_flags & 0x2000U) == 0 || target->resource_amount == 0 ||
+      if (!is_harvestable_resource_source(*target) ||
+          target->resource_amount == 0 ||
           worker.cargo_minerals != 0 || worker.cargo_gas != 0 ||
           (gas_refinery &&
            (!target->is_building || !target->construction_complete ||
@@ -2460,7 +3356,7 @@ bool advance_unit_actions(BootstrapStatus &status) noexcept {
       ScenarioUnitPreview *const source =
           find_unit_by_id(status, worker.harvest_source_id);
       if (source != nullptr && source->resource_amount != 0 &&
-          (source->dat_flags & 0x2000U) != 0) {
+          is_harvestable_resource_source(*source)) {
         (void)begin_scv_interaction(status, worker, *source,
                                     ActiveUnitOrder::gather);
       } else {

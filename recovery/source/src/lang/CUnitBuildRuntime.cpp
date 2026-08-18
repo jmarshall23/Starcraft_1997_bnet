@@ -551,9 +551,15 @@ bool advance_unit_production(BootstrapStatus &status,
         source.production_active = false;
         source.production_started = 0;
         (void)configure_preview_type(status, source, product_type);
+        // CUnitInit.cpp::sub_42F380 removes and reinserts the changed CUnit
+        // bounds, then CUnitPathCollide releases every unit caught by the
+        // final (often larger) footprint. The Egg-size pass alone is not
+        // sufficient for Hydralisks, Ultralisks, or two-unit hatch results.
+        (void)displace_units_for_zerg_egg(status, source);
         // sub_447820 completes the egg's queued morph by changing its CUnit
         // type and dispatching the completion/idle transition.
         (void)restart_unit_animation(status, source, 13U);
+        source.zerg_hatch_release_pending = true;
         (void)queue_unit_ready_sound(status, source);
         changed = true;
         continue;
@@ -644,6 +650,75 @@ bool advance_unit_production(BootstrapStatus &status,
   } catch (...) {
     return false;
   }
+}
+
+bool cancel_building_construction(BootstrapStatus &status,
+                                  ScenarioUnitPreview &building) noexcept {
+  if (!building.alive || building.owner != status.command_player ||
+      !building.is_building || building.construction_complete) {
+    return false;
+  }
+
+  // statbtn.cpp::sub_47EA00 sends command 0x1c. netcmd.cpp::sub_4746F0
+  // resolves the one selected building and CUnitBuild.cpp::sub_421DA0
+  // releases its builder before unlinking the CUnit. This project keeps the
+  // requested full committed-cost refund (the retail sub_401F00 policy is
+  // otherwise the same path, but applies a three-quarter multiplier).
+  status.last_command_opcode = 0x1CU;
+  refund_player_resources(status, building.owner, building.mineral_cost,
+                          building.gas_cost);
+
+  const std::uint32_t building_id = building.unit_id;
+  const std::uint32_t builder_id = building.construction_builder_id;
+  const std::uint16_t x = building.x;
+  const std::uint16_t y = building.y;
+  const std::uint16_t gas = building.resource_amount;
+  const bool restore_geyser = building.unit_type == 110U ||
+                              building.unit_type == 149U ||
+                              building.unit_type == 157U;
+
+  building.construction_builder_id = 0U;
+  if (builder_id != 0U) {
+    ScenarioUnitPreview *const builder = find_unit_by_id(status, builder_id);
+    if (builder != nullptr) {
+      cancel_unit_order(status, *builder);
+    }
+  }
+  for (ScenarioUnitPreview &unit : status.units) {
+    if (unit.alive && unit.order_target_id == building_id &&
+        (unit.active_order == ActiveUnitOrder::construct ||
+         unit.active_order == ActiveUnitOrder::terran_build_exit)) {
+      cancel_unit_order(status, unit);
+    }
+  }
+
+  // sub_421DA0 routes Zerg construction through sub_448400 and all other
+  // incomplete buildings through the ordinary action-one destruction path.
+  // destroy_unit preserves that detached explosion sprite after the gameplay
+  // CUnit has been removed.
+  destroy_unit(status, building, building.owner);
+
+  if (restore_geyser) {
+    try {
+      ScenarioUnitPreview geyser{};
+      geyser.unit_id = status.next_unit_id++;
+      geyser.owner = 11U;
+      if (!configure_preview_type(status, geyser, 188U)) {
+        --status.next_unit_id;
+        return true;
+      }
+      geyser.x = x;
+      geyser.y = y;
+      geyser.x_fixed = static_cast<std::int32_t>(x) << 8U;
+      geyser.y_fixed = static_cast<std::int32_t>(y) << 8U;
+      geyser.resource_amount = gas != 0U ? gas : 5000U;
+      status.units.push_back(std::move(geyser));
+    } catch (...) {
+      // Cancellation itself has already succeeded. A failed visual/resource
+      // allocation must not resurrect the canceled building.
+    }
+  }
+  return true;
 }
 
 const BuildableUnitVisual *

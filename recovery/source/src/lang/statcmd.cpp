@@ -18,6 +18,7 @@ using CommandAction = CommandButtonVisual::Action;
 
 void activate_command_button(BootstrapStatus &status,
                              const std::uint16_t position) noexcept {
+  const std::uint8_t command_owner = status.command_player;
   const CommandCardView card = command_card_for(status);
   for (std::size_t button_index = 0; button_index < card.count;
        ++button_index) {
@@ -39,7 +40,7 @@ void activate_command_button(BootstrapStatus &status,
       if (button.action == CommandAction::train_unit) {
         ScenarioUnitPreview *producer{};
         for (ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0U &&
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
               unit.construction_complete &&
               starcraft::lang::producer_builds_unit(unit.unit_type,
                                                     button.argument)) {
@@ -83,7 +84,10 @@ void activate_command_button(BootstrapStatus &status,
         }
         if (starting_queue) {
           producer->production_active = true;
-          producer->production_started = GetTickCount();
+          producer->production_started =
+              status.synchronized_command_execution
+                  ? status.command_execution_clock
+                  : GetTickCount();
           producer->production_kind =
               producer->unit_type == starcraft::lang::zerg_larva_type
                   ? starcraft::lang::UnitProductionKind::zerg_larva_morph
@@ -97,14 +101,16 @@ void activate_command_button(BootstrapStatus &status,
             // retaining the queued target at CUnit+0x98.
             (void)configure_preview_type(status, *producer,
                                          starcraft::lang::zerg_egg_type);
+            (void)displace_units_for_zerg_egg(status, *producer);
           } else {
             // CUnitBuild.cpp::sub_423020 dispatches Working (19) when the
             // first queue entry materializes.
             (void)restart_unit_animation(status, *producer, 19U);
           }
         }
-        status.player_minerals -= simulation.mineral_cost;
-        status.player_gas -= simulation.gas_cost;
+        spend_player_resources(status, command_owner,
+                               simulation.mineral_cost,
+                               simulation.gas_cost);
       } else if (button.action == CommandAction::begin_move_target) {
         // statbtn.cpp action 0x0047EA20 calls target.cpp::sub_4B0120 with
         // unit order 0x32 and empty-terrain order 7.
@@ -115,7 +121,7 @@ void activate_command_button(BootstrapStatus &status,
         status.last_command_opcode = 30;
         cancel_command_target(status);
         for (ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0 &&
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
               !unit.is_building) {
             cancel_unit_order(status, unit);
           }
@@ -140,6 +146,16 @@ void activate_command_button(BootstrapStatus &status,
         status.placement_valid = false;
         status.placement_unit_type = 0xFFFFU;
         status.nydus_parent_id = 0U;
+      } else if (button.action == CommandAction::cancel_construction) {
+        cancel_command_target(status);
+        status.active_command_card = 0U;
+        for (ScenarioUnitPreview &unit : status.units) {
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
+              unit.is_building && !unit.construction_complete) {
+            (void)cancel_building_construction(status, unit);
+            break;
+          }
+        }
       } else if (button.action == CommandAction::open_card) {
         cancel_command_target(status);
         status.active_command_card = button.argument;
@@ -162,7 +178,8 @@ void activate_command_button(BootstrapStatus &status,
         const ScenarioUnitPreview *const parent = first_selected_unit(status);
         std::uint16_t center_x{};
         std::uint16_t center_y{};
-        if (addon != nullptr && parent != nullptr && parent->owner == 0 &&
+        if (addon != nullptr && parent != nullptr &&
+            parent->owner == command_owner &&
             parent->construction_complete && parent->attached_addon_id == 0U &&
             resource_cost_available(status, addon->simulation.mineral_cost,
                                     addon->simulation.gas_cost) &&
@@ -176,7 +193,8 @@ void activate_command_button(BootstrapStatus &status,
           status.placement_y = center_y;
           status.placement_active = true;
           status.placement_valid =
-              placement_is_valid(status, *addon, center_x, center_y);
+              placement_is_valid(status, *addon, center_x, center_y,
+                                 command_owner);
           if (status.placement_valid) {
             (void)place_current_building(status);
           }
@@ -184,7 +202,7 @@ void activate_command_button(BootstrapStatus &status,
       } else if (button.action == CommandAction::research_technology) {
         ScenarioUnitPreview *building{};
         for (ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0U &&
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
               unit.is_building && unit.construction_complete) {
             building = &unit;
             break;
@@ -192,7 +210,10 @@ void activate_command_button(BootstrapStatus &status,
         }
         if (building == nullptr ||
             button.argument >= status.technology_traits.size() ||
-            status.researched_technologies[button.argument] ||
+            building->owner >=
+                status.player_researched_technologies.size() ||
+            status.player_researched_technologies[building->owner]
+                                                  [button.argument] ||
             building->active_technology != 28U ||
             building->active_upgrade != 46U) {
           return;
@@ -203,8 +224,8 @@ void activate_command_button(BootstrapStatus &status,
                                      traits.gas_cost)) {
           return;
         }
-        status.player_minerals -= traits.mineral_cost;
-        status.player_gas -= traits.gas_cost;
+        spend_player_resources(status, building->owner,
+                               traits.mineral_cost, traits.gas_cost);
         building->active_technology =
             static_cast<std::uint8_t>(button.argument);
         building->technology_ticks_total = static_cast<std::uint16_t>(
@@ -215,7 +236,7 @@ void activate_command_button(BootstrapStatus &status,
       } else if (button.action == CommandAction::upgrade_technology) {
         ScenarioUnitPreview *building{};
         for (ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0U &&
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
               unit.is_building && unit.construction_complete) {
             building = &unit;
             break;
@@ -229,7 +250,10 @@ void activate_command_button(BootstrapStatus &status,
         const std::size_t upgrade = button.argument;
         const starcraft::data::UpgradeResearchTraits &traits =
             status.upgrade_traits[upgrade];
-        const std::uint32_t level = status.upgrade_levels[upgrade];
+        const std::uint32_t level =
+            building->owner < status.player_upgrade_levels.size()
+                ? status.player_upgrade_levels[building->owner][upgrade]
+                : status.upgrade_levels[upgrade];
         if (level >= traits.maximum_level) {
           return;
         }
@@ -241,8 +265,7 @@ void activate_command_button(BootstrapStatus &status,
         if (!resource_cost_available(status, minerals, gas)) {
           return;
         }
-        status.player_minerals -= minerals;
-        status.player_gas -= gas;
+        spend_player_resources(status, building->owner, minerals, gas);
         building->active_upgrade = static_cast<std::uint8_t>(upgrade);
         building->technology_ticks_total = static_cast<std::uint16_t>(
             (std::max)(1U, raw_time >> 1U));
@@ -252,7 +275,7 @@ void activate_command_button(BootstrapStatus &status,
       } else if (button.action == CommandAction::morph_building) {
         ScenarioUnitPreview *building{};
         for (ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0U &&
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
               unit.is_building && unit.construction_complete) {
             building = &unit;
             break;
@@ -274,8 +297,9 @@ void activate_command_button(BootstrapStatus &status,
                                      simulation.gas_cost)) {
           return;
         }
-        status.player_minerals -= simulation.mineral_cost;
-        status.player_gas -= simulation.gas_cost;
+        spend_player_resources(status, building->owner,
+                               simulation.mineral_cost,
+                               simulation.gas_cost);
         building->construction_complete = false;
         building->construction_target_type = button.argument;
         building->construction_ticks_total = static_cast<std::uint16_t>(
@@ -300,7 +324,7 @@ void activate_command_button(BootstrapStatus &status,
       } else if (button.action == CommandAction::place_nydus_exit) {
         const ScenarioUnitPreview *const canal = first_selected_unit(status);
         const BuildableUnitVisual *const exit = find_buildable_unit(status, 134U);
-        if (canal == nullptr || canal->owner != 0U ||
+        if (canal == nullptr || canal->owner != command_owner ||
             canal->unit_type != 134U || !canal->construction_complete ||
             canal->attached_addon_id != 0U || exit == nullptr) {
           return;
@@ -318,8 +342,9 @@ void activate_command_button(BootstrapStatus &status,
           }
           const starcraft::data::TechnologyResearchTraits &traits =
               status.technology_traits[unit.active_technology];
-          status.player_minerals += 3U * traits.mineral_cost / 4U;
-          status.player_gas += 3U * traits.gas_cost / 4U;
+          refund_player_resources(status, unit.owner,
+                                  3U * traits.mineral_cost / 4U,
+                                  3U * traits.gas_cost / 4U);
           unit.active_technology = 28U;
           unit.technology_ticks_total = 0U;
           unit.technology_ticks_remaining = 0U;
@@ -335,11 +360,14 @@ void activate_command_button(BootstrapStatus &status,
           const std::size_t upgrade = unit.active_upgrade;
           const starcraft::data::UpgradeResearchTraits &traits =
               status.upgrade_traits[upgrade];
-          const std::uint32_t level = status.upgrade_levels[upgrade];
-          status.player_minerals +=
-              3U * (traits.mineral_cost + level * traits.mineral_factor) / 4U;
-          status.player_gas +=
-              3U * (traits.gas_cost + level * traits.gas_factor) / 4U;
+          const std::uint32_t level =
+              unit.owner < status.player_upgrade_levels.size()
+                  ? status.player_upgrade_levels[unit.owner][upgrade]
+                  : status.upgrade_levels[upgrade];
+          refund_player_resources(
+              status, unit.owner,
+              3U * (traits.mineral_cost + level * traits.mineral_factor) / 4U,
+              3U * (traits.gas_cost + level * traits.gas_factor) / 4U);
           unit.active_upgrade = 46U;
           unit.technology_ticks_total = 0U;
           unit.technology_ticks_remaining = 0U;
@@ -354,7 +382,7 @@ void activate_command_button(BootstrapStatus &status,
         // sub_4748E0. The recovered simulation keeps the unit stationary.
         cancel_command_target(status);
         for (ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0U &&
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
               !unit.is_building) {
             cancel_unit_order(status, unit);
           }
@@ -362,7 +390,7 @@ void activate_command_button(BootstrapStatus &status,
       } else if (button.action == CommandAction::toggle_cloak) {
         cancel_command_target(status);
         for (ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0U) {
+          if (unit.selected && unit.alive && unit.owner == command_owner) {
             (void)toggle_unit_cloak(status, unit, button.argument != 0U);
           }
         }
@@ -386,7 +414,7 @@ void activate_command_button(BootstrapStatus &status,
         std::array<std::uint32_t, 12> templars{};
         std::size_t count{};
         for (const ScenarioUnitPreview &unit : status.units) {
-          if (unit.selected && unit.alive && unit.owner == 0U &&
+          if (unit.selected && unit.alive && unit.owner == command_owner &&
               unit.unit_type == 67U &&
               count < templars.size()) {
             templars[count++] = unit.unit_id;
@@ -414,7 +442,8 @@ void activate_command_button(BootstrapStatus &status,
         // the same eight compact cargo slots for Dropships, Shuttles,
         // Overlords, and Bunkers.
         for (ScenarioUnitPreview &transport : status.units) {
-          if (transport.selected && transport.alive && transport.owner == 0U &&
+          if (transport.selected && transport.alive &&
+              transport.owner == command_owner &&
               transport.construction_complete) {
             (void)unload_transport_units(status, transport);
           }
@@ -627,6 +656,13 @@ constexpr std::array<CommandButtonVisual, 1> kBattlecruiserAbilities{{
 
 constexpr std::array<CommandButtonVisual, 1> kTargetCancelButtons{{
     {9, 236, 0, CommandAction::cancel_target},
+}};
+
+// Cards 231/232/234 each resolve their conditional position-nine record to
+// statbtn.cpp::sub_47EA00. That routine sends net command 0x1c (Order Kill)
+// for the one selected incomplete Terran/Zerg/Protoss structure.
+constexpr std::array<CommandButtonVisual, 1> kCancelConstructionButtons{{
+    {9, 236, 0, CommandAction::cancel_construction},
 }};
 
 constexpr std::array<CommandButtonVisual, 4> kCommandCenterButtons{{
@@ -938,11 +974,21 @@ CommandCardView command_card_for(const BootstrapStatus &status) noexcept {
   if (selected == nullptr) {
     return {};
   }
+  // statcmd.cpp's owner-condition callbacks suppress every actionable record
+  // when the first selected CUnit is not controlled by the local player. The
+  // stat/portrait panels remain independent of this command-card decision.
+  if (selected->owner != status.command_player) {
+    return {};
+  }
   if (status.command_target_active) {
     return {kTargetCancelButtons.data(), kTargetCancelButtons.size()};
   }
+  if (selected->is_building && !selected->construction_complete) {
+    return {kCancelConstructionButtons.data(),
+            kCancelConstructionButtons.size()};
+  }
   const auto technology_ready = [&](const std::uint8_t technology) noexcept {
-    return technology < status.researched_technologies.size() &&
+    return technology < status.technology_traits.size() &&
            selected->owner < status.player_researched_technologies.size() &&
            status.player_researched_technologies[selected->owner][technology];
   };
@@ -995,9 +1041,10 @@ CommandCardView command_card_for(const BootstrapStatus &status) noexcept {
     }
     const std::size_t selected_templars = static_cast<std::size_t>(
         std::count_if(status.units.begin(), status.units.end(),
-                      [](const ScenarioUnitPreview &unit) {
+                      [&status](const ScenarioUnitPreview &unit) {
                         return unit.selected && unit.alive &&
-                               unit.owner == 0U && unit.unit_type == 67U;
+                               unit.owner == status.command_player &&
+                               unit.unit_type == 67U;
                       }));
     // Conditions 0x004A3160/0x004A3180 choose two records at the same
     // position.  The first is the unavailable placeholder; the second
@@ -1136,14 +1183,11 @@ CommandCardView command_card_for(const BootstrapStatus &status) noexcept {
       for (std::size_t index = 0; index < building.count; ++index) {
         const CommandButtonVisual &button = building.buttons[index];
         if (button.action == CommandAction::research_technology &&
-            (button.argument >= status.researched_technologies.size() ||
-             status.researched_technologies[button.argument])) {
-          continue;
-        }
-        if (button.action == CommandAction::upgrade_technology &&
-            (button.argument >= status.upgrade_levels.size() ||
-             status.upgrade_levels[button.argument] >=
-                 status.upgrade_traits[button.argument].maximum_level)) {
+            (button.argument >= status.technology_traits.size() ||
+             selected->owner >=
+                 status.player_researched_technologies.size() ||
+             status.player_researched_technologies[selected->owner]
+                                                   [button.argument])) {
           continue;
         }
         available[count++] = button;
@@ -1225,13 +1269,40 @@ void draw_selected_command_panel_gl(const RecoveryWindowState &state) {
       (hovered->action != CommandAction::train_unit &&
        hovered->action != CommandAction::begin_building_placement &&
        hovered->action != CommandAction::build_addon &&
-       hovered->action != CommandAction::morph_building)) {
+       hovered->action != CommandAction::morph_building &&
+       hovered->action != CommandAction::upgrade_technology)) {
     return;
   }
 
   std::uint32_t mineral_cost{};
   std::uint32_t gas_cost{};
-  if (hovered->argument < status->runtime_unit_types.size() &&
+  std::string name;
+  std::string prerequisite_text;
+  UnitRequirementResult requirements{};
+  if (hovered->action == CommandAction::upgrade_technology &&
+      hovered->argument < status->upgrade_traits.size()) {
+    const auto &traits = status->upgrade_traits[hovered->argument];
+    const std::uint32_t level =
+        selected->owner < status->player_upgrade_levels.size()
+            ? status->player_upgrade_levels[selected->owner]
+                                           [hovered->argument]
+            : status->upgrade_levels[hovered->argument];
+    mineral_cost = traits.mineral_cost + level * traits.mineral_factor;
+    gas_cost = traits.gas_cost + level * traits.gas_factor;
+    const std::uint16_t label_id =
+        hovered->argument < status->upgrade_display_traits.size()
+            ? status->upgrade_display_traits[hovered->argument].label_string_id
+            : 0U;
+    name = printable_status_text(status_text(*status, label_id));
+    if (name.empty()) {
+      name = "Upgrade " + std::to_string(hovered->argument);
+    }
+    prerequisite_text =
+        level >= traits.maximum_level
+            ? "Maximum level reached"
+            : "Upgrade to level " + std::to_string(level + 1U) + " of " +
+                  std::to_string(traits.maximum_level);
+  } else if (hovered->argument < status->runtime_unit_types.size() &&
       status->runtime_unit_types[hovered->argument].ready) {
     const auto &simulation = status->runtime_unit_types[hovered->argument]
                                  .initialization.simulation;
@@ -1245,30 +1316,34 @@ void draw_selected_command_panel_gl(const RecoveryWindowState &state) {
     return;
   }
 
-  const UnitRequirementResult requirements =
-      unit_requirements_for(*status, *selected, hovered->argument);
-  std::string name = printable_status_text(
-      status_text(*status, static_cast<std::uint16_t>(hovered->argument + 1U)));
-  if (name.empty()) {
-    name = "Unit " + std::to_string(hovered->argument);
+  if (hovered->action != CommandAction::upgrade_technology) {
+    requirements = unit_requirements_for(*status, *selected, hovered->argument);
+    name = printable_status_text(status_text(
+        *status, static_cast<std::uint16_t>(hovered->argument + 1U)));
+    if (name.empty()) {
+      name = "Unit " + std::to_string(hovered->argument);
+    }
   }
   const std::string cost = "Minerals: " + std::to_string(mineral_cost) +
                            "   Gas: " + std::to_string(gas_cost);
-  std::string prerequisite_text = "Requires: ";
-  if (requirements.required_count == 0U) {
-    prerequisite_text += "None";
-  } else {
-    for (std::size_t index = 0; index < requirements.required_count; ++index) {
-      if (index != 0U) {
-        prerequisite_text += ", ";
+  if (hovered->action != CommandAction::upgrade_technology) {
+    prerequisite_text = "Requires: ";
+    if (requirements.required_count == 0U) {
+      prerequisite_text += "None";
+    } else {
+      for (std::size_t index = 0; index < requirements.required_count;
+           ++index) {
+        if (index != 0U) {
+          prerequisite_text += ", ";
+        }
+        std::string prerequisite = printable_status_text(status_text(
+            *status, static_cast<std::uint16_t>(
+                         requirements.required_units[index] + 1U)));
+        prerequisite_text += prerequisite.empty()
+                                 ? "Unit " + std::to_string(
+                                                requirements.required_units[index])
+                                 : prerequisite;
       }
-      std::string prerequisite = printable_status_text(status_text(
-          *status, static_cast<std::uint16_t>(
-                       requirements.required_units[index] + 1U)));
-      prerequisite_text += prerequisite.empty()
-                               ? "Unit " + std::to_string(
-                                              requirements.required_units[index])
-                               : prerequisite;
     }
   }
 
@@ -1296,18 +1371,20 @@ void draw_selected_command_panel_gl(const RecoveryWindowState &state) {
   glVertex2f(left, top + 46.0F);
   glEnd();
   glColor4ub(255U, 255U, 255U, 255U);
-  const bool cost_missing = status->player_minerals < mineral_cost ||
-                            status->player_gas < gas_cost;
+  const bool cost_missing =
+      player_minerals_for(*status, selected->owner) < mineral_cost ||
+      player_gas_for(*status, selected->owner) < gas_cost;
   draw_game_text_gl(state, name, left + 5.0F, top + 4.0F, 235U, 235U,
                     235U);
   draw_game_text_gl(state, cost, left + 5.0F, top + 17.0F,
                     cost_missing ? 255U : 210U,
                     cost_missing ? 70U : 210U,
                     cost_missing ? 60U : 210U);
+  const bool unavailable = !command_button_enabled(*status, *selected, *hovered);
   draw_game_text_gl(state, prerequisite_text, left + 5.0F, top + 30.0F,
-                    requirements.missing_count != 0U ? 255U : 210U,
-                    requirements.missing_count != 0U ? 75U : 210U,
-                    requirements.missing_count != 0U ? 60U : 210U);
+                    unavailable ? 255U : 210U,
+                    unavailable ? 75U : 210U,
+                    unavailable ? 60U : 210U);
 }
 
 std::uint16_t command_position_at(const BootstrapStatus &status,

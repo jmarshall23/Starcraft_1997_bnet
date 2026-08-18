@@ -5,6 +5,7 @@
 #include "starcraft/gds/font.hpp"
 #include "starcraft/gds/tileset.hpp"
 #include "starcraft/lang/cunit_build.hpp"
+#include "starcraft/lang/CAI.h"
 #include "starcraft/lang/cunit_harvest.hpp"
 #include "starcraft/lang/cunit_init.hpp"
 #include "starcraft/lang/iscript.hpp"
@@ -27,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -200,6 +202,9 @@ struct GlueLobbySlot {
   std::uint8_t ownership{};
   std::uint8_t race{};
   bool local{};
+  bool open{};
+  bool network_player{};
+  bool network_configurable{};
 };
 
 enum class GlueFontStyle : std::uint8_t {
@@ -411,11 +416,17 @@ struct UnitRenderAsset {
   std::uint32_t special_overlay_point_count{};
   // Signed x/y pairs, indexed as (frame * point_count + point) * 2.
   std::vector<std::int8_t> special_overlay_points{};
+  std::string damage_overlay_path{};
+  std::uint32_t damage_overlay_frame_count{};
+  std::uint32_t damage_overlay_point_count{};
+  // Signed x/y pairs from images.dat field 11's LO table.
+  std::vector<std::int8_t> damage_overlay_points{};
 };
 
 enum class ActiveUnitOrder : std::uint8_t {
   none,
   move,
+  attack_move,
   attack,
   repair,
   construct,
@@ -478,6 +489,10 @@ struct ScenarioUnitPreview {
   std::size_t movement_path_index{};
   std::uint16_t movement_final_x{};
   std::uint16_t movement_final_y{};
+  // CUnitCombat.cpp::sub_4288E0 keeps order 15's destination while it
+  // temporarily switches to order 9 for an acquired enemy.
+  std::uint16_t attack_move_target_x{};
+  std::uint16_t attack_move_target_y{};
   std::uint32_t max_hit_points{};
   std::uint32_t hit_points{};
   std::uint32_t max_shield_points{};
@@ -557,6 +572,12 @@ struct ScenarioUnitPreview {
   // sai_path.cpp path object +17. sub_4926E0 counts this down before another
   // blocked-path search and the recovered transition reloads it with 25.
   std::uint8_t path_recheck_ticks{};
+  // CUnitCombat.cpp::sub_427610 starts the attack image action; its IScript
+  // weapon opcode is the actual firing boundary.
+  std::uint8_t attack_fire_timeout{};
+  // CUnit+167 in sub_42BBA0. 0xFF means the damage attachment state has not
+  // yet been initialized for this primary image.
+  std::uint8_t damage_overlay_stage{0xFFU};
   std::int8_t avoidance_turn{};
   starcraft::lang::UnitProductionQueue production_queue{};
   starcraft::lang::UnitHarvestQueue harvest_queue{};
@@ -586,8 +607,20 @@ struct ScenarioUnitPreview {
   bool dying{};
   bool in_transport{};
   bool is_projectile{};
+  bool projectile_birth_pending{};
   bool hangar_launched{};
   bool archon_merging{};
+  bool attack_move_resume{};
+  bool attack_fire_pending{};
+  bool is_damage_overlay{};
+  bool damage_overlay_heavy{};
+  std::uint8_t damage_overlay_point{};
+  std::uint32_t damage_overlay_parent_id{};
+  // CUnitZBuild.cpp::sub_447820 leaves the hatched unit in its special
+  // birth image until opcode 0x27 publishes the completion flag.  The
+  // collision release is deferred to that boundary so the unit does not
+  // slide away while it is still visually inside the egg.
+  bool zerg_hatch_release_pending{};
   // The original Protoss building CUnit occupies its footprint while image
   // 189 performs the warp-in entrance ahead of the primary building image.
   bool construction_visible{true};
@@ -648,6 +681,7 @@ struct ProtossSpellEffect {
 };
 
 struct AiPlayerRuntime {
+  std::shared_ptr<CAI> controller{};
   std::array<AiBuildRequest, 64> build_requests{};
   std::uint32_t script_pc{};
   std::uint16_t sleep_ticks{};
@@ -659,6 +693,7 @@ struct AiPlayerRuntime {
   bool enabled{};
   bool script_active{};
   bool attack_requested{};
+  std::string script_error{};
 };
 
 struct CommandControl {
@@ -672,6 +707,26 @@ struct CommandControl {
 struct CargoStatusSlot {
   std::uint32_t unit_id{};
   std::uint16_t control_id{};
+};
+
+enum class StatusStatKind : std::uint8_t {
+  weapon,
+  armor,
+  shields,
+};
+
+struct StatusStatVisual {
+  std::uint16_t icon{};
+  std::uint16_t source_id{};
+  std::uint16_t base_value{};
+  std::uint16_t bonus_value{};
+  std::uint8_t level{};
+  StatusStatKind kind{StatusStatKind::weapon};
+};
+
+struct DatDisplayVisual {
+  std::uint16_t label_string_id{};
+  std::uint16_t icon{};
 };
 
 struct CommandButtonVisual {
@@ -697,6 +752,7 @@ struct CommandButtonVisual {
     place_nydus_exit,
     cancel_research,
     cancel_upgrade,
+    cancel_construction,
     begin_patrol_target,
     hold_position,
     toggle_cloak,
@@ -826,6 +882,9 @@ struct BootstrapStatus {
   CommandControl status_name_control{};
   CommandControl status_health_control{};
   CommandControl status_aux_control{};
+  // statdata.bin controls 9..12 are populated by
+  // statdraw.cpp::sub_4A6D20 with armor, shields, and distinct weapons.
+  std::vector<CommandControl> status_stat_controls{};
   CommandControl status_action_label_control{};
   CommandControl status_progress_control{};
   CommandControl status_construction_label_control{};
@@ -901,11 +960,13 @@ struct BootstrapStatus {
   std::array<starcraft::data::TechnologyResearchTraits, 28>
       technology_traits{};
   std::array<starcraft::data::WeaponSimulationTraits, 66> weapon_traits{};
+  std::vector<DatDisplayVisual> weapon_display_traits{};
   std::array<std::size_t, 66> weapon_asset_indices{};
   std::array<std::uint8_t, 156> order_weapons{};
   std::array<std::uint8_t, 156> order_technologies{};
   std::array<std::uint8_t, 156> order_animations{};
   std::array<starcraft::data::UpgradeResearchTraits, 46> upgrade_traits{};
+  std::vector<DatDisplayVisual> upgrade_display_traits{};
   std::array<bool, 28> researched_technologies{};
   std::array<std::uint8_t, 46> upgrade_levels{};
   std::array<std::array<bool, 28>, starcraft::data::chk_player_slot_count>
@@ -928,6 +989,14 @@ struct BootstrapStatus {
       minerals_gathered{};
   std::array<std::uint32_t, starcraft::data::chk_player_slot_count>
       gas_gathered{};
+  // UI reads local_player while deterministic command playback temporarily
+  // assigns command_player to the slot that authored the committed command.
+  std::uint8_t local_player{};
+  std::uint8_t command_player{};
+  // Battle.net commands use the committed simulation turn as their clock so
+  // production starts at exactly the same instant on every peer.
+  std::uint32_t command_execution_clock{};
+  bool synchronized_command_execution{};
   std::uint8_t local_race{};
   bool team_colors_ready{};
   std::vector<std::uint8_t> game_palette{};
@@ -982,6 +1051,7 @@ struct BootstrapStatus {
   bool creep_source_state_ready{};
   std::uint32_t creep_rebuild_count{};
   std::vector<std::uint8_t> ai_script_bytes{};
+  AiDifficulty ai_difficulty{AiDifficulty::medium};
   std::array<AiPlayerRuntime, 8> ai_players{};
   std::vector<ScenarioUnitPreview> units{};
   std::vector<ScenarioUnitPreview> transient_images{};
@@ -1264,6 +1334,9 @@ void draw_system_message_gl(const RecoveryWindowState &state,
 void advance_resource_display(BootstrapStatus &status) noexcept;
 [[nodiscard]] std::array<std::uint32_t, 2>
 local_supply(const BootstrapStatus &status) noexcept;
+[[nodiscard]] std::array<std::uint32_t, 2>
+player_supply(const BootstrapStatus &status, std::uint8_t owner,
+              std::uint8_t race) noexcept;
 [[nodiscard]] std::size_t
 resource_supply_icon_frame(std::uint8_t race) noexcept;
 void draw_resource_strip_gl(const RecoveryWindowState &state);
@@ -1292,14 +1365,14 @@ void draw_minimap_gl(const BootstrapStatus &status);
 rebuild_fog_render_surfaces(BootstrapStatus &status) noexcept;
 [[nodiscard]] FogTileState fog_tile_state(
     const BootstrapStatus &status, int tile_x, int tile_y,
-    std::uint8_t player = 0U) noexcept;
+    std::uint8_t player) noexcept;
 [[nodiscard]] bool fog_world_position_visible(
     const BootstrapStatus &status, std::uint16_t world_x,
-    std::uint16_t world_y, std::uint8_t player = 0U) noexcept;
+    std::uint16_t world_y, std::uint8_t player) noexcept;
 [[nodiscard]] bool fog_unit_visible(
     const BootstrapStatus &status,
     const ScenarioUnitPreview &unit,
-    std::uint8_t player = 0U) noexcept;
+    std::uint8_t player) noexcept;
 void draw_hud_control_frame_gl(const SpritePreviewFrame &frame,
                                const CommandControl &control);
 void draw_selected_command_panel_gl(const RecoveryWindowState &state);
@@ -1349,6 +1422,16 @@ void post_resource_error(BootstrapStatus &status, bool gas) noexcept;
 [[nodiscard]] bool resource_cost_available(BootstrapStatus &status,
                                            std::uint32_t mineral_cost,
                                            std::uint32_t gas_cost) noexcept;
+[[nodiscard]] std::uint32_t player_minerals_for(
+    const BootstrapStatus &status, std::uint8_t player) noexcept;
+[[nodiscard]] std::uint32_t player_gas_for(
+    const BootstrapStatus &status, std::uint8_t player) noexcept;
+void spend_player_resources(BootstrapStatus &status, std::uint8_t player,
+                            std::uint32_t minerals,
+                            std::uint32_t gas) noexcept;
+void refund_player_resources(BootstrapStatus &status, std::uint8_t player,
+                             std::uint32_t minerals,
+                             std::uint32_t gas) noexcept;
 
 [[nodiscard]] bool restart_unit_animation(BootstrapStatus &status,
                                            ScenarioUnitPreview &unit,
@@ -1399,6 +1482,9 @@ void cancel_unit_order(BootstrapStatus &status,
 [[nodiscard]] std::size_t issue_scv_move_order(BootstrapStatus &status,
                                                std::uint16_t target_x,
                                                std::uint16_t target_y) noexcept;
+[[nodiscard]] std::size_t issue_scv_attack_move_order(
+    BootstrapStatus &status, std::uint16_t target_x,
+    std::uint16_t target_y) noexcept;
 [[nodiscard]] std::uint32_t
 effective_unit_top_speed(const BootstrapStatus &status,
                          const ScenarioUnitPreview &unit) noexcept;
@@ -1419,7 +1505,9 @@ find_unit_by_id(const BootstrapStatus &status, std::uint32_t unit_id) noexcept;
                                      const ScenarioUnitPreview &right) noexcept;
 [[nodiscard]] bool
 plan_scv_interaction_path(BootstrapStatus &status, ScenarioUnitPreview &worker,
-                          const ScenarioUnitPreview &target) noexcept;
+                          const ScenarioUnitPreview &target,
+                          int interaction_range,
+                          ActiveUnitOrder order) noexcept;
 [[nodiscard]] bool begin_scv_interaction(BootstrapStatus &status,
                                          ScenarioUnitPreview &worker,
                                          const ScenarioUnitPreview &target,
@@ -1454,17 +1542,42 @@ void initialize_unit_energy(const BootstrapStatus &status,
                             ScenarioUnitPreview &unit) noexcept;
 void apply_fixed_unit_damage(ScenarioUnitPreview &target,
                              std::uint32_t damage) noexcept;
+void apply_combat_unit_damage(BootstrapStatus &status,
+                              ScenarioUnitPreview &target,
+                              std::uint32_t damage,
+                              std::uint32_t attacker_id,
+                              std::uint8_t attacking_owner) noexcept;
+void apply_weapon_unit_damage(BootstrapStatus &status,
+                              ScenarioUnitPreview &target,
+                              std::uint32_t raw_damage,
+                              std::uint8_t weapon_type,
+                              std::uint32_t attacker_id,
+                              std::uint8_t attacking_owner) noexcept;
+[[nodiscard]] bool fire_pending_unit_weapon(
+    BootstrapStatus &status, ScenarioUnitPreview &attacker,
+    std::uint8_t weapon_event) noexcept;
+[[nodiscard]] bool
+advance_building_damage_states(BootstrapStatus &status) noexcept;
 void destroy_unit(BootstrapStatus &status, ScenarioUnitPreview &target,
                   std::uint8_t attacking_owner) noexcept;
+[[nodiscard]] bool cancel_building_construction(
+    BootstrapStatus &status, ScenarioUnitPreview &building) noexcept;
 void cancel_command_target(BootstrapStatus &status) noexcept;
 void begin_command_target(BootstrapStatus &status, std::uint8_t unit_order,
                           std::uint8_t terrain_order) noexcept;
 [[nodiscard]] std::size_t
 issue_active_scv_target(BootstrapStatus &status, std::uint16_t world_x,
-                        std::uint16_t world_y) noexcept;
+                        std::uint16_t world_y,
+                        std::uint32_t target_unit_id = UINT32_MAX) noexcept;
 [[nodiscard]] std::size_t issue_scv_smart_order(BootstrapStatus &status,
                                                 std::uint16_t world_x,
                                                 std::uint16_t world_y) noexcept;
+[[nodiscard]] std::uint32_t
+smart_order_target_at(const BootstrapStatus &status, std::uint16_t world_x,
+                      std::uint16_t world_y) noexcept;
+[[nodiscard]] std::size_t issue_scv_smart_order_target(
+    BootstrapStatus &status, std::uint16_t world_x, std::uint16_t world_y,
+    std::uint32_t target_unit_id) noexcept;
 [[nodiscard]] std::size_t
 issue_scv_return_cargo(BootstrapStatus &status) noexcept;
 [[nodiscard]] bool advance_unit_movement(BootstrapStatus &status) noexcept;
@@ -1542,6 +1655,8 @@ void activate_command_button(BootstrapStatus &status,
 [[nodiscard]] bool advance_unit_production(BootstrapStatus &status,
                                            std::uint32_t now) noexcept;
 [[nodiscard]] bool advance_zerg_larvae(BootstrapStatus &status) noexcept;
+[[nodiscard]] std::size_t displace_units_for_zerg_egg(
+    BootstrapStatus &status, ScenarioUnitPreview &egg) noexcept;
 void shutdown_audio(RecoveryWindowState &state) noexcept;
 [[nodiscard]] bool initialize_audio(RecoveryWindowState &state) noexcept;
 [[nodiscard]] bool
@@ -1573,6 +1688,21 @@ void draw_debug_console(RecoveryWindowState &state,
 [[nodiscard]] bool queue_unit_response(BootstrapStatus &status,
                                        const ScenarioUnitPreview &unit,
                                        bool order_acknowledgement) noexcept;
+[[nodiscard]] bool queue_network_smart_order(
+    RecoveryWindowState &state, std::uint16_t world_x,
+    std::uint16_t world_y) noexcept;
+[[nodiscard]] bool queue_network_command_button(
+    RecoveryWindowState &state, std::uint16_t position) noexcept;
+[[nodiscard]] bool queue_network_target_order(
+    RecoveryWindowState &state, std::uint16_t world_x,
+    std::uint16_t world_y) noexcept;
+[[nodiscard]] bool queue_network_building_placement(
+    RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool take_network_outgoing_payload(
+    battle::BattleRuntime &runtime, std::uint32_t turn,
+    std::vector<std::uint8_t> &payload) noexcept;
+[[nodiscard]] bool apply_network_committed_turn(
+    BootstrapStatus &status, const battle::CommittedTurn &commit) noexcept;
 void clear_selection(BootstrapStatus &status) noexcept;
 [[nodiscard]] std::size_t
 selection_count(const BootstrapStatus &status) noexcept;
@@ -1589,6 +1719,9 @@ void complete_selection_drag(RecoveryWindowState &state) noexcept;
 [[nodiscard]] std::size_t
 status_selection_unit_at(const BootstrapStatus &status, int game_x,
                          int game_y) noexcept;
+[[nodiscard]] std::size_t status_stat_visuals(
+    const BootstrapStatus &status, const ScenarioUnitPreview &unit,
+    std::array<StatusStatVisual, 4> &visuals) noexcept;
 [[nodiscard]] std::filesystem::path executable_directory();
 [[nodiscard]] std::filesystem::path locate_input_root();
 [[nodiscard]] bool read_loose_file(const std::filesystem::path &path,
@@ -1607,7 +1740,9 @@ extract_unit_sound_ranges(const starcraft::data::CoreDataSet &data,
     const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
         *ownership_override = nullptr,
     const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
-        *race_override = nullptr);
+        *race_override = nullptr,
+    std::uint32_t melee_start_seed = 0U,
+    std::uint8_t local_player = 0U);
 [[nodiscard]] bool initialize_opengl(HWND window,
                                      RecoveryWindowState &state) noexcept;
 void shutdown_opengl(HWND window, RecoveryWindowState &state) noexcept;

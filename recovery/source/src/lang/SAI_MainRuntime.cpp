@@ -2,6 +2,7 @@
 
 #include "starcraft/lang/cunit_build.hpp"
 #include "starcraft/lang/cunit_protoss.hpp"
+#include "starcraft/lang/cunit_terran.hpp"
 #include "starcraft/lang/cunit_zerg.hpp"
 #include "starcraft/lang/place_unit.hpp"
 
@@ -76,6 +77,10 @@ std::size_t planned_count(const BootstrapStatus &status,
   for (const ScenarioUnitPreview &producer : status.units) {
     if (!producer.alive || producer.owner != owner) {
       continue;
+    }
+    if (!producer.construction_complete &&
+        producer.construction_target_type == unit_type) {
+      ++count;
     }
     for (std::size_t queued = 0; queued < producer.production_queue.count();
          ++queued) {
@@ -269,8 +274,8 @@ bool advance_ai_script(BootstrapStatus &status, AiPlayerRuntime &ai) noexcept {
   return changed;
 }
 
-ScenarioUnitPreview *idle_worker(BootstrapStatus &status,
-                                 const std::uint8_t owner) noexcept {
+ScenarioUnitPreview *available_builder(BootstrapStatus &status,
+                                       const std::uint8_t owner) noexcept {
   starcraft::lang::MeleeUnitTypes types{};
   if (!starcraft::lang::melee_unit_types(status.ai_players[owner].race, types)) {
     return nullptr;
@@ -280,6 +285,22 @@ ScenarioUnitPreview *idle_worker(BootstrapStatus &status,
         unit.active_order == ActiveUnitOrder::none && !unit.moving) {
       return &unit;
     }
+  }
+
+  // The strategy request often arrives after the opening workers have
+  // already entered CUnit resource orders.  SAI_Build does not wait for a
+  // miner to become naturally idle: it removes one eligible worker from its
+  // resource group and assigns the construction order.  Reclaim a visible
+  // empty-handed mineral worker here; cancel_unit_order also releases its
+  // recovered HarvestQueue slot before construction takes ownership.
+  for (ScenarioUnitPreview &unit : status.units) {
+    if (!unit.alive || unit.owner != owner || unit.unit_type != types.worker ||
+        unit.active_order != ActiveUnitOrder::gather || unit.sprite_hidden ||
+        unit.cargo_minerals != 0U || unit.cargo_gas != 0U) {
+      continue;
+    }
+    cancel_unit_order(status, unit);
+    return &unit;
   }
   return nullptr;
 }
@@ -304,6 +325,23 @@ bool assign_ai_harvest(BootstrapStatus &status, AiPlayerRuntime &ai) noexcept {
                 .initialization.simulation.gas_cost) {
       gas_needed = true;
     }
+    if (request.kind == 1U && request.unit_type < status.upgrade_traits.size()) {
+      const auto &traits = status.upgrade_traits[request.unit_type];
+      const std::uint32_t level =
+          status.player_upgrade_levels[ai.owner][request.unit_type];
+      if (level < request.quantity && level < traits.maximum_level &&
+          status.player_gas_stock[ai.owner] <
+              traits.gas_cost + level * traits.gas_factor) {
+        gas_needed = true;
+      }
+    }
+    if (request.kind == 2U &&
+        request.unit_type < status.technology_traits.size() &&
+        !status.player_researched_technologies[ai.owner][request.unit_type] &&
+        status.player_gas_stock[ai.owner] <
+            status.technology_traits[request.unit_type].gas_cost) {
+      gas_needed = true;
+    }
   }
   std::size_t gas_workers = static_cast<std::size_t>(std::count_if(
       status.units.begin(), status.units.end(), [&status, &ai](const auto &unit) {
@@ -317,6 +355,13 @@ bool assign_ai_harvest(BootstrapStatus &status, AiPlayerRuntime &ai) noexcept {
                (source->unit_type == 110U || source->unit_type == 149U ||
                 source->unit_type == 157U);
       }));
+  const bool completed_refinery = std::any_of(
+      status.units.begin(), status.units.end(), [&ai](const auto &unit) {
+        return unit.alive && unit.owner == ai.owner &&
+               unit.construction_complete && unit.resource_amount != 0U &&
+               (unit.unit_type == 110U || unit.unit_type == 149U ||
+                unit.unit_type == 157U);
+      });
   for (ScenarioUnitPreview &worker : status.units) {
     starcraft::lang::MeleeUnitTypes types{};
     if (!starcraft::lang::melee_unit_types(ai.race, types) || !worker.alive ||
@@ -330,7 +375,10 @@ bool assign_ai_harvest(BootstrapStatus &status, AiPlayerRuntime &ai) noexcept {
     }
     const ScenarioUnitPreview *nearest{};
     std::uint64_t nearest_distance = UINT64_MAX;
-    const bool seek_gas = gas_needed && gas_workers < 3U;
+    // Do not strand an opening economy waiting for a gas structure that it
+    // does not yet have the minerals to build. Until a completed refinery is
+    // harvestable, every non-reserved worker must fall back to minerals.
+    const bool seek_gas = gas_needed && completed_refinery && gas_workers < 3U;
     for (const ScenarioUnitPreview &resource : status.units) {
       const bool mineral =
           resource.unit_type >= 176U && resource.unit_type <= 178U;
@@ -366,15 +414,102 @@ bool find_ai_build_site(const BootstrapStatus &status,
                         std::uint16_t &output_y) noexcept {
   if (buildable.unit_type == 110U || buildable.unit_type == 149U ||
       buildable.unit_type == 157U) {
+    const ScenarioUnitPreview *base{};
+    for (const ScenarioUnitPreview &unit : status.units) {
+      if (unit.alive && unit.owner == owner &&
+          (unit.unit_type == 106U || starcraft::lang::is_zerg_town_hall(unit.unit_type) ||
+           unit.unit_type == 154U)) {
+        base = &unit;
+        break;
+      }
+    }
+    const ScenarioUnitPreview *best{};
+    std::uint64_t best_distance = UINT64_MAX;
     for (const ScenarioUnitPreview &geyser : status.units) {
       if (geyser.alive && geyser.unit_type == 188U &&
           placement_is_valid(status, buildable, geyser.x, geyser.y, owner)) {
-        output_x = geyser.x;
-        output_y = geyser.y;
-        return true;
+        const std::int64_t dx = base == nullptr ? 0 :
+            static_cast<int>(geyser.x) - base->x;
+        const std::int64_t dy = base == nullptr ? 0 :
+            static_cast<int>(geyser.y) - base->y;
+        const std::uint64_t distance =
+            static_cast<std::uint64_t>(dx * dx + dy * dy);
+        if (best == nullptr || distance < best_distance) {
+          best = &geyser;
+          best_distance = distance;
+        }
       }
     }
-    return false;
+    if (best == nullptr) return false;
+    output_x = best->x;
+    output_y = best->y;
+    return true;
+  }
+  const bool town_hall = buildable.unit_type == 106U ||
+                         buildable.unit_type == 131U ||
+                         buildable.unit_type == 154U;
+  if (town_hall && owned_count(status, owner, buildable.unit_type) != 0U) {
+    bool found{};
+    std::uint64_t best_score = UINT64_MAX;
+    const int half_width = buildable.placement_width / 2;
+    const int half_height = buildable.placement_height / 2;
+    for (const ScenarioUnitPreview &mineral : status.units) {
+      if (!mineral.alive || mineral.unit_type < 176U ||
+          mineral.unit_type > 178U || mineral.resource_amount == 0U) {
+        continue;
+      }
+      bool serviced{};
+      for (const ScenarioUnitPreview &base : status.units) {
+        if (!base.alive || base.owner != owner ||
+            (base.unit_type != 106U &&
+             !starcraft::lang::is_zerg_town_hall(base.unit_type) &&
+             base.unit_type != 154U)) {
+          continue;
+        }
+        const std::int64_t dx = static_cast<int>(base.x) - mineral.x;
+        const std::int64_t dy = static_cast<int>(base.y) - mineral.y;
+        if (dx * dx + dy * dy < 384LL * 384LL) {
+          serviced = true;
+          break;
+        }
+      }
+      if (serviced) continue;
+      for (int radius = 4; radius <= 10; ++radius) {
+        for (int edge = -radius; edge <= radius; ++edge) {
+          const std::array<std::array<int, 2>, 4> points{{
+              {{edge, -radius}}, {{radius, edge}},
+              {{-edge, radius}}, {{-radius, -edge}},
+          }};
+          for (const auto &point : points) {
+            const int left = ((static_cast<int>(mineral.x) + point[0] * 32 -
+                               half_width + 16) / 32) * 32;
+            const int top = ((static_cast<int>(mineral.y) + point[1] * 32 -
+                              half_height + 16) / 32) * 32;
+            const int center_x = left + half_width;
+            const int center_y = top + half_height;
+            if (center_x < 0 || center_y < 0 || center_x > UINT16_MAX ||
+                center_y > UINT16_MAX ||
+                !placement_is_valid(status, buildable,
+                                    static_cast<std::uint16_t>(center_x),
+                                    static_cast<std::uint16_t>(center_y),
+                                    owner)) {
+              continue;
+            }
+            const std::int64_t dx = center_x - mineral.x;
+            const std::int64_t dy = center_y - mineral.y;
+            const std::uint64_t score =
+                static_cast<std::uint64_t>(dx * dx + dy * dy);
+            if (score < best_score) {
+              best_score = score;
+              output_x = static_cast<std::uint16_t>(center_x);
+              output_y = static_cast<std::uint16_t>(center_y);
+              found = true;
+            }
+          }
+        }
+      }
+    }
+    if (found) return true;
   }
   const ScenarioUnitPreview *anchor{};
   for (const ScenarioUnitPreview &unit : status.units) {
@@ -421,7 +556,69 @@ bool find_ai_build_site(const BootstrapStatus &status,
 
 bool start_ai_building(BootstrapStatus &status, AiPlayerRuntime &ai,
                        const BuildableUnitVisual &buildable) noexcept {
-  ScenarioUnitPreview *worker = idle_worker(status, ai.owner);
+  if ((buildable.simulation.dat_flags & 2U) != 0U) {
+    for (ScenarioUnitPreview &candidate : status.units) {
+      if (!candidate.alive || candidate.owner != ai.owner ||
+          !candidate.construction_complete ||
+          candidate.unit_type != buildable.addon_parent_type ||
+          candidate.attached_addon_id != 0U) {
+        continue;
+      }
+      const UnitRequirementResult requirements =
+          unit_requirements_for(status, candidate, buildable.unit_type);
+      std::uint16_t center_x{};
+      std::uint16_t center_y{};
+      if (!requirements.visible || !requirements.allowed ||
+          !addon_center_for_parent(buildable, candidate, center_x, center_y) ||
+          !placement_is_valid(status, buildable, center_x, center_y, ai.owner)) {
+        continue;
+      }
+      auto &minerals = status.player_mineral_stock[ai.owner];
+      auto &gas = status.player_gas_stock[ai.owner];
+      if (minerals < buildable.simulation.mineral_cost ||
+          gas < buildable.simulation.gas_cost) {
+        return false;
+      }
+      ScenarioUnitPreview addon{};
+      addon.unit_id = status.next_unit_id++;
+      if (!configure_preview_type(status, addon, buildable.unit_type)) {
+        return false;
+      }
+      addon.x = center_x;
+      addon.y = center_y;
+      addon.x_fixed = static_cast<std::int32_t>(center_x) << 8U;
+      addon.y_fixed = static_cast<std::int32_t>(center_y) << 8U;
+      addon.owner = ai.owner;
+      addon.is_building = true;
+      addon.construction_complete = false;
+      addon.construction_ticks_total = static_cast<std::uint16_t>((std::max)(
+          1U, static_cast<unsigned>(buildable.simulation.build_time) >> 1U));
+      addon.construction_ticks_remaining = addon.construction_ticks_total;
+      addon.hit_points = (std::max)(1U, addon.max_hit_points / 10U);
+      addon.addon_parent_id = candidate.unit_id;
+      addon.construction_animation_phase = 0U;
+      if (buildable.construction_asset_index != SIZE_MAX &&
+          !replace_preview_primary_image(status, addon,
+                                         buildable.construction_asset_index)) {
+        return false;
+      }
+      const std::uint32_t addon_id = addon.unit_id;
+      const std::uint32_t parent_id = candidate.unit_id;
+      try {
+        status.units.push_back(std::move(addon));
+      } catch (...) {
+        return false;
+      }
+      if (ScenarioUnitPreview *const parent = find_unit_by_id(status, parent_id)) {
+        parent->attached_addon_id = addon_id;
+      }
+      minerals -= buildable.simulation.mineral_cost;
+      gas -= buildable.simulation.gas_cost;
+      return true;
+    }
+    return false;
+  }
+  ScenarioUnitPreview *worker = available_builder(status, ai.owner);
   if (worker == nullptr) return false;
   const UnitRequirementResult requirements =
       unit_requirements_for(status, *worker, buildable.unit_type);
@@ -439,6 +636,59 @@ bool start_ai_building(BootstrapStatus &status, AiPlayerRuntime &ai,
   // SCV. This keeps its timing, construction image, and welding movement from
   // diverging into the former instant-building shortcut.
   return begin_terran_build_order(status, *worker, buildable, x, y, true);
+}
+
+bool start_ai_zerg_building_morph(BootstrapStatus &status,
+                                  AiPlayerRuntime &ai,
+                                  const std::uint16_t target_type) noexcept {
+  std::uint16_t parent_type = 0xFFFFU;
+  switch (target_type) {
+    case 132U: parent_type = 131U; break;
+    case 133U: parent_type = 132U; break;
+    case 137U: parent_type = 141U; break;
+    case 144U:
+    case 146U: parent_type = 143U; break;
+    default: return false;
+  }
+  if (target_type >= status.runtime_unit_types.size()) return false;
+  const RuntimeUnitType &target = status.runtime_unit_types[target_type];
+  if (!target.ready) return false;
+  for (ScenarioUnitPreview &building : status.units) {
+    if (!building.alive || building.owner != ai.owner ||
+        building.unit_type != parent_type || !building.construction_complete) {
+      continue;
+    }
+    const UnitRequirementResult requirements =
+        unit_requirements_for(status, building, target_type);
+    if (!requirements.visible || !requirements.allowed ||
+        target.initialization.placement_width != building.selection_width ||
+        target.initialization.placement_height != building.selection_height) {
+      continue;
+    }
+    const auto &simulation = target.initialization.simulation;
+    auto &minerals = status.player_mineral_stock[ai.owner];
+    auto &gas = status.player_gas_stock[ai.owner];
+    if (minerals < simulation.mineral_cost || gas < simulation.gas_cost) {
+      return false;
+    }
+    minerals -= simulation.mineral_cost;
+    gas -= simulation.gas_cost;
+    building.construction_complete = false;
+    building.construction_target_type = target_type;
+    building.construction_ticks_total = static_cast<std::uint16_t>((std::max)(
+        1U, static_cast<unsigned>(simulation.build_time) >> 1U));
+    building.construction_ticks_remaining = building.construction_ticks_total;
+    building.construction_animation_phase = 2U;
+    const BuildableUnitVisual *const current =
+        find_buildable_unit(status, building.unit_type);
+    if (current != nullptr && current->construction_asset_index != SIZE_MAX) {
+      (void)replace_preview_primary_image(status, building,
+                                          current->construction_asset_index);
+    }
+    (void)restart_unit_animation(status, building, 13U);
+    return true;
+  }
+  return false;
 }
 
 bool satisfy_ai_build_request(BootstrapStatus &status, AiPlayerRuntime &ai,
@@ -463,6 +713,13 @@ bool satisfy_ai_build_request(BootstrapStatus &status, AiPlayerRuntime &ai,
     const RuntimeUnitType &runtime = status.runtime_unit_types[request.unit_type];
     if (!runtime.ready) continue;
     if (runtime.initialization.is_building) {
+      if (ai.race == 0U &&
+          starcraft::lang::is_zerg_building_morph_target(request.unit_type)) {
+        if (start_ai_zerg_building_morph(status, ai, request.unit_type)) {
+          return true;
+        }
+        continue;
+      }
       const BuildableUnitVisual *const buildable =
           find_buildable_unit(status, request.unit_type);
       if (buildable == nullptr) {
@@ -471,9 +728,12 @@ bool satisfy_ai_build_request(BootstrapStatus &status, AiPlayerRuntime &ai,
       const auto &simulation = runtime.initialization.simulation;
       if (status.player_mineral_stock[ai.owner] < simulation.mineral_cost ||
           status.player_gas_stock[ai.owner] < simulation.gas_cost) {
-        return false;
+        continue;
       }
-      return start_ai_building(status, ai, *buildable);
+      if (start_ai_building(status, ai, *buildable)) {
+        return true;
+      }
+      continue;
     }
     for (ScenarioUnitPreview &producer : status.units) {
       if (!producer.alive || producer.owner != ai.owner ||
@@ -490,9 +750,15 @@ bool satisfy_ai_build_request(BootstrapStatus &status, AiPlayerRuntime &ai,
       const auto &simulation = runtime.initialization.simulation;
       std::uint32_t &minerals = status.player_mineral_stock[ai.owner];
       std::uint32_t &gas = status.player_gas_stock[ai.owner];
+      const auto supply = player_supply(status, ai.owner, ai.race);
+      const std::uint32_t required_supply =
+          request.unit_type < status.unit_traits.size()
+              ? status.unit_traits[request.unit_type].supply_required
+              : 0U;
       if (minerals < simulation.mineral_cost || gas < simulation.gas_cost ||
+          (required_supply != 0U && supply[0] + required_supply > supply[1]) ||
           !producer.production_queue.enqueue(request.unit_type)) {
-        return false;
+        continue;
       }
       minerals -= simulation.mineral_cost;
       gas -= simulation.gas_cost;
@@ -507,6 +773,7 @@ bool satisfy_ai_build_request(BootstrapStatus &status, AiPlayerRuntime &ai,
             starcraft::lang::UnitProductionKind::zerg_larva_morph) {
           (void)configure_preview_type(status, producer,
                                        starcraft::lang::zerg_egg_type);
+          (void)displace_units_for_zerg_egg(status, producer);
         } else {
           (void)restart_unit_animation(status, producer, 19U);
         }
@@ -653,6 +920,8 @@ bool issue_ai_attack(BootstrapStatus &status, AiPlayerRuntime &ai) noexcept {
 
 bool initialize_ai_players(BootstrapStatus &status) noexcept {
   bool initialized{};
+  const std::filesystem::path script_root =
+      locate_input_root() / "scripts" / "ai";
   for (std::size_t owner = 0; owner < status.ai_players.size(); ++owner) {
     AiPlayerRuntime &ai = status.ai_players[owner];
     ai = {};
@@ -663,17 +932,21 @@ bool initialize_ai_players(BootstrapStatus &status) noexcept {
     }
     ai.owner = static_cast<std::uint8_t>(owner);
     ai.race = status.scenario.players()[owner].race;
+    bool lua_ready{};
+    try {
+      ai.controller = std::make_shared<CAI>(ai.owner, ai.race,
+                                            status.ai_difficulty, script_root);
+      lua_ready = ai.controller->initialize();
+    } catch (...) {
+      ai.controller.reset();
+    }
     ai.script_pc = find_script(status.ai_script_bytes, race_script_id(ai.race));
     ai.enabled = true;
-    ai.script_active = ai.script_pc != 0U;
-    // SAI_Build.cpp::sub_486650 automatically requests the race supply unit
-    // while available supply is below thirteen: Overlord 42, Depot 109, or
-    // Pylon 156. Besides supply, the Pylon is the power prerequisite for the
-    // Protoss production requests that follow.
-    constexpr std::array<std::uint16_t, 3> supply_types{{42U, 109U, 156U}};
-    if (ai.race < supply_types.size()) {
-      remember_build_request(ai, 0U, 1U, supply_types[ai.race], 120U);
-    }
+    ai.script_active = lua_ready || ai.script_pc != 0U;
+    ai.script_error =
+        lua_ready ? std::string{}
+                  : (ai.controller != nullptr ? ai.controller->last_error()
+                                              : "Lua controller allocation failed");
     status.player_mineral_stock[owner] = 50U;
     status.player_gas_stock[owner] = 0U;
     initialized = true;
@@ -686,19 +959,24 @@ bool advance_ai_players(BootstrapStatus &status,
   bool changed{};
   for (AiPlayerRuntime &ai : status.ai_players) {
     if (!ai.enabled) continue;
-    changed = advance_ai_script(status, ai) || changed;
-    // SAI_Main.cpp::sub_492070 runs scripts every turn but gates the heavier
-    // town/build/harvest pass behind a byte down-counter. It reloads 12 for
-    // the first twenty elapsed seconds and 62 afterward, producing passes
-    // every 13/63 simulation turns. The previous fixed 32-turn gate delayed
-    // the opening build order by more than twice the recovered cadence.
+    const bool lua_ready = ai.controller != nullptr && ai.controller->ready();
+    if (!lua_ready) {
+      changed = advance_ai_script(status, ai) || changed;
+    }
     if (ai.macro_update_ticks != 0U) {
       --ai.macro_update_ticks;
     } else {
-      const std::uint64_t elapsed_milliseconds =
-          static_cast<std::uint64_t>(ai.update_counter) *
-          kSimulationTickMilliseconds;
-      ai.macro_update_ticks = elapsed_milliseconds < 20000U ? 12U : 62U;
+      if (lua_ready &&
+          !ai.controller->update(status, ai, ai.update_counter)) {
+        ai.script_active = false;
+        ai.script_error = ai.controller->last_error();
+      }
+      switch (status.ai_difficulty) {
+        case AiDifficulty::easy: ai.macro_update_ticks = 59U; break;
+        case AiDifficulty::hard: ai.macro_update_ticks = 7U; break;
+        case AiDifficulty::medium:
+        default: ai.macro_update_ticks = 19U; break;
+      }
       changed = assign_ai_harvest(status, ai) || changed;
 
       // SAI_Build.cpp::sub_486650 walks the complete priority request list

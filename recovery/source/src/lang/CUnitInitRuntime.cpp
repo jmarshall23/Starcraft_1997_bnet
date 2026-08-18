@@ -27,6 +27,7 @@ bool replace_preview_primary_image(BootstrapStatus &status,
   unit.dynamic_overlay_y_offset = 0;
   unit.dynamic_overlay_above = false;
   unit.dynamic_overlay_ready = false;
+  unit.damage_overlay_stage = 0xFFU;
   return true;
 }
 
@@ -63,6 +64,9 @@ bool configure_preview_type(BootstrapStatus &status, ScenarioUnitPreview &unit,
   unit.overlay_ready = asset.overlay_ready;
   unit.is_building = initialization.is_building;
   unit.construction_complete = true;
+  unit.attack_fire_pending = false;
+  unit.attack_fire_timeout = 0U;
+  unit.damage_overlay_stage = 0xFFU;
   apply_initialization_traits(unit, initialization);
   initialize_unit_energy(status, unit);
   return true;

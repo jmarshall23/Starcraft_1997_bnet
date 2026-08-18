@@ -883,9 +883,59 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           }
         }
       }
+      bool glue_ai_verified = !ai_probe;
+      int glue_ai_stage{};
+      if (flow_valid && ai_probe) {
+        const bool controllers_ready =
+            status.ai_difficulty == AiDifficulty::medium &&
+            std::any_of(status.ai_players.begin(), status.ai_players.end(),
+                        [](const AiPlayerRuntime &ai) {
+                          return ai.enabled && ai.controller != nullptr &&
+                                 ai.controller->ready();
+                        }) &&
+            std::all_of(status.ai_players.begin(), status.ai_players.end(),
+                        [](const AiPlayerRuntime &ai) {
+                          return !ai.enabled ||
+                                 (ai.controller != nullptr &&
+                                  ai.controller->ready() &&
+                                  ai.controller->difficulty() ==
+                                      AiDifficulty::medium);
+                        });
+        glue_ai_stage = controllers_ready ? 1 : 0;
+        const bool advanced = controllers_ready;
+        if (advanced) {
+          advance_probe_frame();
+        }
+        const bool goals_submitted =
+            advanced &&
+            std::all_of(status.ai_players.begin(), status.ai_players.end(),
+                        [](const AiPlayerRuntime &ai) {
+                          return !ai.enabled || ai.build_request_count != 0U;
+                        });
+        glue_ai_stage = goals_submitted ? 2 : glue_ai_stage;
+        bool workers_started = goals_submitted;
+        for (const AiPlayerRuntime &ai : status.ai_players) {
+          if (!ai.enabled) continue;
+          starcraft::lang::MeleeUnitTypes types{};
+          const bool owner_started =
+              starcraft::lang::melee_unit_types(ai.race, types) &&
+              std::any_of(
+                  status.units.begin(), status.units.end(),
+                  [&ai, &types](const ScenarioUnitPreview &unit) {
+                    return unit.alive && unit.owner == ai.owner &&
+                           unit.unit_type == types.worker &&
+                           (unit.active_order == ActiveUnitOrder::gather ||
+                            unit.moving);
+                  });
+          workers_started = workers_started && owner_started;
+        }
+        glue_ai_verified = workers_started;
+        glue_ai_stage = glue_ai_verified ? 3 : glue_ai_stage;
+      }
       const bool selected_game_rendered =
           flow_valid && glue_worker_card_verified &&
           glue_drone_movement_verified && glue_geyser_verified &&
+          glue_ai_verified &&
           render_opengl(window, window_state);
       bool game_flow_verified = !game_flow_probe;
       int game_flow_stage{};
@@ -1084,6 +1134,8 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         glue_failure_code = 30 + glue_drone_movement_stage;
       } else if (!glue_geyser_verified) {
         glue_failure_code = 40 + glue_geyser_stage;
+      } else if (!glue_ai_verified) {
+        glue_failure_code = 60 + glue_ai_stage;
       } else if (!game_flow_verified) {
         glue_failure_code = 50 + game_flow_stage;
       }
@@ -1096,6 +1148,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                      selected_game_rendered && selected_game_captured &&
                       glue_worker_card_verified &&
                       glue_drone_movement_verified && glue_geyser_verified &&
+                      glue_ai_verified &&
                       game_flow_verified
                  ? 0
                  : glue_failure_code;
@@ -2866,6 +2919,99 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         }
       }
       all_production_probe_stage =
+          all_production_verified ? 3 : all_production_probe_stage;
+      // CUnitZBuild.cpp::sub_447820 changes the existing Larva CUnit into an
+      // Egg through CUnitInit.cpp::sub_42F380.  That conversion removes the
+      // old bounds and inserts the Egg's larger bounds, so overlapping units
+      // must receive a real separation path.  The hatched unit must wait for
+      // image target flag four before it begins its own release movement.
+      bool egg_spacing_verified{};
+      ScenarioUnitPreview egg{};
+      egg.unit_id = status.next_unit_id++;
+      egg.owner = 0U;
+      if (all_production_verified &&
+          configure_preview_type(status, egg,
+                                 starcraft::lang::zerg_egg_type)) {
+        bool center_found{};
+        for (int y = 160; y + 160 < status.pathing_map.pixel_height() &&
+                          !center_found;
+             y += 32) {
+          for (int x = 160; x + 160 < status.pathing_map.pixel_width();
+               x += 32) {
+            if (!creation_position_passable(status, egg, x, y)) {
+              continue;
+            }
+            egg.x = static_cast<std::uint16_t>(x);
+            egg.y = static_cast<std::uint16_t>(y);
+            egg.x_fixed = x << 8U;
+            egg.y_fixed = y << 8U;
+            center_found = true;
+            break;
+          }
+        }
+        ScenarioUnitPreview neighbor{};
+        neighbor.unit_id = status.next_unit_id++;
+        neighbor.owner = 0U;
+        if (center_found && configure_preview_type(status, neighbor, 41U)) {
+          neighbor.x = egg.x;
+          neighbor.y = egg.y;
+          neighbor.x_fixed = egg.x_fixed;
+          neighbor.y_fixed = egg.y_fixed;
+          const std::uint32_t egg_id = egg.unit_id;
+          const std::uint32_t neighbor_id = neighbor.unit_id;
+          status.units.push_back(std::move(egg));
+          status.units.push_back(std::move(neighbor));
+          ScenarioUnitPreview *egg_unit = find_unit_by_id(status, egg_id);
+          ScenarioUnitPreview *neighbor_unit =
+              find_unit_by_id(status, neighbor_id);
+          const bool neighbor_overlapped =
+              egg_unit != nullptr && neighbor_unit != nullptr &&
+              unit_footprints_overlap_at(*neighbor_unit, neighbor_unit->x,
+                                         neighbor_unit->y, *egg_unit);
+          const std::size_t displaced =
+              neighbor_overlapped
+                  ? displace_units_for_zerg_egg(status, *egg_unit)
+                  : 0U;
+          const bool neighbor_released =
+              displaced != 0U && neighbor_unit->moving &&
+              (neighbor_unit->movement_final_x != neighbor_unit->x ||
+               neighbor_unit->movement_final_y != neighbor_unit->y);
+          const bool final_type_ready =
+              neighbor_released &&
+              configure_preview_type(status, *egg_unit, 39U);
+          // The final Ultralisk footprint is reinserted while the neighbor is
+          // already walking away from the Egg. It must still receive a new
+          // collision-release path rather than being skipped as "moving."
+          const bool final_bounds_released =
+              final_type_ready &&
+              unit_footprints_overlap_at(*neighbor_unit, neighbor_unit->x,
+                                         neighbor_unit->y, *egg_unit) &&
+              displace_units_for_zerg_egg(status, *egg_unit) != 0U;
+          const bool hatch_prepared = final_bounds_released;
+          if (hatch_prepared) {
+            (void)restart_unit_animation(status, *egg_unit, 13U);
+            egg_unit->zerg_hatch_release_pending = true;
+            egg_unit->iscript_state.image_target_flags |= 4U;
+          }
+          const bool hatch_advanced =
+              hatch_prepared && advance_zerg_larvae(status);
+          egg_unit = find_unit_by_id(status, egg_id);
+          egg_spacing_verified =
+              hatch_advanced && egg_unit != nullptr && egg_unit->moving &&
+              !egg_unit->zerg_hatch_release_pending;
+          status.units.erase(
+              std::remove_if(status.units.begin(), status.units.end(),
+                             [egg_id, neighbor_id](
+                                 const ScenarioUnitPreview &unit) {
+                               return unit.unit_id == egg_id ||
+                                      unit.unit_id == neighbor_id;
+                             }),
+              status.units.end());
+        }
+      }
+      all_production_verified =
+          all_production_verified && egg_spacing_verified;
+      all_production_probe_stage =
           all_production_verified ? 4 : all_production_probe_stage;
       const starcraft::lang::ZergLarvaSourceView larva_sources =
           starcraft::lang::zerg_larva_source_types();
@@ -3181,6 +3327,18 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                                    status.fogged_minimap.bgra.begin());
         fog_probe_stage = fog_verified ? 8 : fog_probe_stage;
       }
+      if (fog_verified) {
+        const auto second_player_source = std::find_if(
+            status.units.begin(), status.units.end(),
+            [](const ScenarioUnitPreview &unit) {
+              return unit.alive && !unit.dying && !unit.sprite_hidden &&
+                     !unit.in_transport && !unit.is_projectile &&
+                     unit.owner == 1U && unit.sight_range != 0U;
+            });
+        fog_verified = second_player_source != status.units.end() &&
+                       fog_unit_visible(status, *second_player_source, 1U);
+        fog_probe_stage = fog_verified ? 9 : fog_probe_stage;
+      }
     }
 
     const bool needs_scv = production_probe || movement_probe ||
@@ -3213,6 +3371,83 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         command_center->selected = true;
         command_panel_verified =
             click_command(1) && status.last_command_position == 1;
+        if (command_panel_verified && command_panel_probe) {
+          const std::uint8_t saved_owner = command_center->owner;
+          const std::uint8_t saved_local_player = status.local_player;
+          const std::uint8_t saved_command_player = status.command_player;
+          command_center->owner = 1U;
+          status.local_player = 1U;
+          status.command_player = 1U;
+          const CommandCardView owned_card = command_card_for(status);
+          bool player_two_owns_card{};
+          for (std::size_t index = 0U; index < owned_card.count; ++index) {
+            if (owned_card.buttons[index].position == 1U &&
+                owned_card.buttons[index].action ==
+                    CommandButtonVisual::Action::train_unit) {
+              player_two_owns_card = true;
+              break;
+            }
+          }
+          status.local_player = 0U;
+          status.command_player = 0U;
+          const bool player_one_does_not_own_card =
+              command_card_for(status).count == 0U;
+          command_center->owner = saved_owner;
+          status.local_player = saved_local_player;
+          status.command_player = saved_command_player;
+          command_panel_verified = player_two_owns_card &&
+                                   player_one_does_not_own_card;
+
+          ScenarioUnitPreview network_producer = *command_center;
+          network_producer.unit_id = status.next_unit_id++;
+          network_producer.owner = 1U;
+          network_producer.selected = false;
+          network_producer.production_queue.clear();
+          network_producer.production_active = false;
+          network_producer.production_started = 0U;
+          const std::uint32_t network_producer_id = network_producer.unit_id;
+          status.units.push_back(std::move(network_producer));
+          status.player_mineral_stock[1] = 500U;
+          status.player_gas_stock[1] = 0U;
+          const std::uint32_t player_one_minerals = status.player_minerals;
+          const std::uint32_t player_two_minerals =
+              status.player_mineral_stock[1];
+          battle::CommittedTurn network_button_turn{};
+          network_button_turn.turn = 17U;
+          network_button_turn.players.push_back({
+              1U,
+              {
+                  2U,  // command-card packet
+                  1U, 0U,  // position 1
+                  0U, 0U,  // primary card
+                  1U,  // one selected unit
+                  static_cast<std::uint8_t>(network_producer_id),
+                  static_cast<std::uint8_t>(network_producer_id >> 8U),
+                  static_cast<std::uint8_t>(network_producer_id >> 16U),
+                  static_cast<std::uint8_t>(network_producer_id >> 24U),
+              },
+          });
+          const bool network_button_applied =
+              apply_network_committed_turn(status, network_button_turn);
+          ScenarioUnitPreview *const committed_producer =
+              find_unit_by_id(status, network_producer_id);
+          const std::uint32_t worker_cost =
+              status.runtime_unit_types[7U]
+                  .initialization.simulation.mineral_cost;
+          command_panel_verified =
+              command_panel_verified && network_button_applied &&
+              committed_producer != nullptr &&
+              committed_producer->production_active &&
+              committed_producer->production_queue.front() == 7U &&
+              committed_producer->production_started ==
+                  17U * kSimulationTickMilliseconds &&
+              status.player_minerals == player_one_minerals &&
+              status.player_mineral_stock[1] ==
+                  player_two_minerals - worker_cost;
+          if (committed_producer != nullptr) {
+            committed_producer->alive = false;
+          }
+        }
       }
     }
     const auto active_local_producer = [&status]() -> ScenarioUnitPreview * {
@@ -3443,6 +3678,153 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           !status_text(status, 107).empty() && producer != nullptr &&
           producer->production_active &&
           producer->production_queue.count() == 2U;
+      const auto card_has_upgrade = [](const CommandCardView card,
+                                       const std::uint16_t upgrade,
+                                       const std::uint16_t icon) noexcept {
+        for (std::size_t index = 0U; index < card.count; ++index) {
+          if (card.buttons[index].action ==
+                  CommandButtonVisual::Action::upgrade_technology &&
+              card.buttons[index].argument == upgrade &&
+              card.buttons[index].icon == icon) {
+            return true;
+          }
+        }
+        return false;
+      };
+      const bool race_upgrade_cards =
+          card_has_upgrade(recovered_building_card(122U), 0U, 291U) &&
+          card_has_upgrade(recovered_building_card(139U), 3U, 296U) &&
+          card_has_upgrade(recovered_building_card(166U), 5U, 302U) &&
+          card_has_upgrade(recovered_building_card(166U), 15U, 308U);
+      const bool display_data_ready =
+          status.status_stat_controls.size() == 4U &&
+          status.status_stat_controls[0].position == 9U &&
+          status.status_stat_controls[3].position == 12U &&
+          status.weapon_display_traits.size() == status.weapon_traits.size() &&
+          status.upgrade_display_traits.size() ==
+              status.upgrade_traits.size() &&
+          status.upgrade_display_traits[0U].icon == 291U &&
+          status.upgrade_display_traits[3U].icon == 296U &&
+          status.upgrade_display_traits[5U].icon == 302U &&
+          status.upgrade_display_traits[15U].icon == 308U &&
+          status.upgrade_traits[0U].maximum_level == 3U &&
+          status.upgrade_traits[3U].maximum_level == 3U &&
+          status.upgrade_traits[5U].maximum_level == 3U;
+
+      ScenarioUnitPreview dragoon{};
+      dragoon.owner = 0U;
+      dragoon.unit_type = 66U;
+      apply_simulation_traits(
+          dragoon,
+          status.runtime_unit_types[66U].initialization.simulation);
+      const std::uint8_t armor_upgrade = dragoon.armor_upgrade;
+      const std::uint8_t weapon_upgrade = dragoon.weapon_upgrade;
+      const std::uint8_t old_shield_level =
+          status.player_upgrade_levels[0U][15U];
+      const std::uint8_t old_armor_level =
+          armor_upgrade < 46U
+              ? status.player_upgrade_levels[0U][armor_upgrade]
+              : 0U;
+      const std::uint8_t old_weapon_level =
+          weapon_upgrade < 46U
+              ? status.player_upgrade_levels[0U][weapon_upgrade]
+              : 0U;
+      status.player_upgrade_levels[0U][15U] = 2U;
+      if (armor_upgrade < 46U) {
+        status.player_upgrade_levels[0U][armor_upgrade] = 2U;
+      }
+      if (weapon_upgrade < 46U) {
+        status.player_upgrade_levels[0U][weapon_upgrade] = 2U;
+      }
+      std::array<StatusStatVisual, 4> dragoon_stats{};
+      const std::size_t dragoon_stat_count =
+          status_stat_visuals(status, dragoon, dragoon_stats);
+      const bool dragoon_shields =
+          dragoon.max_shield_points != 0U &&
+          std::any_of(dragoon_stats.begin(),
+                      dragoon_stats.begin() + dragoon_stat_count,
+                      [](const StatusStatVisual &visual) {
+                        return visual.kind == StatusStatKind::shields &&
+                               visual.icon == 308U && visual.source_id == 15U &&
+                               visual.level == 2U;
+                      });
+      const bool dragoon_armor =
+          std::any_of(dragoon_stats.begin(),
+                      dragoon_stats.begin() + dragoon_stat_count,
+                      [armor_upgrade](const StatusStatVisual &visual) {
+                        return visual.kind == StatusStatKind::armor &&
+                               visual.source_id == armor_upgrade &&
+                               visual.level == 2U;
+                      });
+      const bool dragoon_weapon =
+          std::any_of(dragoon_stats.begin(),
+                      dragoon_stats.begin() + dragoon_stat_count,
+                      [weapon_upgrade](const StatusStatVisual &visual) {
+                        return visual.kind == StatusStatKind::weapon &&
+                               visual.level == 2U &&
+                               visual.bonus_value != 0U;
+                      });
+      status.player_upgrade_levels[0U][15U] = old_shield_level;
+      if (armor_upgrade < 46U) {
+        status.player_upgrade_levels[0U][armor_upgrade] = old_armor_level;
+      }
+      if (weapon_upgrade < 46U) {
+        status.player_upgrade_levels[0U][weapon_upgrade] = old_weapon_level;
+      }
+
+      ScenarioUnitPreview shield_target{};
+      shield_target.owner = 1U;
+      shield_target.max_hit_points = 100U << 8U;
+      shield_target.hit_points = shield_target.max_hit_points;
+      shield_target.max_shield_points = 20U << 8U;
+      shield_target.shield_points = shield_target.max_shield_points;
+      const std::uint8_t old_enemy_shields =
+          status.player_upgrade_levels[1U][15U];
+      status.player_upgrade_levels[1U][15U] = 0U;
+      apply_weapon_unit_damage(status, shield_target, 10U << 8U, 7U, 0U,
+                               0U);
+      const bool unupgraded_shield_damage =
+          shield_target.shield_points == (10U << 8U) &&
+          shield_target.hit_points == shield_target.max_hit_points;
+      shield_target.shield_points = shield_target.max_shield_points;
+      status.player_upgrade_levels[1U][15U] = 1U;
+      apply_weapon_unit_damage(status, shield_target, 10U << 8U, 7U, 0U,
+                               0U);
+      const bool upgraded_shield_damage =
+          shield_target.shield_points == (11U << 8U) &&
+          shield_target.hit_points == shield_target.max_hit_points;
+      status.player_upgrade_levels[1U][15U] = old_enemy_shields;
+
+      ScenarioUnitPreview upgrade_building{};
+      upgrade_building.owner = 0U;
+      const std::uint32_t old_minerals = status.player_minerals;
+      const std::uint32_t old_gas = status.player_gas;
+      const std::uint8_t old_upgrade_zero = status.upgrade_levels[0U];
+      const std::uint8_t old_player_upgrade_zero =
+          status.player_upgrade_levels[0U][0U];
+      status.player_minerals = 100000U;
+      status.player_gas = 100000U;
+      status.upgrade_levels[0U] = 1U;
+      status.player_upgrade_levels[0U][0U] = 1U;
+      const CommandButtonVisual infantry_armor{
+          2U, 291U, 0U, CommandButtonVisual::Action::upgrade_technology};
+      const bool next_level_enabled =
+          command_button_enabled(status, upgrade_building, infantry_armor);
+      status.upgrade_levels[0U] = status.upgrade_traits[0U].maximum_level;
+      status.player_upgrade_levels[0U][0U] =
+          status.upgrade_traits[0U].maximum_level;
+      const bool maximum_level_disabled =
+          !command_button_enabled(status, upgrade_building, infantry_armor);
+      status.player_minerals = old_minerals;
+      status.player_gas = old_gas;
+      status.upgrade_levels[0U] = old_upgrade_zero;
+      status.player_upgrade_levels[0U][0U] = old_player_upgrade_zero;
+
+      status_panel_verified =
+          status_panel_verified && race_upgrade_cards && display_data_ready &&
+          dragoon_shields && dragoon_armor && dragoon_weapon &&
+          unupgraded_shield_damage && upgraded_shield_damage &&
+          next_level_enabled && maximum_level_disabled;
     }
     bool resource_feedback_verified = true;
     if (resource_feedback_probe) {
@@ -4285,6 +4667,37 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         }
         unit.selected = false;
       }
+      if (portrait_verified) {
+        const auto building = std::find_if(
+            status.units.begin(), status.units.end(),
+            [](const ScenarioUnitPreview &unit) {
+              return unit.alive && unit.owner == 0U && unit.is_building;
+            });
+        if (building == status.units.end()) {
+          portrait_verified = false;
+        } else {
+          ScenarioUnitPreview foreign = *building;
+          const std::uint16_t building_type = building->unit_type;
+          clear_selection(status);
+          foreign.unit_id = status.next_unit_id++;
+          foreign.owner = 1U;
+          foreign.selected = true;
+          const std::uint32_t foreign_id = foreign.unit_id;
+          status.units.push_back(std::move(foreign));
+          const UnitPortraitAsset *const foreign_portrait =
+              selected_portrait(status);
+          portrait_verified = command_card_for(status).count == 0U &&
+                              foreign_portrait != nullptr &&
+                              foreign_portrait->unit_type ==
+                                  building_type;
+          status.units.erase(
+              std::remove_if(status.units.begin(), status.units.end(),
+                             [foreign_id](const ScenarioUnitPreview &unit) {
+                               return unit.unit_id == foreign_id;
+                             }),
+              status.units.end());
+        }
+      }
     }
     bool worker_actions_verified = true;
     int worker_actions_probe_stage{};
@@ -4854,28 +5267,60 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         attacker->active_order = ActiveUnitOrder::attack;
         attacker->order_target_id = target_id;
         attacker->action_timer = 0U;
-        (void)advance_unit_actions(status);
-        const bool launched = status.transient_images.size() > images_before &&
-                              target->hit_points == life_before &&
-                              std::any_of(
-                                  status.transient_images.begin(),
-                                  status.transient_images.end(),
-                                  [attacker_id](const ScenarioUnitPreview &v) {
-                                    return v.alive && v.is_projectile &&
-                                           v.projectile_source_id ==
-                                               attacker_id;
-                                  });
+        bool launched{};
+        bool damage_waited_for_weapon_event{};
+        for (std::uint32_t tick = 0U; tick < 96U && !launched; ++tick) {
+          advance_probe_frame();
+          attacker = find_unit_by_id(status, attacker_id);
+          target = find_unit_by_id(status, target_id);
+          if (attacker == nullptr || target == nullptr) {
+            break;
+          }
+          launched = status.transient_images.size() > images_before &&
+                     std::any_of(status.transient_images.begin(),
+                                 status.transient_images.end(),
+                                 [attacker_id](const ScenarioUnitPreview &v) {
+                                   return v.alive && v.is_projectile &&
+                                          v.projectile_source_id == attacker_id;
+                                 });
+          if (launched) {
+            const bool script_fire_boundary =
+                attacker->iscript_state.weapon_event_count != 0U ||
+                attacker->iscript_state.unit_event_count != 0U ||
+                attacker->overlay_iscript_state.weapon_event_count != 0U ||
+                attacker->overlay_iscript_state.unit_event_count != 0U ||
+                attacker->dynamic_overlay_iscript_state.weapon_event_count !=
+                    0U ||
+                attacker->dynamic_overlay_iscript_state.unit_event_count !=
+                    0U;
+            // The Marine regression specifically requires its Gauss-rifle
+            // shot to occur at the licensed script event. Some other images
+            // dispatch through unmodelled CUnit callbacks and use the bounded
+            // compatibility fallback after their visible attack action.
+            damage_waited_for_weapon_event =
+                attacker_type != 0U || script_fire_boundary;
+          }
+        }
         for (std::uint32_t tick = 0U;
              target->hit_points == life_before && tick < 300U; ++tick) {
-          (void)advance_transient_images(status, tick);
+          advance_probe_frame();
+          target = find_unit_by_id(status, target_id);
+          if (target == nullptr) {
+            break;
+          }
         }
+        const bool retaliated =
+            target != nullptr && target->active_order == ActiveUnitOrder::attack &&
+            target->order_target_id == attacker_id;
         projectile_hangar_verified =
             projectile_hangar_verified && launched &&
-            target->hit_points < life_before;
+            damage_waited_for_weapon_event && target != nullptr &&
+            target->hit_points < life_before && retaliated;
         if (!launched) {
           projectile_hangar_probe_stage =
               static_cast<int>(60U + projectile_race_index * 2U);
-        } else if (target->hit_points >= life_before) {
+        } else if (!damage_waited_for_weapon_event || target == nullptr ||
+                   target->hit_points >= life_before || !retaliated) {
           projectile_hangar_probe_stage =
               static_cast<int>(61U + projectile_race_index * 2U);
         }
@@ -4883,6 +5328,84 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         target->alive = false;
         status.transient_images.clear();
         ++projectile_race_index;
+      }
+      if (projectile_hangar_verified) {
+        const std::uint32_t building_id =
+            add_combat_unit(106U, 1U, 800U, 240U);
+        ScenarioUnitPreview *building =
+            find_unit_by_id(status, building_id);
+        if (building != nullptr && building->is_building &&
+            building->max_hit_points != 0U) {
+          building->hit_points = building->max_hit_points / 2U;
+          (void)advance_building_damage_states(status);
+          const bool damaged = std::any_of(
+              status.transient_images.begin(), status.transient_images.end(),
+              [building_id](const ScenarioUnitPreview &effect) {
+                return effect.alive && effect.is_damage_overlay &&
+                       effect.damage_overlay_parent_id == building_id;
+              });
+          building->hit_points = building->max_hit_points;
+          (void)advance_building_damage_states(status);
+          const bool repaired = std::none_of(
+              status.transient_images.begin(), status.transient_images.end(),
+              [building_id](const ScenarioUnitPreview &effect) {
+                return effect.alive && effect.is_damage_overlay &&
+                       effect.damage_overlay_parent_id == building_id;
+              });
+          projectile_hangar_verified = damaged && repaired;
+          building->alive = false;
+          status.transient_images.clear();
+        } else {
+          projectile_hangar_verified = false;
+        }
+        if (!projectile_hangar_verified) {
+          projectile_hangar_probe_stage = 69;
+        }
+      }
+      if (projectile_hangar_verified) {
+        const std::uint32_t formation_target_id =
+            add_combat_unit(106U, 1U, 544U, 256U);
+        ScenarioUnitPreview *formation_target =
+            find_unit_by_id(status, formation_target_id);
+        std::array<std::uint32_t, 4> marine_ids{};
+        std::vector<std::pair<std::uint16_t, std::uint16_t>> slots;
+        std::size_t issued{};
+        if (formation_target != nullptr) {
+          formation_target->hit_points = formation_target->max_hit_points =
+              0x40000000U;
+          for (std::size_t index = 0U; index < marine_ids.size(); ++index) {
+            marine_ids[index] = add_combat_unit(
+                0U, 0U, 320U,
+                static_cast<std::uint16_t>(208U + index * 32U));
+            ScenarioUnitPreview *const marine =
+                find_unit_by_id(status, marine_ids[index]);
+            if (marine != nullptr &&
+                begin_scv_interaction(status, *marine, *formation_target,
+                                      ActiveUnitOrder::attack)) {
+              ++issued;
+              slots.emplace_back(marine->movement_final_x,
+                                 marine->movement_final_y);
+            }
+          }
+        }
+        std::sort(slots.begin(), slots.end());
+        const auto unique_end = std::unique(slots.begin(), slots.end());
+        projectile_hangar_verified =
+            formation_target != nullptr && issued >= 3U &&
+            static_cast<std::size_t>(unique_end - slots.begin()) == issued;
+        if (formation_target != nullptr) {
+          formation_target->alive = false;
+        }
+        for (const std::uint32_t marine_id : marine_ids) {
+          ScenarioUnitPreview *const marine =
+              find_unit_by_id(status, marine_id);
+          if (marine != nullptr) {
+            marine->alive = false;
+          }
+        }
+        if (!projectile_hangar_verified) {
+          projectile_hangar_probe_stage = 68;
+        }
       }
       if (projectile_hangar_verified) {
         projectile_hangar_probe_stage = 1;
@@ -4966,11 +5489,14 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           scarab->x_fixed = static_cast<std::int32_t>(scarab->x) << 8U;
           scarab->y_fixed = static_cast<std::int32_t>(scarab->y) << 8U;
           stop_unit_movement(status, *scarab);
-          (void)advance_unit_actions(status);
         }
         for (std::uint32_t tick = 0U;
              reaver_target->hit_points == life_before && tick < 300U; ++tick) {
-          (void)advance_transient_images(status, tick);
+          advance_probe_frame();
+          reaver_target = find_unit_by_id(status, reaver_target_id);
+          if (reaver_target == nullptr) {
+            break;
+          }
         }
         projectile_hangar_verified =
             projectile_hangar_verified &&
@@ -5281,23 +5807,25 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               builder != nullptr &&
               builder->active_order == ActiveUnitOrder::construct;
           if (refinery_placement_verified) {
+            // CUnitBuild.cpp::sub_422540 finishes the Refinery while its SCV
+            // can be anywhere inside the construction footprint. The original
+            // issues harvest order 0x4E directly instead of pathing it out.
+            builder->x = completed_refinery.x;
+            builder->y = completed_refinery.y;
+            builder->x_fixed = static_cast<std::int32_t>(builder->x) << 8U;
+            builder->y_fixed = static_cast<std::int32_t>(builder->y) << 8U;
+            stop_unit_movement(status, *builder);
             completed_refinery.construction_ticks_remaining = 1U;
             builder->action_phase = 4U;
             (void)advance_unit_actions(status);
             refinery_placement_verified =
                 completed_refinery.construction_complete &&
                 builder->active_order == ActiveUnitOrder::gather &&
-                builder->order_target_id == completed_refinery.unit_id;
+                builder->order_target_id == completed_refinery.unit_id &&
+                !builder->moving;
             refinery_probe_stage =
                 refinery_placement_verified ? 8 : refinery_probe_stage;
             if (refinery_placement_verified) {
-              builder->x = builder->movement_final_x;
-              builder->y = builder->movement_final_y;
-              builder->x_fixed =
-                  static_cast<std::int32_t>(builder->x) << 8U;
-              builder->y_fixed =
-                  static_cast<std::int32_t>(builder->y) << 8U;
-              stop_unit_movement(status, *builder);
               (void)advance_unit_actions(status);
               refinery_placement_verified =
                   builder->active_order == ActiveUnitOrder::gather &&
@@ -5306,6 +5834,47 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                   completed_refinery.harvest_queue.is_active(builder->unit_id);
               refinery_probe_stage =
                   refinery_placement_verified ? 9 : refinery_probe_stage;
+              ScenarioUnitPreview *manual_worker{};
+              for (ScenarioUnitPreview &candidate : status.units) {
+                if (candidate.alive && candidate.owner == 0U &&
+                    candidate.unit_type == 7U &&
+                    candidate.unit_id != builder->unit_id) {
+                  manual_worker = &candidate;
+                  break;
+                }
+              }
+              bool manual_order_verified{};
+              if (refinery_placement_verified && manual_worker != nullptr) {
+                clear_selection(status);
+                manual_worker->selected = true;
+                const int click_x = static_cast<int>(completed_refinery.x) +
+                                    completed_refinery.selection_width / 2 - 2;
+                manual_order_verified =
+                    click_x >= 0 && click_x <= UINT16_MAX &&
+                    issue_scv_smart_order(
+                        status, static_cast<std::uint16_t>(click_x),
+                        completed_refinery.y) == 1U &&
+                    manual_worker->active_order == ActiveUnitOrder::gather &&
+                    manual_worker->order_target_id ==
+                        completed_refinery.unit_id;
+                cancel_unit_order(status, *manual_worker);
+              }
+              refinery_placement_verified =
+                  refinery_placement_verified && manual_order_verified;
+              refinery_probe_stage =
+                  refinery_placement_verified ? 10 : refinery_probe_stage;
+              for (int tick = 0;
+                   refinery_placement_verified && tick < 62; ++tick) {
+                (void)advance_unit_actions(status);
+              }
+              refinery_placement_verified =
+                  refinery_placement_verified && !builder->sprite_hidden &&
+                  builder->cargo_gas == 8U &&
+                  builder->active_order == ActiveUnitOrder::return_cargo &&
+                  !unit_footprints_overlap_at(*builder, builder->x, builder->y,
+                                              completed_refinery);
+              refinery_probe_stage =
+                  refinery_placement_verified ? 11 : refinery_probe_stage;
             }
           }
         }
@@ -5376,14 +5945,33 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             status.target_unit_order == 9 && status.target_terrain_order == 15;
         command_target_probe_stage =
             attack_started ? 5 : command_target_probe_stage;
-        SendMessageA(window, WM_KEYDOWN, VK_ESCAPE, 0);
-        const bool repair_started =
+        if (attack_started) {
+          SendMessageA(window, WM_MOUSEMOVE, 0, target);
+          SendMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, target);
+          SendMessageA(window, WM_LBUTTONUP, 0, target);
+        }
+        const bool attack_move_issued =
             attack_started && !status.command_target_active &&
+            status.last_issued_order == 15U && scv.moving &&
+            scv.active_order == ActiveUnitOrder::attack_move &&
+            scv.attack_move_target_x ==
+                static_cast<std::uint16_t>(target_game_x + status.camera_x) &&
+            scv.attack_move_target_y ==
+                static_cast<std::uint16_t>(target_game_y + status.camera_y);
+        command_target_probe_stage =
+            attack_move_issued ? 6 : command_target_probe_stage;
+        const bool attack_move_stopped =
+            attack_move_issued && click_command(2) && !scv.moving &&
+            scv.active_order == ActiveUnitOrder::none;
+        command_target_probe_stage =
+            attack_move_stopped ? 7 : command_target_probe_stage;
+        const bool repair_started =
+            attack_move_stopped && !status.command_target_active &&
             click_command(4) && status.command_target_active &&
             status.target_unit_order == 0x24 &&
             status.target_terrain_order == 7;
         command_target_probe_stage =
-            repair_started ? 6 : command_target_probe_stage;
+            repair_started ? 8 : command_target_probe_stage;
         SendMessageA(window, WM_KEYDOWN, VK_ESCAPE, 0);
         const bool gather_started =
             repair_started && !status.command_target_active &&
@@ -5391,13 +5979,13 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
             status.target_unit_order == 0x4E &&
             status.target_terrain_order == 7;
         command_target_probe_stage =
-            gather_started ? 7 : command_target_probe_stage;
+            gather_started ? 9 : command_target_probe_stage;
         SendMessageA(window, WM_KEYDOWN, VK_ESCAPE, 0);
         const bool cargo_returned =
             gather_started && !status.command_target_active &&
             click_command(6) && status.last_command_opcode == 34 && scv.moving;
         command_target_probe_stage =
-            cargo_returned ? 8 : command_target_probe_stage;
+            cargo_returned ? 10 : command_target_probe_stage;
         command_target_verified = cargo_returned;
       }
     }
@@ -6108,7 +6696,13 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         if (started) {
           clear_selection(status);
           created->selected = true;
-          incomplete_card_gated = command_card_for(status).count == 0U;
+          const CommandCardView incomplete_card = command_card_for(status);
+          incomplete_card_gated =
+              incomplete_card.count == 1U &&
+              incomplete_card.buttons[0].position == 9U &&
+              incomplete_card.buttons[0].icon == 236U &&
+              incomplete_card.buttons[0].action ==
+                  CommandButtonVisual::Action::cancel_construction;
           created->selected = false;
           builder->selected = true;
           // sub_422DF0 creates the building with state three; the following
@@ -6275,6 +6869,47 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 created->last_animation == 16U &&
                 builder->active_order == ActiveUnitOrder::none &&
                 command_card_for(status).count == 4U;
+            if (construction_verified) {
+              // Exercise the recovered command-28 cancellation through the
+              // actual position-nine button without disturbing the completed
+              // building used by the rest of this probe.
+              ScenarioUnitPreview cancellation = *created;
+              cancellation.unit_id = status.next_unit_id++;
+              cancellation.x = static_cast<std::uint16_t>((std::min)(
+                  static_cast<unsigned>(UINT16_MAX),
+                  static_cast<unsigned>(created->x) + 160U));
+              cancellation.x_fixed =
+                  static_cast<std::int32_t>(cancellation.x) << 8U;
+              cancellation.construction_complete = false;
+              cancellation.construction_ticks_remaining =
+                  cancellation.construction_ticks_total;
+              cancellation.construction_builder_id = 0U;
+              cancellation.selected = true;
+              created->selected = false;
+              const std::uint32_t cancellation_id = cancellation.unit_id;
+              const std::uint16_t refund_minerals = cancellation.mineral_cost;
+              const std::uint16_t refund_gas = cancellation.gas_cost;
+              const std::uint32_t minerals_before_cancel =
+                  status.player_minerals;
+              const std::uint32_t gas_before_cancel = status.player_gas;
+              const std::size_t transients_before_cancel =
+                  status.transient_images.size();
+              status.units.push_back(std::move(cancellation));
+              const bool cancel_card_ready =
+                  command_card_for(status).count == 1U && click_command(9U);
+              const ScenarioUnitPreview *const canceled =
+                  find_unit_by_id(status, cancellation_id);
+              construction_verified =
+                  cancel_card_ready && canceled == nullptr &&
+                  status.last_command_opcode == 0x1CU &&
+                  status.player_minerals ==
+                      minerals_before_cancel + refund_minerals &&
+                  status.player_gas == gas_before_cancel + refund_gas &&
+                  status.player_mineral_stock[0] == status.player_minerals &&
+                  status.player_gas_stock[0] == status.player_gas &&
+                  status.transient_images.size() ==
+                      transients_before_cancel + 1U;
+            }
             construction_probe_stage =
                 construction_verified ? 16 : construction_probe_stage;
           }
@@ -6505,12 +7140,43 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         status.active_players[1] = true;
         has_enabled_ai = initialize_ai_players(status);
       }
+      std::string difficulty_response{};
+      const bool hard_reloaded =
+          has_enabled_ai && execute_debug_console_command(
+                                status, "ai_difficulty hard",
+                                difficulty_response) &&
+          std::all_of(status.ai_players.begin(), status.ai_players.end(),
+                      [](const AiPlayerRuntime &ai) {
+                        return !ai.enabled ||
+                               (ai.controller != nullptr &&
+                                ai.controller->ready() &&
+                                ai.controller->difficulty() ==
+                                    AiDifficulty::hard);
+                      });
+      const bool medium_reloaded =
+          hard_reloaded && execute_debug_console_command(
+                               status, "ai_difficulty medium",
+                               difficulty_response) &&
+          status.ai_difficulty == AiDifficulty::medium;
+      bool strategy_matrix_ready = true;
+      for (std::uint8_t difficulty = 0U; difficulty < 3U; ++difficulty) {
+        for (std::uint8_t race = 0U; race < 3U; ++race) {
+          CAI strategy_probe(
+              1U, race, static_cast<AiDifficulty>(difficulty),
+              locate_input_root() / "scripts" / "ai");
+          strategy_matrix_ready = strategy_probe.initialize() &&
+                                  strategy_matrix_ready;
+        }
+      }
       const bool scripts_started =
-          has_enabled_ai && !status.ai_script_bytes.empty() &&
+          has_enabled_ai && hard_reloaded && medium_reloaded &&
+          strategy_matrix_ready &&
           std::any_of(status.ai_players.begin(), status.ai_players.end(),
                       [](const AiPlayerRuntime &ai) {
                         return ai.enabled && ai.script_active &&
-                               ai.script_pc != 0U;
+                               ai.controller != nullptr &&
+                               ai.controller->ready() &&
+                               ai.script_error.empty();
                       });
       ai_probe_stage = scripts_started ? 1 : 0;
       for (AiPlayerRuntime &ai : status.ai_players) {
@@ -6520,23 +7186,23 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         }
       }
       bool opening_cadence = scripts_started;
-      for (int tick = 0; scripts_started && tick < 14; ++tick) {
+      for (int tick = 0; scripts_started && tick < 21; ++tick) {
         advance_probe_frame();
         opening_cadence =
             opening_cadence &&
             std::all_of(status.ai_players.begin(), status.ai_players.end(),
                         [tick](const AiPlayerRuntime &ai) {
                           if (!ai.enabled) return true;
-                          if (tick == 0 || tick == 13) {
-                            return ai.macro_update_ticks == 12U;
+                          if (tick == 0 || tick == 20) {
+                            return ai.macro_update_ticks == 19U;
                           }
-                          if (tick == 12) {
+                          if (tick == 19) {
                             return ai.macro_update_ticks == 0U;
                           }
                           return true;
                         });
       }
-      for (int tick = 14; scripts_started && tick < 512; ++tick) {
+      for (int tick = 21; scripts_started && tick < 512; ++tick) {
         advance_probe_frame();
       }
       const bool script_requests = std::any_of(

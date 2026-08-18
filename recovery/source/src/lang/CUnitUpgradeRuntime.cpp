@@ -1,5 +1,6 @@
 #include "../platform/bootstrap_runtime.hpp"
 
+#include <algorithm>
 #include <cstdint>
 
 namespace starcraft::recovery {
@@ -32,11 +33,19 @@ bool advance_technology_research(BootstrapStatus &status) noexcept {
       building.active_technology = 28U;
     } else if (building.active_upgrade < status.upgrade_levels.size()) {
       if (building.owner < status.player_upgrade_levels.size()) {
-        ++status.player_upgrade_levels[building.owner]
-                                      [building.active_upgrade];
+        std::uint8_t &level = status.player_upgrade_levels[building.owner]
+                                                         [building.active_upgrade];
+        level = (std::min)(level,
+                           status.upgrade_traits[building.active_upgrade]
+                               .maximum_level);
+        if (level < status.upgrade_traits[building.active_upgrade]
+                        .maximum_level) {
+          ++level;
+        }
       }
       if (building.owner == 0U) {
-        ++status.upgrade_levels[building.active_upgrade];
+        status.upgrade_levels[building.active_upgrade] =
+            status.player_upgrade_levels[0U][building.active_upgrade];
       }
       building.active_upgrade = 46U;
     }

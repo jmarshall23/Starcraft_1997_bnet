@@ -298,9 +298,25 @@ GlueAction apply_battle_ui_action(GlueRuntime &glue,
     return GlueAction::redraw;
   case battle::BattleUiAction::enter_game_lobby:
     glue.online_lobby = true;
+    if (!glue.battle_net.selected_map_name.empty()) {
+      const auto selected = std::find_if(
+          glue.maps.begin(), glue.maps.end(), [&glue](const GlueMapEntry &map) {
+            return map.name == glue.battle_net.selected_map_name;
+          });
+      if (selected != glue.maps.end()) {
+        glue.selected_map = static_cast<std::size_t>(selected - glue.maps.begin());
+      }
+    }
     configure_lobby_slots(glue);
     glues_enter_screen(glue, GlueScreen::lobby, now);
     return GlueAction::redraw;
+  case battle::BattleUiAction::leave_game_lobby:
+    glue.online_lobby = false;
+    glues_enter_screen(glue, GlueScreen::battle_net, now);
+    return GlueAction::redraw;
+  case battle::BattleUiAction::start_game:
+    configure_lobby_slots(glue);
+    return GlueAction::start_game;
   case battle::BattleUiAction::none:
   default:
     return GlueAction::none;
@@ -735,8 +751,7 @@ GlueAction glue_key_down(GlueRuntime &glue, const WPARAM key,
     }
     if (glue.screen == GlueScreen::lobby) {
       if (glue.online_lobby) {
-        glue.online_lobby = false;
-        glues_enter_screen(glue, GlueScreen::battle_net, now);
+        (void)battle::SrvLeaveGame(glue.battle_net);
         return GlueAction::redraw;
       }
       return glues_leave_screen(glue, GlueScreen::map_selection,
@@ -840,10 +855,14 @@ GlueAction advance_glue(GlueRuntime &glue, const std::uint32_t now) noexcept {
   if (glue.screen == GlueScreen::ready) {
     return GlueAction::redraw;
   }
-  if (glue.screen == GlueScreen::battle_net) {
+  if (glue.screen == GlueScreen::battle_net || glue.online_lobby) {
+    const battle::BattleUiAction action =
+        battle::UiNotification(glue.battle_net);
+    if (glue.online_lobby && glue.screen == GlueScreen::lobby) {
+      configure_lobby_slots(glue);
+    }
     return apply_battle_ui_action(glue,
-                                  battle::UiNotification(glue.battle_net),
-                                  now);
+                                  action, now);
   }
   if (glue.screen == GlueScreen::main_menu) {
     bool advanced{};

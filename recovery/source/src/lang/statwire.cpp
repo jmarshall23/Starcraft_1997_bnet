@@ -144,6 +144,8 @@ const char *active_order_text(const ActiveUnitOrder order) noexcept {
   switch (order) {
   case ActiveUnitOrder::move:
     return "Moving";
+  case ActiveUnitOrder::attack_move:
+    return "Attack-Moving";
   case ActiveUnitOrder::attack:
     return "Attacking";
   case ActiveUnitOrder::repair:
@@ -163,6 +165,64 @@ const char *active_order_text(const ActiveUnitOrder order) noexcept {
   default:
     return "Idle";
   }
+}
+
+std::size_t status_stat_visuals(
+    const BootstrapStatus &status, const ScenarioUnitPreview &unit,
+    std::array<StatusStatVisual, 4> &visuals) noexcept {
+  visuals.fill({});
+  std::size_t count{};
+  const auto upgrade_level = [&status, &unit](const std::uint8_t upgrade) {
+    return unit.owner < status.player_upgrade_levels.size() &&
+                   upgrade < status.player_upgrade_levels[unit.owner].size()
+               ? status.player_upgrade_levels[unit.owner][upgrade]
+               : std::uint8_t{};
+  };
+  const auto append = [&visuals, &count](const StatusStatVisual visual) {
+    if (count < visuals.size()) {
+      visuals[count++] = visual;
+    }
+  };
+
+  // statdraw.cpp::sub_4A6D20 uses units.dat's armor-upgrade byte, with 45 as
+  // the original no-upgrade sentinel, then upgrades.dat's icon word.
+  if (unit.armor_upgrade < status.upgrade_traits.size() &&
+      unit.armor_upgrade < status.upgrade_display_traits.size() &&
+      unit.armor_upgrade != 45U) {
+    const std::uint8_t level = upgrade_level(unit.armor_upgrade);
+    append({status.upgrade_display_traits[unit.armor_upgrade].icon,
+            unit.armor_upgrade, unit.armor, level, level,
+            StatusStatKind::armor});
+  }
+  // Every shield-bearing type receives the fixed Plasma Shields icon and
+  // reads player upgrade 15 (byte_51792E in the executable).
+  if (unit.max_shield_points != 0U) {
+    const std::uint8_t level = upgrade_level(15U);
+    append({308U, 15U, 0U, level, level, StatusStatKind::shields});
+  }
+  const auto append_weapon = [&](const std::uint8_t weapon,
+                                 const std::uint16_t base_damage,
+                                 const std::uint16_t damage_factor) {
+    if (weapon >= status.weapon_traits.size() ||
+        weapon >= status.weapon_display_traits.size()) {
+      return;
+    }
+    const auto &traits = status.weapon_traits[weapon];
+    const std::uint8_t level = upgrade_level(traits.upgrade);
+    append({status.weapon_display_traits[weapon].icon, weapon, base_damage,
+            static_cast<std::uint16_t>(level * damage_factor), level,
+            StatusStatKind::weapon});
+  };
+  if (unit.has_ground_weapon && unit.ground_weapon < 66U) {
+    append_weapon(unit.ground_weapon, unit.weapon_damage,
+                  unit.weapon_damage_factor);
+  }
+  if (unit.has_air_weapon && unit.air_weapon < 66U &&
+      unit.air_weapon != unit.ground_weapon) {
+    append_weapon(unit.air_weapon, unit.air_weapon_damage,
+                  unit.air_weapon_damage_factor);
+  }
+  return count;
 }
 
 void draw_selected_status_panel_gl(const RecoveryWindowState &state,
@@ -214,12 +274,30 @@ void draw_selected_status_panel_gl(const RecoveryWindowState &state,
   char health[48]{};
   const std::uint32_t current_life = (unit.hit_points + 255U) >> 8U;
   const std::uint32_t maximum_life = (std::max)(1U, unit.max_hit_points >> 8U);
-  std::snprintf(health, sizeof(health), "%u/%u", current_life, maximum_life);
   const bool high_life = unit.hit_points * 3U >= unit.max_hit_points * 2U;
   const bool medium_life = unit.hit_points * 3U >= unit.max_hit_points;
-  draw_status_text_gl(state, status->status_health_control, health,
-                      high_life ? 32 : 255,
-                      high_life ? 230 : (medium_life ? 205 : 64), 48);
+  if (unit.max_shield_points != 0U) {
+    char shields[24]{};
+    const std::uint32_t current_shields = unit.shield_points >> 8U;
+    const std::uint32_t maximum_shields = unit.max_shield_points >> 8U;
+    std::snprintf(shields, sizeof(shields), "%u/%u ", current_shields,
+                  maximum_shields);
+    draw_status_text_gl(state, status->status_health_control, shields, 80, 170,
+                        255);
+    CommandControl life_control = status->status_health_control;
+    life_control.left = static_cast<std::int16_t>(
+        life_control.left + std::char_traits<char>::length(shields) * 6U);
+    std::snprintf(health, sizeof(health), "%u/%u", current_life,
+                  maximum_life);
+    draw_status_text_gl(state, life_control, health, high_life ? 32 : 255,
+                        high_life ? 230 : (medium_life ? 205 : 64), 48);
+  } else {
+    std::snprintf(health, sizeof(health), "%u/%u", current_life,
+                  maximum_life);
+    draw_status_text_gl(state, status->status_health_control, health,
+                        high_life ? 32 : 255,
+                        high_life ? 230 : (medium_life ? 205 : 64), 48);
+  }
 
   char auxiliary[64]{};
   if (unit.unit_type == 72U || unit.unit_type == 82U ||
@@ -248,11 +326,50 @@ void draw_selected_status_panel_gl(const RecoveryWindowState &state,
   } else if (unit.cargo_gas != 0U) {
     std::snprintf(auxiliary, sizeof(auxiliary), "Vespene Gas: %u",
                   unit.cargo_gas);
-  } else {
-    std::snprintf(auxiliary, sizeof(auxiliary), "Armor: %u", unit.armor);
+  } else if (unit.max_energy != 0U) {
+    std::snprintf(auxiliary, sizeof(auxiliary), "Energy: %u/%u",
+                  static_cast<unsigned>(unit.energy >> 8U),
+                  static_cast<unsigned>(unit.max_energy >> 8U));
   }
   draw_status_text_gl(state, status->status_aux_control, auxiliary, 96, 170,
                       255);
+
+  // statdraw.cpp::sub_4A6D20 fills at most four controls, in this exact
+  // order: armor, Plasma Shields, ground weapon, distinct air weapon. Its
+  // text is the researched level ("+%d "), not the total damage/armor.
+  if (unit.owner == status->local_player) {
+    std::array<StatusStatVisual, 4> stats{};
+    const std::size_t stat_count = (std::min)(
+        status_stat_visuals(*status, unit, stats),
+        status->status_stat_controls.size());
+    for (std::size_t index = 0; index < stat_count; ++index) {
+      const CommandControl &control = status->status_stat_controls[index];
+      if (stats[index].icon >= status->command_icon_frames.size()) {
+        continue;
+      }
+      draw_preview_frame_gl(
+          status->command_icon_frames[stats[index].icon],
+          static_cast<float>(control.left),
+          static_cast<float>(control.top) * hud_vertical_scale(),
+          static_cast<float>(control.right - control.left + 1),
+          static_cast<float>(control.bottom - control.top + 1) *
+              hud_vertical_scale());
+      char level[12]{};
+      std::snprintf(level, sizeof(level), "+%u", stats[index].level);
+      CommandControl level_control = control;
+      level_control.left = static_cast<std::int16_t>(control.right - 15);
+      level_control.top = static_cast<std::int16_t>(control.bottom - 13);
+      draw_status_text_gl(state, level_control, level, 255, 255, 255);
+    }
+  }
+
+  // statdraw.cpp selects the foreign-building wireframe/name/health layout,
+  // but the queue, research and construction controls are owner-only. Keep
+  // the portrait renderer independent so allied and enemy structures still
+  // show their unit portrait while exposing none of their private progress.
+  if (unit.is_building && unit.owner != status->local_player) {
+    return;
+  }
 
   // statdraw.cpp::sub_4A89B0/sub_4A9B00 copy the eight compact CUnit cargo
   // IDs, then place occupants in three exact statdata.bin layouts. Four-space

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace starcraft::game {
@@ -23,6 +25,23 @@ struct PathObstacle {
   int top{};
   int right{};
   int bottom{};
+};
+
+struct PathRequest {
+  std::size_t request_id{};
+  std::uint16_t start_x{};
+  std::uint16_t start_y{};
+  std::uint16_t target_x{};
+  std::uint16_t target_y{};
+  std::uint16_t mover_width{};
+  std::uint16_t mover_height{};
+  std::vector<PathObstacle> obstacles{};
+};
+
+struct PathResult {
+  std::size_t request_id{};
+  bool found{};
+  std::vector<PathPoint> path{};
 };
 
 class PathingMap final {
@@ -75,5 +94,27 @@ class PathingMap final {
     std::uint16_t mover_height,
     const std::vector<PathObstacle>& obstacles,
     std::vector<PathPoint>& output) noexcept;
+
+// Persistent workers parallelize independent unit searches. A batch is a
+// deterministic barrier: every result is written to its request slot and the
+// caller applies results in its own stable order after find_paths returns.
+class PathfindingExecutor final {
+ public:
+  explicit PathfindingExecutor(std::size_t worker_count = 0) noexcept;
+  ~PathfindingExecutor();
+
+  PathfindingExecutor(const PathfindingExecutor&) = delete;
+  PathfindingExecutor& operator=(const PathfindingExecutor&) = delete;
+
+  [[nodiscard]] bool find_paths(
+      const PathingMap& map,
+      const std::vector<PathRequest>& requests,
+      std::vector<PathResult>& results) noexcept;
+  [[nodiscard]] std::size_t worker_count() const noexcept;
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl_{};
+};
 
 }  // namespace starcraft::lang

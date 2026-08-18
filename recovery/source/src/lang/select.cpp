@@ -47,7 +47,7 @@ void complete_selection_drag(RecoveryWindowState &state) noexcept {
     for (std::size_t index = 0; index < status->units.size(); ++index) {
       const ScenarioUnitPreview &unit = status->units[index];
       if (!unit.alive || unit.dying || unit.sprite_hidden ||
-          !fog_unit_visible(*status, unit)) {
+          !fog_unit_visible(*status, unit, status->local_player)) {
         continue;
       }
       const int center_x = unit.x - status->camera_x;
@@ -97,12 +97,12 @@ void complete_selection_drag(RecoveryWindowState &state) noexcept {
   std::size_t selected = selection_count(*status);
   for (ScenarioUnitPreview &unit : status->units) {
     if (!unit.alive || unit.dying || unit.sprite_hidden ||
-        !fog_unit_visible(*status, unit)) {
+        !fog_unit_visible(*status, unit, status->local_player)) {
       continue;
     }
     const int center_x = unit.x - status->camera_x;
     const int center_y = unit.y - status->camera_y;
-    if (!unit.selected && unit.owner == 0 && center_x >= left &&
+    if (!unit.selected && unit.owner == status->local_player && center_x >= left &&
         center_x <= right && center_y >= top && center_y <= bottom &&
         selected < 12) {
       unit.selected = true;

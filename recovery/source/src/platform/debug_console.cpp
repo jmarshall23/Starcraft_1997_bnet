@@ -122,7 +122,8 @@ bool execute_debug_console_command(BootstrapStatus &status,
       // masks. Re-enabling can therefore use the live history directly.
       (void)rebuild_fog_render_surfaces(status);
       for (ScenarioUnitPreview &unit : status.units) {
-        if (unit.selected && !fog_unit_visible(status, unit)) {
+        if (unit.selected &&
+            !fog_unit_visible(status, unit, status.local_player)) {
           unit.selected = false;
         }
       }
@@ -130,6 +131,31 @@ bool execute_debug_console_command(BootstrapStatus &status,
     result = std::string{"fog_of_war = "} +
              (status.fog_of_war_enabled ? "1" : "0");
     return true;
+  }
+  if (cvar_name == "ai_difficulty" || cvar_name == "ai_skill") {
+    if (cvar_value.empty()) {
+      result = std::string{"ai_difficulty = "} +
+               ai_difficulty_name(status.ai_difficulty);
+      return true;
+    }
+    AiDifficulty difficulty{};
+    if (cvar_value == "easy") {
+      difficulty = AiDifficulty::easy;
+    } else if (cvar_value == "medium") {
+      difficulty = AiDifficulty::medium;
+    } else if (cvar_value == "hard") {
+      difficulty = AiDifficulty::hard;
+    } else {
+      result = "ai_difficulty expects easy, medium, or hard";
+      return false;
+    }
+    const bool ready = set_ai_difficulty(status, difficulty);
+    result = std::string{"ai_difficulty = "} +
+             ai_difficulty_name(status.ai_difficulty);
+    if (!ready) {
+      result += " (one or more Lua controllers failed to reload)";
+    }
+    return ready;
   }
   if (normalized == "fullmoney") {
     set_all_minerals(status);
@@ -148,8 +174,9 @@ bool execute_debug_console_command(BootstrapStatus &status,
     return true;
   }
   if (normalized == "help") {
-    result = "commands: fog_of_war [0|1], fullmoney, fullminerals, "
-             "fullgas, clear, help";
+    result = "commands: fog_of_war [0|1], ai_difficulty "
+             "[easy|medium|hard], fullmoney, fullminerals, fullgas, clear, "
+             "help";
     return true;
   }
   result = normalized.empty() ? "empty command"

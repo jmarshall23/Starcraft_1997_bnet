@@ -79,6 +79,73 @@ std::string decode_field(const std::string_view field) {
   return output;
 }
 
+std::string encode_hex(const std::vector<std::uint8_t> &bytes) {
+  constexpr char hex[] = "0123456789ABCDEF";
+  if (bytes.empty()) {
+    return "-";
+  }
+  std::string output;
+  output.reserve(bytes.size() * 2U);
+  for (const std::uint8_t byte : bytes) {
+    output.push_back(hex[byte >> 4U]);
+    output.push_back(hex[byte & 0x0FU]);
+  }
+  return output;
+}
+
+bool decode_hex(const std::string_view text,
+                std::vector<std::uint8_t> &output) {
+  output.clear();
+  if (text == "-") {
+    return true;
+  }
+  if ((text.size() & 1U) != 0U) {
+    return false;
+  }
+  try {
+    output.reserve(text.size() / 2U);
+    for (std::size_t index = 0U; index < text.size(); index += 2U) {
+      const int high = hex_value(text[index]);
+      const int low = hex_value(text[index + 1U]);
+      if (high < 0 || low < 0) {
+        output.clear();
+        return false;
+      }
+      output.push_back(static_cast<std::uint8_t>((high << 4) | low));
+    }
+  } catch (...) {
+    output.clear();
+    return false;
+  }
+  return true;
+}
+
+bool parse_lobby_slot_kind(const std::string_view text,
+                           LobbySlotKind &kind) noexcept {
+  if (text == "OPEN") {
+    kind = LobbySlotKind::open;
+  } else if (text == "COMPUTER") {
+    kind = LobbySlotKind::computer;
+  } else if (text == "HUMAN") {
+    kind = LobbySlotKind::human;
+  } else if (text == "CLOSED") {
+    kind = LobbySlotKind::closed;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+std::string_view lobby_slot_kind_name(const LobbySlotKind kind) noexcept {
+  switch (kind) {
+  case LobbySlotKind::open: return "OPEN";
+  case LobbySlotKind::computer: return "COMPUTER";
+  case LobbySlotKind::closed: return "CLOSED";
+  case LobbySlotKind::human:
+  default: return "HUMAN";
+  }
+}
+
 std::vector<std::string_view> split_fields(const std::string_view line) {
   std::vector<std::string_view> fields;
   std::size_t begin{};
@@ -214,14 +281,219 @@ void process_server_line(BattleRuntime &runtime,
     set_status(runtime, runtime.games.empty() ? "No advertised games."
                                              : "Select a game to join.");
   } else if ((command == "GAME_CREATED" || command == "JOINED_GAME") &&
-             fields.size() >= 2U) {
+             fields.size() >= 5U) {
+    (void)parse_integer(fields[1], runtime.game_identifier);
+    runtime.selected_map_name = decode_field(fields[3]);
+    (void)parse_integer(fields[4], runtime.local_player_slot);
+    runtime.game_host = command == "GAME_CREATED";
+    runtime.game_started = false;
+    runtime.game_aborted = false;
+    runtime.lobby_players.clear();
+    runtime.lobby_slots.clear();
+    runtime.committed_turns.clear();
+    runtime.outgoing_turns.clear();
     runtime.pending_game_lobby = true;
+    runtime.pending_game_lobby_exit = false;
     set_status(runtime, command == "GAME_CREATED" ? "Game created."
                                                    : "Game joined.");
+  } else if (command == "LOBBY_CLEAR") {
+    runtime.lobby_players.clear();
+    runtime.lobby_slots.clear();
+  } else if (command == "LOBBY_SLOT" && fields.size() >= 4U) {
+    LobbySlotEntry slot{};
+    if (!parse_integer(fields[1], slot.slot) ||
+        !parse_lobby_slot_kind(fields[2], slot.kind) ||
+        !parse_integer(fields[3], slot.race) || slot.race >= 3U) {
+      return;
+    }
+    const auto found = std::find_if(
+        runtime.lobby_slots.begin(), runtime.lobby_slots.end(),
+        [&slot](const LobbySlotEntry &candidate) {
+          return candidate.slot == slot.slot;
+        });
+    if (found == runtime.lobby_slots.end()) {
+      runtime.lobby_slots.push_back(slot);
+    } else {
+      *found = slot;
+    }
+  } else if (command == "LOBBY_PLAYER" && fields.size() >= 3U) {
+    LobbyPlayer player{};
+    (void)parse_integer(fields[1], player.slot);
+    player.name = decode_field(fields[2]);
+    const auto found = std::find_if(
+        runtime.lobby_players.begin(), runtime.lobby_players.end(),
+        [&player](const LobbyPlayer &candidate) {
+          return candidate.slot == player.slot;
+        });
+    if (found == runtime.lobby_players.end()) {
+      runtime.lobby_players.push_back(std::move(player));
+    } else {
+      *found = std::move(player);
+    }
+  } else if (command == "LOBBY_PLAYER_LEFT" && fields.size() >= 2U) {
+    std::uint8_t slot{};
+    if (parse_integer(fields[1], slot)) {
+      runtime.lobby_players.erase(
+          std::remove_if(runtime.lobby_players.begin(),
+                         runtime.lobby_players.end(),
+                         [slot](const LobbyPlayer &player) {
+                           return player.slot == slot;
+                         }),
+          runtime.lobby_players.end());
+    }
+  } else if (command == "GAME_START" && fields.size() >= 5U) {
+    (void)parse_integer(fields[1], runtime.game_identifier);
+    runtime.selected_map_name = decode_field(fields[2]);
+    (void)parse_integer(fields[3], runtime.game_seed);
+    (void)parse_integer(fields[4], runtime.game_player_count);
+    runtime.simulation_turn = 0U;
+    runtime.next_turn_to_submit = 0U;
+    runtime.committed_turns.clear();
+    runtime.outgoing_turns.clear();
+    runtime.game_started = true;
+    runtime.game_aborted = false;
+    runtime.pending_game_start = true;
+    set_status(runtime, "The synchronized game is starting.");
+  } else if (command == "TURN_COMMIT" && fields.size() >= 4U &&
+             (fields.size() & 1U) == 0U) {
+    CommittedTurn commit{};
+    if (!parse_integer(fields[1], commit.turn)) {
+      return;
+    }
+    try {
+      for (std::size_t index = 2U; index + 1U < fields.size(); index += 2U) {
+        PlayerTurnPayload player{};
+        if (!parse_integer(fields[index], player.slot) ||
+            !decode_hex(fields[index + 1U], player.payload)) {
+          return;
+        }
+        commit.players.push_back(std::move(player));
+      }
+      runtime.committed_turns.push_back(std::move(commit));
+    } catch (...) {
+      set_status(runtime, "A synchronized turn could not be buffered.");
+    }
+  } else if (command == "LEFT_GAME") {
+    runtime.game_identifier = 0U;
+    runtime.game_host = false;
+    runtime.game_started = false;
+    runtime.game_aborted = false;
+    runtime.pending_game_lobby = false;
+    runtime.pending_game_start = false;
+    runtime.lobby_players.clear();
+    runtime.lobby_slots.clear();
+    runtime.committed_turns.clear();
+    runtime.outgoing_turns.clear();
+    runtime.screen = BattleScreen::chat_room;
+    runtime.edit_control = EditControl::chat_input;
+    runtime.pending_game_lobby_exit = true;
+    set_status(runtime, "Returned to the Battle.net channel.");
+  } else if (command == "GAME_ABORTED") {
+    const bool game_was_started = runtime.game_started;
+    runtime.game_aborted = game_was_started;
+    runtime.pending_game_start = false;
+    if (!game_was_started) {
+      runtime.game_identifier = 0U;
+      runtime.game_host = false;
+      runtime.game_started = false;
+      runtime.pending_game_lobby = false;
+      runtime.lobby_players.clear();
+      runtime.lobby_slots.clear();
+      runtime.committed_turns.clear();
+      runtime.outgoing_turns.clear();
+      runtime.screen = BattleScreen::chat_room;
+      runtime.edit_control = EditControl::chat_input;
+      runtime.pending_game_lobby_exit = true;
+    }
+    set_status(runtime, fields.size() >= 2U ? decode_field(fields[1])
+                                           : "The network game ended.");
   } else if (command == "ERROR") {
     set_status(runtime, fields.size() >= 3U ? decode_field(fields[2])
                                            : "Server request failed.");
   }
+}
+
+bool local_server_endpoint(const BattleRuntime &runtime) noexcept {
+  return runtime.server_host == "127.0.0.1" ||
+         runtime.server_host == "localhost" || runtime.server_host == "::1";
+}
+
+SOCKET connect_endpoint(const BattleRuntime &runtime,
+                        const long timeout_microseconds) noexcept {
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+  char port[16]{};
+  std::snprintf(port, sizeof(port), "%u",
+                static_cast<unsigned>(runtime.server_port));
+  addrinfo *addresses{};
+  if (getaddrinfo(runtime.server_host.c_str(), port, &hints, &addresses) != 0) {
+    return INVALID_SOCKET;
+  }
+  SOCKET connected = INVALID_SOCKET;
+  for (addrinfo *address = addresses; address != nullptr;
+       address = address->ai_next) {
+    SOCKET candidate = socket(address->ai_family, address->ai_socktype,
+                              address->ai_protocol);
+    if (candidate == INVALID_SOCKET) continue;
+    u_long nonblocking = 1U;
+    (void)ioctlsocket(candidate, FIONBIO, &nonblocking);
+    const int result = connect(candidate, address->ai_addr,
+                               static_cast<int>(address->ai_addrlen));
+    if (result == 0) {
+      connected = candidate;
+      break;
+    }
+    if (WSAGetLastError() == WSAEWOULDBLOCK) {
+      fd_set writable{};
+      FD_ZERO(&writable);
+      FD_SET(candidate, &writable);
+      timeval timeout{timeout_microseconds / 1000000L,
+                      timeout_microseconds % 1000000L};
+      if (select(0, nullptr, &writable, nullptr, &timeout) > 0) {
+        int error{};
+        int size = sizeof(error);
+        if (getsockopt(candidate, SOL_SOCKET, SO_ERROR,
+                       reinterpret_cast<char *>(&error), &size) == 0 &&
+            error == 0) {
+          connected = candidate;
+          break;
+        }
+      }
+    }
+    closesocket(candidate);
+  }
+  freeaddrinfo(addresses);
+  return connected;
+}
+
+bool launch_local_server() noexcept {
+  std::array<wchar_t, 32768> module{};
+  const DWORD length = GetModuleFileNameW(
+      nullptr, module.data(), static_cast<DWORD>(module.size()));
+  if (length == 0U || length >= module.size()) return false;
+  std::wstring directory{module.data(), length};
+  const std::size_t separator = directory.find_last_of(L"\\/");
+  if (separator == std::wstring::npos) return false;
+  directory.resize(separator);
+  const std::wstring server =
+      directory + L"\\StarCraftRecoveryServer.exe";
+  if (GetFileAttributesW(server.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    return false;
+  }
+  std::wstring command = L"\"" + server + L"\"";
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  if (CreateProcessW(server.c_str(), command.data(), nullptr, nullptr, FALSE,
+                     CREATE_NO_WINDOW, nullptr, directory.c_str(), &startup,
+                     &process) == FALSE) {
+    return false;
+  }
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return true;
 }
 
 } // namespace
@@ -254,53 +526,18 @@ bool SrvConnectToServer(BattleRuntime &runtime) noexcept {
   if (!SrvInitialize(runtime)) {
     return false;
   }
-  addrinfo hints{};
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-  char port[16]{};
-  std::snprintf(port, sizeof(port), "%u",
-                static_cast<unsigned>(runtime.server_port));
-  addrinfo *addresses{};
-  if (getaddrinfo(runtime.server_host.c_str(), port, &hints, &addresses) != 0) {
-    set_status(runtime, "The recovery server address could not be resolved.");
-    return false;
-  }
-  SOCKET connected = INVALID_SOCKET;
-  for (addrinfo *address = addresses; address != nullptr;
-       address = address->ai_next) {
-    SOCKET candidate = socket(address->ai_family, address->ai_socktype,
-                              address->ai_protocol);
-    if (candidate == INVALID_SOCKET) {
-      continue;
-    }
-    u_long nonblocking = 1U;
-    (void)ioctlsocket(candidate, FIONBIO, &nonblocking);
-    const int result = connect(candidate, address->ai_addr,
-                               static_cast<int>(address->ai_addrlen));
-    if (result == 0) {
-      connected = candidate;
-      break;
-    }
-    if (WSAGetLastError() == WSAEWOULDBLOCK) {
-      fd_set writable{};
-      FD_ZERO(&writable);
-      FD_SET(candidate, &writable);
-      timeval timeout{1, 500000};
-      if (select(0, nullptr, &writable, nullptr, &timeout) > 0) {
-        int error{};
-        int size = sizeof(error);
-        if (getsockopt(candidate, SOL_SOCKET, SO_ERROR,
-                       reinterpret_cast<char *>(&error), &size) == 0 &&
-            error == 0) {
-          connected = candidate;
-          break;
-        }
+  SOCKET connected = connect_endpoint(runtime, 1500000L);
+  if (connected == INVALID_SOCKET && local_server_endpoint(runtime) &&
+      !runtime.local_server_launch_attempted) {
+    runtime.local_server_launch_attempted = true;
+    if (launch_local_server()) {
+      for (int attempt = 0; attempt < 20 && connected == INVALID_SOCKET;
+           ++attempt) {
+        Sleep(50U);
+        connected = connect_endpoint(runtime, 100000L);
       }
     }
-    closesocket(candidate);
   }
-  freeaddrinfo(addresses);
   if (connected == INVALID_SOCKET) {
     set_status(runtime, "Could not connect to the recovery server at " +
                             runtime.server_host + ":" +
@@ -327,6 +564,16 @@ void SrvDisconnect(BattleRuntime &runtime) noexcept {
   runtime.connected = false;
   runtime.authenticated = false;
   runtime.pending_game_lobby = false;
+  runtime.pending_game_lobby_exit = false;
+  runtime.pending_game_start = false;
+  runtime.game_identifier = 0U;
+  runtime.game_host = false;
+  runtime.game_started = false;
+  runtime.game_aborted = false;
+  runtime.lobby_players.clear();
+  runtime.lobby_slots.clear();
+  runtime.committed_turns.clear();
+  runtime.outgoing_turns.clear();
   runtime.receive_buffer.clear();
 }
 
@@ -375,6 +622,66 @@ bool SrvNotifyJoin(BattleRuntime &runtime,
                    const std::uint32_t game_identifier) noexcept {
   const std::string identifier = std::to_string(game_identifier);
   return runtime.authenticated && send_line(runtime, "JOIN_GAME", {identifier});
+}
+
+bool SrvSetLobbySlot(BattleRuntime &runtime, const std::uint8_t slot,
+                     const LobbySlotKind kind,
+                     const std::uint8_t race) noexcept {
+  if (!runtime.authenticated || !runtime.game_host ||
+      kind == LobbySlotKind::human || race >= 3U) {
+    return false;
+  }
+  const std::string slot_text = std::to_string(slot);
+  const std::string race_text = std::to_string(race);
+  return send_line(runtime, "SET_SLOT",
+                   {slot_text, lobby_slot_kind_name(kind), race_text});
+}
+
+bool SrvLeaveGame(BattleRuntime &runtime) noexcept {
+  if (!runtime.authenticated || runtime.game_identifier == 0U) {
+    return false;
+  }
+  if (!send_line(runtime, "LEAVE_GAME")) {
+    return false;
+  }
+  set_status(runtime, "Leaving the game lobby...");
+  return true;
+}
+
+bool SrvStartGame(BattleRuntime &runtime) noexcept {
+  return runtime.authenticated && runtime.game_host &&
+         send_line(runtime, "START_GAME");
+}
+
+bool SrvSubmitTurn(BattleRuntime &runtime, const std::uint32_t turn,
+                   const std::vector<std::uint8_t> &payload) noexcept {
+  if (!runtime.authenticated || !runtime.game_started ||
+      payload.size() > 2048U) {
+    return false;
+  }
+  try {
+    const std::string turn_text = std::to_string(turn);
+    const std::string payload_text = encode_hex(payload);
+    return send_line(runtime, "TURN", {turn_text, payload_text});
+  } catch (...) {
+    set_status(runtime, "A synchronized turn could not be encoded.");
+    return false;
+  }
+}
+
+bool SrvTakeCommittedTurn(BattleRuntime &runtime, const std::uint32_t turn,
+                          CommittedTurn &commit) noexcept {
+  const auto found = std::find_if(
+      runtime.committed_turns.begin(), runtime.committed_turns.end(),
+      [turn](const CommittedTurn &candidate) {
+        return candidate.turn == turn;
+      });
+  if (found == runtime.committed_turns.end()) {
+    return false;
+  }
+  commit = std::move(*found);
+  runtime.committed_turns.erase(found);
+  return true;
 }
 
 bool SrvProcessClientReq(BattleRuntime &runtime) noexcept {

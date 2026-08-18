@@ -56,9 +56,21 @@ void apply_game_dialog_action(const HWND window,
   if (action == GameDialogAction::redraw) {
     InvalidateRect(window, nullptr, FALSE);
   } else if (action == GameDialogAction::restart_match) {
-    (void)start_selected_glue_map(*state);
+    if (state->glue.online_lobby) {
+      if (state->status != nullptr) {
+        state->status->system_message =
+            "Network matches cannot be restarted locally.";
+        state->status->system_message_until = GetTickCount() + 4000U;
+      }
+    } else {
+      (void)start_selected_glue_map(*state);
+    }
     InvalidateRect(window, nullptr, FALSE);
   } else if (action == GameDialogAction::return_to_menu) {
+    if (state->glue.online_lobby) {
+      battle::SrvDisconnect(state->glue.battle_net);
+      state->glue.online_lobby = false;
+    }
     state->game_dialog.screen = GameDialogScreen::none;
     state->game_dialog.match_active = false;
     state->game_dialog.paused = false;
@@ -257,7 +269,12 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     if (game_position && state->status->placement_active &&
         !hud_pixel_opaque(*state->status, game_x, game_y)) {
       (void)update_building_placement(*state->status, game_x, game_y);
-      (void)place_current_building(*state->status);
+      if (state->glue.online_lobby &&
+          state->glue.battle_net.game_started) {
+        (void)queue_network_building_placement(*state);
+      } else {
+        (void)place_current_building(*state->status);
+      }
       (void)play_pending_resource_error(*state);
       InvalidateRect(window, nullptr, FALSE);
       return 0;
@@ -280,10 +297,17 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
           static_cast<int>(state->status->scenario_height) * 32 - 1;
       const int world_x = game_x + state->status->camera_x;
       const int world_y = game_y + state->status->camera_y;
-      const std::size_t issued = issue_active_scv_target(
-          *state->status,
-          static_cast<std::uint16_t>((std::clamp)(world_x, 0, map_right)),
-          static_cast<std::uint16_t>((std::clamp)(world_y, 0, map_bottom)));
+      const std::uint16_t target_x = static_cast<std::uint16_t>(
+          (std::clamp)(world_x, 0, map_right));
+      const std::uint16_t target_y = static_cast<std::uint16_t>(
+          (std::clamp)(world_y, 0, map_bottom));
+      const bool network_game = state->glue.online_lobby &&
+                                state->glue.battle_net.game_started;
+      const std::size_t issued =
+          network_game
+              ? (queue_network_target_order(*state, target_x, target_y) ? 1U
+                                                                        : 0U)
+              : issue_active_scv_target(*state->status, target_x, target_y);
       const ScenarioUnitPreview *const speaker =
           first_selected_unit(*state->status);
       if (issued != 0U && speaker != nullptr &&
@@ -432,10 +456,17 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
         const int map_right = static_cast<int>(status.scenario_width) * 32 - 1;
         const int map_bottom =
             static_cast<int>(status.scenario_height) * 32 - 1;
-        const std::size_t issued = issue_scv_smart_order(
-            status,
-            static_cast<std::uint16_t>((std::clamp)(world_x, 0, map_right)),
-            static_cast<std::uint16_t>((std::clamp)(world_y, 0, map_bottom)));
+        const std::uint16_t target_x = static_cast<std::uint16_t>(
+            (std::clamp)(world_x, 0, map_right));
+        const std::uint16_t target_y = static_cast<std::uint16_t>(
+            (std::clamp)(world_y, 0, map_bottom));
+        const bool network_game = state->glue.online_lobby &&
+                                  state->glue.battle_net.game_started;
+        const std::size_t issued =
+            network_game
+                ? (queue_network_smart_order(*state, target_x, target_y) ? 1U
+                                                                        : 0U)
+                : issue_scv_smart_order(status, target_x, target_y);
         const ScenarioUnitPreview *const speaker = first_selected_unit(status);
         if (issued != 0U && speaker != nullptr &&
             queue_unit_response(status, *speaker, true)) {
@@ -559,8 +590,14 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
       if (state->status != nullptr &&
           client_to_game(window, lparam, game_x, game_y) &&
           command_position_at(*state->status, game_x, game_y) == pressed) {
-        activate_command_button(*state->status, pressed);
-        (void)play_pending_resource_error(*state);
+        if (state->glue.online_lobby &&
+            state->glue.battle_net.game_started) {
+          (void)queue_network_command_button(*state, pressed);
+          (void)play_pending_resource_error(*state);
+        } else {
+          activate_command_button(*state->status, pressed);
+          (void)play_pending_resource_error(*state);
+        }
         const ScenarioUnitPreview *const speaker =
             first_selected_unit(*state->status);
         if ((pressed == 2U || pressed == 6U) && speaker != nullptr &&

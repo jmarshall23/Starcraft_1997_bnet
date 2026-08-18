@@ -42,7 +42,8 @@ bool queue_positional_game_sound(BootstrapStatus &status,
   // gamesnd.cpp::sub_455370 tests the local player bit in the map-mask word
   // before allocating a positional channel. Sounds in unrevealed/fogged map
   // space do not leak enemy activity.
-  if (!fog_world_position_visible(status, world_x, world_y)) {
+  if (!fog_world_position_visible(status, world_x, world_y,
+                                  status.local_player)) {
     return false;
   }
   return queue_sound_event(
@@ -115,7 +116,7 @@ std::uint16_t choose_unit_sound(BootstrapStatus &status,
 bool queue_unit_response(BootstrapStatus &status,
                          const ScenarioUnitPreview &unit,
                          const bool order_acknowledgement) noexcept {
-  if (!unit.alive || unit.owner != 0 ||
+  if (!unit.alive || unit.owner != status.local_player ||
       unit.unit_type >= status.unit_sound_ranges.size()) {
     return false;
   }
@@ -154,7 +155,8 @@ bool queue_unit_ready_sound(BootstrapStatus &status,
   // gamesnd.cpp::sub_455790 only announces completed local units in the
   // 106-entry Ready-sound table. Unit IDs 73 and 85 are explicitly excluded
   // by the original handler.
-  if (!unit.alive || unit.owner != 0U || unit.unit_type >= 106U ||
+  if (!unit.alive || unit.owner != status.local_player ||
+      unit.unit_type >= 106U ||
       unit.unit_type == 73U || unit.unit_type == 85U) {
     return false;
   }

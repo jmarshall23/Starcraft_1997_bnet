@@ -38,6 +38,11 @@ bool parse_dialog_control(const std::vector<std::uint8_t> &layout,
 
 bool parse_status_panel_controls(const std::vector<std::uint8_t> &layout,
                                  BootstrapStatus &status) noexcept {
+  try {
+    status.status_stat_controls.resize(4U);
+  } catch (...) {
+    return false;
+  }
   if (!parse_dialog_control(layout, 1, status.status_wireframe_control) ||
       !parse_dialog_control(layout, -5, status.status_name_control) ||
       !parse_dialog_control(layout, -7, status.status_health_control) ||
@@ -54,6 +59,13 @@ bool parse_status_panel_controls(const std::vector<std::uint8_t> &layout,
        ++index) {
     if (!parse_dialog_control(layout, static_cast<std::int16_t>(2 + index),
                               status.status_queue_controls[index])) {
+      return false;
+    }
+  }
+  for (std::size_t index = 0; index < status.status_stat_controls.size();
+       ++index) {
+    if (!parse_dialog_control(layout, static_cast<std::int16_t>(9 + index),
+                              status.status_stat_controls[index])) {
       return false;
     }
   }

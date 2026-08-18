@@ -89,10 +89,27 @@ GlueAction activate_lobby_control(GlueRuntime &glue,
         static_cast<std::uint8_t>(identifier - kPopupRowBase);
     glue.popup_control = -1;
     glue.popup_row = -1;
-    if (owner >= kSlotNameBase && owner < kSlotNameBase + 12 && choice < 2U) {
+    if (owner >= kSlotNameBase && owner < kSlotNameBase + 12 &&
+        choice < (glue.online_lobby ? 3U : 2U)) {
       GlueLobbySlot &slot = glue.lobby_slots[static_cast<std::size_t>(
           owner - kSlotNameBase)];
-      if (!slot.local) {
+      if (glue.online_lobby) {
+        if (glue.battle_net.game_host && !slot.network_player) {
+          const battle::LobbySlotKind kind =
+              choice == 0U ? battle::LobbySlotKind::open
+              : choice == 1U ? battle::LobbySlotKind::computer
+                             : battle::LobbySlotKind::closed;
+          if (!battle::SrvSetLobbySlot(
+                  glue.battle_net,
+                  static_cast<std::uint8_t>(owner - kSlotNameBase), kind,
+                  slot.race < 3U ? slot.race : 1U)) {
+            set_message(glue, glue.battle_net.status.empty()
+                                  ? "The lobby slot could not be changed."
+                                  : glue.battle_net.status.c_str(),
+                        now);
+          }
+        }
+      } else if (!slot.local) {
         if (choice == 0U) {
           slot.ownership = 5U;
           slot.name = "Computer";
@@ -115,10 +132,28 @@ GlueAction activate_lobby_control(GlueRuntime &glue,
     return GlueAction::redraw;
   }
   if (identifier == 7) {
+    if (glue.online_lobby) {
+      if (!battle::SrvLeaveGame(glue.battle_net)) {
+        set_message(glue, glue.battle_net.status.empty()
+                              ? "The game lobby could not be left."
+                              : glue.battle_net.status.c_str(),
+                    now);
+      }
+      return GlueAction::redraw;
+    }
     return glues_leave_screen(glue, GlueScreen::map_selection,
                               GlueAction::none, now);
   }
   if (identifier == 15) {
+    if (glue.online_lobby) {
+      if (!battle::SrvLeaveGame(glue.battle_net)) {
+        set_message(glue, glue.battle_net.status.empty()
+                              ? "The game lobby could not be left."
+                              : glue.battle_net.status.c_str(),
+                    now);
+      }
+      return GlueAction::redraw;
+    }
     return glues_leave_screen(glue, GlueScreen::map_selection,
                               GlueAction::none, now);
   }
@@ -127,7 +162,10 @@ GlueAction activate_lobby_control(GlueRuntime &glue,
                        static_cast<std::int16_t>(glue.lobby_slots.size())) {
     GlueLobbySlot &slot =
         glue.lobby_slots[static_cast<std::size_t>(identifier - kSlotNameBase)];
-    if (slot.local) {
+    if (slot.local ||
+        (glue.online_lobby &&
+         (!glue.battle_net.game_host || !slot.network_configurable ||
+          slot.network_player))) {
       glue.popup_control = -1;
       return GlueAction::redraw;
     }
@@ -139,7 +177,7 @@ GlueAction activate_lobby_control(GlueRuntime &glue,
                        static_cast<std::int16_t>(glue.lobby_slots.size())) {
     GlueLobbySlot &slot =
         glue.lobby_slots[static_cast<std::size_t>(identifier - kSlotRaceBase)];
-    if (slot.ownership != 0U) {
+    if (slot.ownership != 0U && !glue.online_lobby) {
       glue.popup_control = glue.popup_control == identifier ? -1 : identifier;
     } else {
       glue.popup_control = -1;
@@ -152,8 +190,24 @@ GlueAction activate_lobby_control(GlueRuntime &glue,
   // gluChat.cpp's original Okay handler in sub_45C7E0 calls
   // gluChatSlot.cpp::sub_45E160 and only begins the game when that recovered
   // slot count is at least two.
-  if (active_slot_count(glue) < 2U) {
+  const std::size_t ready_players =
+      glue.online_lobby ? glue.battle_net.lobby_players.size()
+                        : active_slot_count(glue);
+  if (ready_players < 2U) {
     set_message(glue, "At least two player slots are required.", now);
+    return GlueAction::redraw;
+  }
+  if (glue.online_lobby) {
+    if (!glue.battle_net.game_host) {
+      set_message(glue, "Waiting for the host to start the game.", now);
+      return GlueAction::redraw;
+    }
+    if (!battle::SrvStartGame(glue.battle_net)) {
+      set_message(glue, glue.battle_net.status.empty()
+                            ? "The game could not be started."
+                            : glue.battle_net.status.c_str(),
+                  now);
+    }
     return GlueAction::redraw;
   }
   glue.ready_deadline = now + 3000U + 240U;

@@ -165,8 +165,19 @@ BootstrapStatus probe_assets(
     const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
         *const ownership_override,
     const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>
-        *const race_override) {
+        *const race_override,
+    const std::uint32_t melee_start_seed,
+    const std::uint8_t requested_local_player) {
   BootstrapStatus status{};
+  status.local_player =
+      requested_local_player < starcraft::data::chk_player_slot_count
+          ? requested_local_player
+          : 0U;
+  status.command_player = status.local_player;
+  // Offline skirmish currently has one authored baseline difficulty. Keep
+  // new matches explicitly pinned to Medium even if a previous match changed
+  // its live console cvar.
+  status.ai_difficulty = AiDifficulty::medium;
   status.weapon_asset_indices.fill(SIZE_MAX);
   const std::filesystem::path root = locate_input_root();
   if (root.empty()) {
@@ -228,6 +239,13 @@ BootstrapStatus probe_assets(
     }
     scenario_loaded = scenario_loaded && scenario.active_player_count() >= 2U;
   }
+  const bool randomized_melee_starts =
+      scenario_loaded && melee_start_seed != 0U &&
+      scenario.randomize_melee_start_locations(melee_start_seed);
+  if (scenario_loaded && melee_start_seed != 0U &&
+      !randomized_melee_starts) {
+    scenario_loaded = false;
+  }
   // The recovered game keeps g_hScenArchive open, but this bootstrap's
   // transitional global Storm lookup must not search the map MPQ for every
   // DAT/GRP asset. The complete CHK is already resident, so close it now.
@@ -237,14 +255,21 @@ BootstrapStatus probe_assets(
 
   starcraft::data::CoreDataSet data{};
   const bool data_loaded = data.load(storm);
-  // SAI_Scripts.cpp::sub_49A010 loads this exact table and walks its
-  // sixteen-byte headers before starting a race-specific script thread.
-  const bool ai_scripts_ready =
-      storm.load_file(R"(scripts\aiscript.bin)", status.ai_script_bytes) &&
-      !status.ai_script_bytes.empty();
+  // Preserve the recovered binary script table as an optional compatibility
+  // fallback. New computer players are driven by scripts/ai through CAI.
+  status.ai_script_bytes.clear();
+  (void)storm.load_file(R"(scripts\aiscript.bin)", status.ai_script_bytes);
   status.unit_traits_ready =
       data_loaded && data.extract_unit_traits(status.unit_traits);
   bool research_data_ready = data_loaded;
+  if (research_data_ready) {
+    try {
+      status.weapon_display_traits.resize(status.weapon_traits.size());
+      status.upgrade_display_traits.resize(status.upgrade_traits.size());
+    } catch (...) {
+      research_data_ready = false;
+    }
+  }
   for (std::size_t technology = 0;
        research_data_ready && technology < status.technology_traits.size();
        ++technology) {
@@ -255,7 +280,13 @@ BootstrapStatus probe_assets(
   for (std::size_t weapon = 0;
        research_data_ready && weapon < status.weapon_traits.size(); ++weapon) {
     research_data_ready = data.weapon_simulation_traits(
-        static_cast<std::uint16_t>(weapon), status.weapon_traits[weapon]);
+                              static_cast<std::uint16_t>(weapon),
+                              status.weapon_traits[weapon]) &&
+                          data.weapon_display_traits(
+                              static_cast<std::uint16_t>(weapon),
+                              status.weapon_display_traits[weapon]
+                                  .label_string_id,
+                              status.weapon_display_traits[weapon].icon);
   }
   for (std::size_t order = 0;
        research_data_ready && order < status.order_weapons.size(); ++order) {
@@ -267,7 +298,13 @@ BootstrapStatus probe_assets(
        research_data_ready && upgrade < status.upgrade_traits.size();
        ++upgrade) {
     research_data_ready = data.upgrade_research_traits(
-        static_cast<std::uint16_t>(upgrade), status.upgrade_traits[upgrade]);
+                              static_cast<std::uint16_t>(upgrade),
+                              status.upgrade_traits[upgrade]) &&
+                          data.upgrade_display_traits(
+                              static_cast<std::uint16_t>(upgrade),
+                              status.upgrade_display_traits[upgrade]
+                                  .label_string_id,
+                              status.upgrade_display_traits[upgrade].icon);
   }
   const bool unit_sound_ranges_ready =
       data_loaded && extract_unit_sound_ranges(data, status);
@@ -289,12 +326,14 @@ BootstrapStatus probe_assets(
 
     // maphdr.cpp::sub_46BC40 at 0x0046BC40 derives the initial camera from
     // the local player's type-214 marker as (x / 32 - 10, y / 32 - 6),
-    // clamped at zero. Slot zero is the bootstrap's local player.
+    // clamped at zero. Network clients use their assigned stable slot.
     std::uint16_t focus_x = static_cast<std::uint16_t>(scenario.width() * 16U);
     std::uint16_t focus_y = static_cast<std::uint16_t>(scenario.height() * 16U);
-    if (scenario.start_locations()[0].present) {
-      focus_x = scenario.start_locations()[0].x;
-      focus_y = scenario.start_locations()[0].y;
+    const starcraft::game::ScenarioStartLocation &local_start =
+        scenario.start_locations()[status.local_player];
+    if (local_start.present) {
+      focus_x = local_start.x;
+      focus_y = local_start.y;
     }
     const std::uint16_t viewport_columns =
         (kMapViewportWidth + starcraft::gds::IndexedMapTile::width - 1) /
@@ -399,7 +438,8 @@ BootstrapStatus probe_assets(
         R"(sound\Terran\Advisor\tAdErr01.WAV)",
         R"(sound\Protoss\Advisor\PAdErr01.WAV)",
     }};
-    const std::uint8_t local_race = scenario.players()[0].race;
+    const std::uint8_t local_race =
+        scenario.players()[status.local_player].race;
     status.local_race = local_race;
     if (local_race < race_codes.size()) {
       local_race_code = race_codes[local_race];
@@ -587,7 +627,7 @@ BootstrapStatus probe_assets(
       const std::uint32_t view_top = status.camera_y;
       for (const starcraft::game::ScenarioUnit &unit : scenario.units()) {
         std::uint16_t unit_image{};
-        if (unit.owner == 0 && unit.x >= view_left &&
+        if (unit.owner == status.local_player && unit.x >= view_left &&
             unit.x < view_left + kMapViewportWidth && unit.y >= view_top &&
             unit.y < view_top + kMapViewportHeight &&
             data.unit_image_id(unit.unit_type, unit_image)) {
@@ -688,7 +728,15 @@ BootstrapStatus probe_assets(
       }
     }
 
-    if (!focus_unit_found && scenario.players()[0].ownership != 0U) {
+    // CSprite.cpp::sub_41CC30/sub_41CD30 attach the light and heavy building
+    // damage images 422..443 and 444..465. Keep them resident while Storm is
+    // open; the damage transition itself is driven by images.dat field 11.
+    for (std::uint16_t image = 422U; image <= 465U; ++image) {
+      (void)ensure_asset(image);
+    }
+
+    if (!focus_unit_found &&
+        scenario.players()[status.local_player].ownership != 0U) {
       // A melee CHK is allowed to contain only start-location markers and
       // resources. CUnitInit/place_unit then creates the local race's base
       // and four workers. Do not make map launch depend on an unrelated
@@ -696,7 +744,8 @@ BootstrapStatus probe_assets(
       // rectangle (96x96_ash4 has no such unit).
       starcraft::lang::MeleeUnitTypes local_types{};
       focus_unit_found = starcraft::lang::melee_unit_types(
-                             scenario.players()[0].race, local_types) &&
+                             scenario.players()[status.local_player].race,
+                             local_types) &&
                          data.unit_image_id(local_types.worker,
                                             status.image_id);
     }
@@ -777,8 +826,9 @@ BootstrapStatus probe_assets(
         // the recovered melee plan supplies the selected race's base/workers.
         if (unit.owner < 8U &&
             starcraft::lang::is_melee_starting_unit_type(unit.unit_type) &&
-            !starcraft::lang::melee_starting_unit_matches_race(
-                unit.unit_type, scenario.players()[unit.owner].race)) {
+            (randomized_melee_starts ||
+             !starcraft::lang::melee_starting_unit_matches_race(
+                 unit.unit_type, scenario.players()[unit.owner].race))) {
           continue;
         }
         (void)append_unit_preview(unit.unit_type, unit.x, unit.y, unit.owner);
@@ -1235,6 +1285,8 @@ BootstrapStatus probe_assets(
                                 status);
   }
 
+  bool ai_runtime_ready = true;
+  std::string ai_runtime_error{};
   if (scenario.valid() && terrain_tileset.valid()) {
     status.minimap_ready =
         status.minimap_ready &&
@@ -1245,13 +1297,29 @@ BootstrapStatus probe_assets(
     (void)status.pathing_map.build(terrain_tileset, scenario);
     status.scenario = std::move(scenario);
     status.terrain_tileset = std::move(terrain_tileset);
-    status.player_mineral_stock[0] = status.player_minerals;
-    status.player_gas_stock[0] = status.player_gas;
+    // player_minerals/player_gas remain the recovered slot-zero aliases used
+    // by simulation code. Every human starts with the same canonical melee
+    // stock; the HUD chooses the local assigned slot when it renders.
+    for (std::size_t player = 0U; player < 8U; ++player) {
+      if (status.scenario.players()[player].ownership == 6U) {
+        status.player_mineral_stock[player] = status.player_minerals;
+        status.player_gas_stock[player] = status.player_gas;
+      }
+    }
     melee_start_ready =
         settle_melee_starting_workers(status) && melee_start_ready;
     (void)rebuild_creep_tiles(status);
     const bool fog_ready = initialize_fog_of_war(status);
     (void)initialize_ai_players(status);
+    for (const AiPlayerRuntime &ai : status.ai_players) {
+      if (!ai.enabled) continue;
+      const bool controller_ready =
+          ai.controller != nullptr && ai.controller->ready();
+      ai_runtime_ready = ai_runtime_ready && controller_ready;
+      if (!controller_ready && ai_runtime_error.empty()) {
+        ai_runtime_error = ai.script_error;
+      }
+    }
     melee_start_ready = melee_start_ready && fog_ready;
   }
 
@@ -1265,7 +1333,7 @@ BootstrapStatus probe_assets(
       working_overlay_asset_ready && build_assets_ready &&
       protoss_construction_assets_ready &&
       production_assets_ready && portrait_assets_ready && melee_start_ready &&
-      research_data_ready && ai_scripts_ready &&
+      research_data_ready && ai_runtime_ready &&
       status.terrain_ready && status.hud_ready && status.wireframe_ready &&
       status.group_wireframe_ready && status.status_panel_ready &&
       status.resource_panel_ready && status.resource_icons_ready &&
@@ -1343,8 +1411,8 @@ BootstrapStatus probe_assets(
     } else if (!melee_start_ready) {
       status.detail =
           "The recovered melee base/worker placement could not settle.";
-    } else if (!ai_scripts_ready) {
-      status.detail = "scripts\\aiscript.bin did not load.";
+    } else if (!ai_runtime_ready) {
+      status.detail = "Lua AI initialization failed: " + ai_runtime_error;
     } else if (!status.terrain_ready) {
       status.detail = "The selected ERA terrain did not render.";
     } else if (!status.hud_ready) {

@@ -168,6 +168,46 @@ void configure_lobby_slots(GlueRuntime &glue) noexcept {
     return;
   }
   const GlueMapEntry &map = glue.maps[glue.selected_map];
+  if (glue.online_lobby) {
+    for (const battle::LobbySlotEntry &network_slot :
+         glue.battle_net.lobby_slots) {
+      if (network_slot.slot >= glue.lobby_slots.size()) {
+        continue;
+      }
+      GlueLobbySlot &slot = glue.lobby_slots[network_slot.slot];
+      slot.network_configurable = true;
+      slot.race = network_slot.race < 3U ? network_slot.race : 0U;
+      switch (network_slot.kind) {
+      case battle::LobbySlotKind::open:
+        slot.name = "Open";
+        slot.open = true;
+        break;
+      case battle::LobbySlotKind::computer:
+        slot.name = "Computer";
+        slot.ownership = 5U;
+        break;
+      case battle::LobbySlotKind::human:
+        slot.ownership = 6U;
+        slot.network_player = true;
+        break;
+      case battle::LobbySlotKind::closed:
+      default:
+        break;
+      }
+    }
+    for (const battle::LobbyPlayer &player : glue.battle_net.lobby_players) {
+      if (player.slot >= glue.lobby_slots.size()) {
+        continue;
+      }
+      GlueLobbySlot &slot = glue.lobby_slots[player.slot];
+      slot.local = player.slot == glue.battle_net.local_player_slot;
+      slot.name = player.name;
+      slot.ownership = 6U;
+      slot.open = false;
+      slot.network_player = true;
+    }
+    return;
+  }
   bool local_assigned{};
   for (std::size_t player = 0; player < glue.lobby_slots.size(); ++player) {
     if (map.ownership[player] == 0U || map.races[player] >= 3U) {
@@ -242,8 +282,14 @@ bool start_selected_glue_map(RecoveryWindowState &state) noexcept {
   }
   BootstrapStatus replacement =
       probe_assets(std::filesystem::path{state.glue.maps[state.glue.selected_map]
-                                             .path},
-                   &ownership, &races);
+                                              .path},
+                   &ownership, &races,
+                   state.glue.online_lobby
+                       ? state.glue.battle_net.game_seed
+                       : (GetTickCount() | 1U),
+                   state.glue.online_lobby
+                       ? state.glue.battle_net.local_player_slot
+                       : 0U);
   if (!replacement.assets_ready) {
     glues_enter_screen(state.glue, GlueScreen::lobby, GetTickCount());
     state.glue.message = replacement.detail.empty()

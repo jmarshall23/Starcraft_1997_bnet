@@ -247,8 +247,37 @@ UnitRequirementResult unit_requirements_for(
 bool command_button_enabled(const BootstrapStatus &status,
                             const ScenarioUnitPreview &producer,
                             const CommandButtonVisual &button) noexcept {
+  using Action = CommandButtonVisual::Action;
+  if (button.action == Action::upgrade_technology) {
+    if (button.argument >= status.upgrade_traits.size() ||
+        producer.active_technology != 28U || producer.active_upgrade != 46U) {
+      return false;
+    }
+    const auto &traits = status.upgrade_traits[button.argument];
+    const std::uint32_t level =
+        producer.owner < status.player_upgrade_levels.size()
+            ? status.player_upgrade_levels[producer.owner][button.argument]
+            : status.upgrade_levels[button.argument];
+    return level < traits.maximum_level &&
+           player_minerals_for(status, producer.owner) >=
+               traits.mineral_cost + level * traits.mineral_factor &&
+           player_gas_for(status, producer.owner) >=
+               traits.gas_cost + level * traits.gas_factor;
+  }
+  if (button.action == Action::research_technology) {
+    return button.argument < status.technology_traits.size() &&
+           producer.owner < status.player_researched_technologies.size() &&
+           !status.player_researched_technologies[producer.owner]
+                                                   [button.argument] &&
+           producer.active_technology == 28U &&
+           producer.active_upgrade == 46U &&
+           player_minerals_for(status, producer.owner) >=
+               status.technology_traits[button.argument].mineral_cost &&
+           player_gas_for(status, producer.owner) >=
+               status.technology_traits[button.argument].gas_cost;
+  }
   if (!button_product(button)) {
-    return button.action != CommandButtonVisual::Action::none;
+    return button.action != Action::none;
   }
   const UnitRequirementResult requirements =
       unit_requirements_for(status, producer, button.argument);
@@ -270,14 +299,15 @@ bool command_button_enabled(const BootstrapStatus &status,
   } else {
     return false;
   }
-  if (status.player_minerals < minerals || status.player_gas < gas) {
+  if (player_minerals_for(status, producer.owner) < minerals ||
+      player_gas_for(status, producer.owner) < gas) {
     return false;
   }
-  if (button.action == CommandButtonVisual::Action::train_unit &&
+  if (button.action == Action::train_unit &&
       producer.production_queue.full()) {
     return false;
   }
-  if (button.action == CommandButtonVisual::Action::build_addon &&
+  if (button.action == Action::build_addon &&
       producer.attached_addon_id != 0U) {
     return false;
   }

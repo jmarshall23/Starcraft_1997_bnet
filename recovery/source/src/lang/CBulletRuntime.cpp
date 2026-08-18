@@ -61,6 +61,10 @@ bool spawn_weapon_projectile(BootstrapStatus &status,
   bullet.action_timer = weapon.removal_timer == 0U ? 255U
                                                    : weapon.removal_timer;
   bullet.is_projectile = true;
+  // The image weapon opcode appends the CBullet after the current global
+  // object walk has passed its insertion point. It becomes eligible for
+  // CFlingy::sub_406290 on the following simulation turn.
+  bullet.projectile_birth_pending = true;
   bullet.iscript_state = asset.initial_iscript_state;
   bullet.overlay_iscript_state = asset.initial_overlay_iscript_state;
   bullet.current_sprite_frame = asset.initial_iscript_state.frame;
@@ -137,6 +141,11 @@ bool advance_transient_images(BootstrapStatus &status,
         bullet.projectile_weapon >= status.weapon_traits.size()) {
       continue;
     }
+    if (bullet.projectile_birth_pending) {
+      bullet.projectile_birth_pending = false;
+      changed = true;
+      continue;
+    }
     ScenarioUnitPreview *const target =
         find_unit_by_id(status, bullet.projectile_target_id);
     if (target == nullptr) {
@@ -171,7 +180,9 @@ bool advance_transient_images(BootstrapStatus &status,
     bullet.y = target->y;
     bullet.alive = false;
     if (bullet.projectile_damage != 0U) {
-      apply_fixed_unit_damage(*target, bullet.projectile_damage);
+      apply_weapon_unit_damage(status, *target, bullet.projectile_damage,
+                               bullet.projectile_weapon,
+                               bullet.projectile_source_id, bullet.owner);
       if (target->hit_points == 0U) {
         try {
           destroyed_targets.emplace_back(target->unit_id, bullet.owner);

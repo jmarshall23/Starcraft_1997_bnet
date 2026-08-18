@@ -369,6 +369,25 @@ std::string CoreDataSet::image_grp_path(const std::uint16_t image_id) const {
 }
 
 std::string
+CoreDataSet::image_damage_overlay_path(const std::uint16_t image_id) const {
+  // images.dat field 11 is dword_729E18. CUnitGUI.cpp::sub_42BBA0 and
+  // CSprite.cpp::sub_41CC30/sub_41CD30 use this LO table for the 22 possible
+  // building damage attachment points.
+  const DatField *const locations = images_.field(11U);
+  std::uint32_t string_id{};
+  if (locations == nullptr || !locations->value(image_id, string_id) ||
+      string_id == 0U || string_id > 0xFFFFU) {
+    return {};
+  }
+  const StringTableView strings{image_strings_.data(), image_strings_.size()};
+  const std::string_view relative =
+      strings.one_based(static_cast<std::uint16_t>(string_id));
+  return relative.empty()
+             ? std::string{}
+             : std::string{"unit\\"} + std::string{relative};
+}
+
+std::string
 CoreDataSet::image_special_overlay_path(const std::uint16_t image_id) const {
   // images.dat field 12 backs dword_55A918 in CImage.cpp. Opcode 0x40 uses
   // that per-image LO table to position resource-source plume images.
@@ -814,6 +833,16 @@ bool CoreDataSet::weapon_simulation_traits(
   return traits.projectile_count == 1U || traits.projectile_count == 2U;
 }
 
+bool CoreDataSet::weapon_display_traits(
+    const std::uint16_t weapon, std::uint16_t &label_string_id,
+    std::uint16_t &icon) const noexcept {
+  const DatField *const labels = weapons_.field(0);
+  const DatField *const icons = weapons_.field(23);
+  return weapon < 66U && labels != nullptr && icons != nullptr &&
+         labels->value(weapon, label_string_id) &&
+         icons->value(weapon, icon);
+}
+
 bool CoreDataSet::order_spell_traits(const std::uint16_t order,
                                      std::uint8_t &weapon,
                                      std::uint8_t &technology,
@@ -851,6 +880,16 @@ bool CoreDataSet::upgrade_research_traits(
          research_time->value(upgrade, traits.research_time) &&
          time_factor->value(upgrade, traits.time_factor) &&
          maximum_level->value(upgrade, traits.maximum_level);
+}
+
+bool CoreDataSet::upgrade_display_traits(
+    const std::uint16_t upgrade, std::uint16_t &label_string_id,
+    std::uint16_t &icon) const noexcept {
+  const DatField *const icons = upgrades_.field(7);
+  const DatField *const labels = upgrades_.field(8);
+  return upgrade < 46U && icons != nullptr && labels != nullptr &&
+         icons->value(upgrade, icon) &&
+         labels->value(upgrade, label_string_id);
 }
 
 std::string CoreDataSet::unit_portrait_path(const std::uint16_t unit_type,

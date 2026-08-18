@@ -1,9 +1,18 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace StarCraftRecovery.Server;
+
+internal enum LobbySlotKind
+{
+    Closed,
+    Open,
+    Computer,
+    Human,
+}
 
 internal sealed class GameLobby
 {
@@ -12,7 +21,13 @@ internal sealed class GameLobby
     public required string Host { get; init; }
     public required string Map { get; init; }
     public required int MaximumPlayers { get; init; }
-    public HashSet<ClientSession> Players { get; } = [];
+    public required LobbySlotKind[] Slots { get; init; }
+    public required int[] Races { get; init; }
+    public Dictionary<ClientSession, int> Players { get; } = [];
+    public SortedDictionary<uint, Dictionary<int, string>> PendingTurns { get; } = [];
+    public bool Started { get; set; }
+    public uint Seed { get; set; }
+    public uint NextCommitTurn { get; set; }
 }
 
 internal sealed class ClientSession(TcpClient client)
@@ -192,6 +207,18 @@ internal sealed class BattleServer(string bindAddress, int port,
             case "JOIN_GAME":
                 await JoinGameAsync(session, fields).ConfigureAwait(false);
                 break;
+            case "SET_SLOT":
+                await SetSlotAsync(session, fields).ConfigureAwait(false);
+                break;
+            case "LEAVE_GAME":
+                await LeaveGameAsync(session).ConfigureAwait(false);
+                break;
+            case "START_GAME":
+                await StartGameAsync(session).ConfigureAwait(false);
+                break;
+            case "TURN":
+                await SubmitTurnAsync(session, fields).ConfigureAwait(false);
+                break;
             case "PING":
                 await session.SendAsync("PONG");
                 break;
@@ -350,12 +377,17 @@ internal sealed class BattleServer(string bindAddress, int port,
                 Host = session.AccountName!,
                 Map = fields[2],
                 MaximumPlayers = maximum,
+                Slots = Enumerable.Repeat(LobbySlotKind.Open, maximum).ToArray(),
+                Races = Enumerable.Repeat(1, maximum).ToArray(),
             };
-            game.Players.Add(session);
+            game.Slots[0] = LobbySlotKind.Human;
+            game.Players.Add(session, 0);
             games.Add(identifier, game);
             session.GameIdentifier = identifier;
         }
-        await session.SendAsync("GAME_CREATED", game.Identifier.ToString(), game.Name);
+        await session.SendAsync("GAME_CREATED", game.Identifier.ToString(), game.Name,
+                                game.Map, "0");
+        await SendLobbyRosterAsync(game).ConfigureAwait(false);
     }
 
     private async Task JoinGameAsync(ClientSession session, string[] fields)
@@ -369,9 +401,13 @@ internal sealed class BattleServer(string bindAddress, int port,
         lock (gate)
         {
             games.TryGetValue(identifier, out game);
-            if (game is not null && game.Players.Count < game.MaximumPlayers)
+            int slot = game is null ? -1 :
+                Array.FindIndex(game.Slots, value => value == LobbySlotKind.Open);
+            if (game is not null && !game.Started && slot >= 0 &&
+                session.GameIdentifier is null)
             {
-                game.Players.Add(session);
+                game.Slots[slot] = LobbySlotKind.Human;
+                game.Players.Add(session, slot);
                 session.GameIdentifier = identifier;
             }
             else
@@ -384,13 +420,264 @@ internal sealed class BattleServer(string bindAddress, int port,
             await session.SendAsync("ERROR", "GAME", "That game is unavailable or full.");
             return;
         }
+        int playerSlot;
+        lock (gate)
+        {
+            playerSlot = game.Players[session];
+        }
         await session.SendAsync("JOINED_GAME", game.Identifier.ToString(), game.Name,
-                                game.Map);
+                                game.Map, playerSlot.ToString());
+        await SendLobbyRosterAsync(game).ConfigureAwait(false);
+    }
+
+    private async Task SendLobbyRosterAsync(GameLobby game)
+    {
+        List<ClientSession> targets;
+        List<(int Slot, LobbySlotKind Kind, int Race)> slots;
+        List<(int Slot, string Name)> players;
+        lock (gate)
+        {
+            targets = game.Players.Keys.ToList();
+            slots = Enumerable.Range(0, game.MaximumPlayers)
+                .Select(slot => (slot, game.Slots[slot], game.Races[slot]))
+                .ToList();
+            players = game.Players
+                .Where(player => player.Key.AccountName is not null)
+                .Select(player => (player.Value, player.Key.AccountName!))
+                .OrderBy(player => player.Value)
+                .ToList();
+        }
+        await BroadcastAsync(targets, "LOBBY_CLEAR");
+        foreach ((int slot, LobbySlotKind kind, int race) in slots)
+        {
+            await BroadcastAsync(targets, "LOBBY_SLOT", slot.ToString(),
+                                 kind.ToString().ToUpperInvariant(),
+                                 race.ToString());
+        }
+        foreach ((int slot, string name) in players)
+        {
+            await BroadcastAsync(targets, "LOBBY_PLAYER", slot.ToString(), name);
+        }
+    }
+
+    private async Task SetSlotAsync(ClientSession session, string[] fields)
+    {
+        if (fields.Length < 4 || !int.TryParse(fields[1], out int slot) ||
+            !Enum.TryParse(fields[2], true, out LobbySlotKind kind) ||
+            kind is LobbySlotKind.Human ||
+            !int.TryParse(fields[3], out int race) || race is < 0 or > 2)
+        {
+            await session.SendAsync("ERROR", "SET_SLOT", "Invalid lobby slot.");
+            return;
+        }
+
+        GameLobby? game = null;
+        string? error = null;
+        lock (gate)
+        {
+            if (session.GameIdentifier is not int identifier ||
+                !games.TryGetValue(identifier, out game))
+            {
+                error = "Join a game first.";
+            }
+            else if (!string.Equals(game.Host, session.AccountName,
+                                    StringComparison.OrdinalIgnoreCase))
+            {
+                error = "Only the host can change lobby slots.";
+            }
+            else if (game.Started || slot < 0 || slot >= game.MaximumPlayers ||
+                     game.Slots[slot] == LobbySlotKind.Human)
+            {
+                error = "That lobby slot cannot be changed.";
+            }
+            else
+            {
+                game.Slots[slot] = kind;
+                game.Races[slot] = race;
+            }
+        }
+        if (error is not null || game is null)
+        {
+            await session.SendAsync("ERROR", "SET_SLOT",
+                                    error ?? "The game is unavailable.");
+            return;
+        }
+        await SendLobbyRosterAsync(game).ConfigureAwait(false);
+    }
+
+    private async Task StartGameAsync(ClientSession session)
+    {
+        GameLobby? game = null;
+        List<ClientSession> targets = [];
+        string? error = null;
+        lock (gate)
+        {
+            if (session.GameIdentifier is not int identifier ||
+                !games.TryGetValue(identifier, out game))
+            {
+                error = "Join a game first.";
+            }
+            else if (!string.Equals(game.Host, session.AccountName,
+                                    StringComparison.OrdinalIgnoreCase))
+            {
+                error = "Only the host can start the game.";
+            }
+            else if (game.Started)
+            {
+                error = "The game has already started.";
+            }
+            else if (game.Players.Count < 2)
+            {
+                error = "At least two players are required.";
+            }
+            else
+            {
+                game.Started = true;
+                game.Seed = (uint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
+                game.NextCommitTurn = 0;
+                targets = game.Players.Keys.ToList();
+            }
+        }
+        if (error is not null || game is null)
+        {
+            await session.SendAsync("ERROR", "START_GAME",
+                                    error ?? "The game is unavailable.");
+            return;
+        }
+        await BroadcastAsync(targets, "GAME_START", game.Identifier.ToString(),
+                             game.Map, game.Seed.ToString(),
+                             game.Players.Count.ToString());
+    }
+
+    private async Task LeaveGameAsync(ClientSession session)
+    {
+        GameLobby? remainingGame = null;
+        List<ClientSession> peers = [];
+        bool closed = false;
+        lock (gate)
+        {
+            if (session.GameIdentifier is int identifier &&
+                games.TryGetValue(identifier, out GameLobby? game))
+            {
+                int slot = -1;
+                if (game.Players.TryGetValue(session, out int assignedSlot))
+                {
+                    slot = assignedSlot;
+                    game.Players.Remove(session);
+                }
+                session.GameIdentifier = null;
+                if (slot >= 0 && slot < game.Slots.Length)
+                {
+                    game.Slots[slot] = LobbySlotKind.Open;
+                }
+                peers = game.Players.Keys.ToList();
+                closed = game.Started || game.Players.Count == 0 ||
+                    string.Equals(game.Host, session.AccountName,
+                                  StringComparison.OrdinalIgnoreCase);
+                if (closed)
+                {
+                    games.Remove(identifier);
+                    foreach (ClientSession peer in peers)
+                    {
+                        peer.GameIdentifier = null;
+                    }
+                }
+                else
+                {
+                    remainingGame = game;
+                }
+            }
+            else
+            {
+                session.GameIdentifier = null;
+            }
+        }
+        await session.SendAsync("LEFT_GAME");
+        if (closed)
+        {
+            await BroadcastAsync(peers, "GAME_ABORTED",
+                                 "The host closed the game.");
+        }
+        else if (remainingGame is not null)
+        {
+            await SendLobbyRosterAsync(remainingGame).ConfigureAwait(false);
+        }
+    }
+
+    private async Task SubmitTurnAsync(ClientSession session, string[] fields)
+    {
+        if (fields.Length < 3 || !uint.TryParse(fields[1], out uint turn) ||
+            fields[2].Length > 4096 ||
+            (fields[2] != "-" && (fields[2].Length % 2 != 0 ||
+             fields[2].Any(character => !Uri.IsHexDigit(character)))))
+        {
+            await session.SendAsync("ERROR", "TURN", "Invalid turn payload.");
+            return;
+        }
+
+        List<(List<ClientSession> Targets, string[] Fields)> commits = [];
+        string? error = null;
+        lock (gate)
+        {
+            if (session.GameIdentifier is not int identifier ||
+                !games.TryGetValue(identifier, out GameLobby? game) ||
+                !game.Started || !game.Players.TryGetValue(session, out int slot))
+            {
+                error = "No active game.";
+            }
+            else if (turn < game.NextCommitTurn || turn > game.NextCommitTurn + 64U)
+            {
+                error = "Turn is outside the receive window.";
+            }
+            else
+            {
+                if (!game.PendingTurns.TryGetValue(turn, out var submissions))
+                {
+                    submissions = [];
+                    game.PendingTurns.Add(turn, submissions);
+                }
+                if (!submissions.TryAdd(slot, fields[2]))
+                {
+                    error = "Turn was already submitted.";
+                }
+                while (error is null &&
+                       game.PendingTurns.TryGetValue(game.NextCommitTurn,
+                                                     out var ready) &&
+                       ready.Count == game.Players.Count)
+                {
+                    var commitFields = new List<string>
+                    {
+                        game.NextCommitTurn.ToString()
+                    };
+                    foreach ((int playerSlot, string payload) in ready.OrderBy(item => item.Key))
+                    {
+                        commitFields.Add(playerSlot.ToString());
+                        commitFields.Add(payload);
+                    }
+                    commits.Add((game.Players.Keys.ToList(), commitFields.ToArray()));
+                    game.PendingTurns.Remove(game.NextCommitTurn);
+                    ++game.NextCommitTurn;
+                }
+            }
+        }
+        if (error is not null)
+        {
+            await session.SendAsync("ERROR", "TURN", error);
+            return;
+        }
+        foreach (var commit in commits)
+        {
+            await BroadcastAsync(commit.Targets, "TURN_COMMIT", commit.Fields);
+        }
     }
 
     private async Task RemoveSessionAsync(ClientSession session)
     {
         List<ClientSession> channelPeers = [];
+        List<ClientSession> gamePeers = [];
+        GameLobby? remainingGame = null;
+        bool gameAborted = false;
+        int departedSlot = -1;
         lock (gate)
         {
             if (session.Channel is not null && channels.TryGetValue(session.Channel, out var channel))
@@ -401,18 +688,46 @@ internal sealed class BattleServer(string bindAddress, int port,
             if (session.GameIdentifier is int identifier &&
                 games.TryGetValue(identifier, out GameLobby? game))
             {
-                game.Players.Remove(session);
-                if (game.Players.Count == 0 ||
+                if (game.Players.TryGetValue(session, out int assignedSlot))
+                {
+                    departedSlot = assignedSlot;
+                    game.Players.Remove(session);
+                }
+                session.GameIdentifier = null;
+                if (departedSlot >= 0 && departedSlot < game.Slots.Length)
+                {
+                    game.Slots[departedSlot] = LobbySlotKind.Open;
+                }
+                gamePeers = game.Players.Keys.ToList();
+                gameAborted = game.Started || game.Players.Count == 0 ||
                     string.Equals(game.Host, session.AccountName,
-                                  StringComparison.OrdinalIgnoreCase))
+                                  StringComparison.OrdinalIgnoreCase);
+                if (gameAborted)
                 {
                     games.Remove(identifier);
+                    foreach (ClientSession peer in gamePeers)
+                    {
+                        peer.GameIdentifier = null;
+                    }
+                }
+                else
+                {
+                    remainingGame = game;
                 }
             }
         }
         if (session.AccountName is not null)
         {
             await BroadcastAsync(channelPeers, "USER_LEAVE", session.AccountName);
+        }
+        if (gameAborted)
+        {
+            await BroadcastAsync(gamePeers, "GAME_ABORTED",
+                                 "A player left the game.");
+        }
+        else if (remainingGame is not null)
+        {
+            await SendLobbyRosterAsync(remainingGame).ConfigureAwait(false);
         }
     }
 

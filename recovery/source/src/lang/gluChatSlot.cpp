@@ -114,7 +114,9 @@ std::int16_t lobby_control_at(const GlueRuntime &glue, const int x,
                               const int y) noexcept {
   if (glue.popup_control != -1) {
     const GlueControl *const owner = slot_control(glue, glue.popup_control);
-    const int rows = glue.popup_control >= kSlotRaceBase ? 3 : 2;
+    const int rows = glue.popup_control >= kSlotRaceBase
+                         ? 3
+                         : glue.online_lobby ? 3 : 2;
     if (owner != nullptr) {
       if (point_in_control(*owner, x, y)) {
         return glue.popup_control;
@@ -185,23 +187,31 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
         selected ? GlueFontStyle::bright_green
                  : active ? GlueFontStyle::gold
                           : GlueFontStyle::disabled;
-    draw_combo_field(state, name_rect, !slot.local,
+    const bool name_editable =
+        !slot.local &&
+        (!state.glue.online_lobby ||
+         (state.glue.battle_net.game_host && slot.network_configurable &&
+          !slot.network_player));
+    const bool race_editable = active && !state.glue.online_lobby;
+    draw_combo_field(state, name_rect, name_editable,
                      state.glue.hovered_control == name_id,
                      state.glue.popup_control == name_id);
-    draw_combo_field(state, race_rect, active,
+    draw_combo_field(state, race_rect, race_editable,
                      state.glue.hovered_control == race_id,
                      state.glue.popup_control == race_id);
     draw_glue_styled_text_gl(state, std::to_string(row + 1U),
                              static_cast<float>(number_rect.left),
                              static_cast<float>(number_rect.bottom - 2), style);
-    draw_glue_styled_text_gl(state, active ? slot.name : "Closed",
+    draw_glue_styled_text_gl(state,
+                             active ? slot.name : slot.open ? "Open" : "Closed",
                              static_cast<float>(name_rect.left),
                              static_cast<float>(name_rect.bottom - 2), style);
     draw_glue_styled_text_gl(state, active ? race_name(slot.race) : "---",
                              static_cast<float>(race_rect.left),
                              static_cast<float>(race_rect.bottom - 2), style);
     draw_glue_styled_text_gl(
-        state, active ? slot.local ? "OK" : "CPU" : "",
+        state,
+        active ? slot.network_player ? "OK" : "CPU" : "",
         static_cast<float>(status_rect.left),
         static_cast<float>(status_rect.bottom - 2), style);
   }
@@ -210,7 +220,7 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
     const GlueControl *const owner =
         slot_control(state.glue, state.glue.popup_control);
     const bool race_popup = state.glue.popup_control >= kSlotRaceBase;
-    const int rows = race_popup ? 3 : 2;
+    const int rows = race_popup ? 3 : state.glue.online_lobby ? 3 : 2;
     if (owner != nullptr) {
       const int top = popup_top(*owner, rows);
       glDisable(GL_TEXTURE_2D);
@@ -245,6 +255,8 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
       constexpr std::array<std::string_view, 3> races{{"Zerg", "Terran",
                                                        "Protoss"}};
       constexpr std::array<std::string_view, 2> slots{{"Computer", "Closed"}};
+      constexpr std::array<std::string_view, 3> online_slots{{
+          "Open", "Computer", "Closed"}};
       for (int row = 0; row < rows; ++row) {
         const bool hovered = state.glue.hovered_control ==
                              kPopupRowBase + row;
@@ -269,8 +281,12 @@ void draw_lobby_slots_gl(const RecoveryWindowState &state) noexcept {
           glEnable(GL_TEXTURE_2D);
         }
         draw_glue_styled_text_gl(
-            state, race_popup ? races[static_cast<std::size_t>(row)]
-                              : slots[static_cast<std::size_t>(row)],
+            state,
+            race_popup
+                ? races[static_cast<std::size_t>(row)]
+                : state.glue.online_lobby
+                      ? online_slots[static_cast<std::size_t>(row)]
+                      : slots[static_cast<std::size_t>(row)],
             static_cast<float>(owner->left + 4),
             static_cast<float>(top + row * kPopupRowHeight + 14),
             hovered ? GlueFontStyle::bright_green : GlueFontStyle::gold);
