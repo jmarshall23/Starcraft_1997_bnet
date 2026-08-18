@@ -952,11 +952,11 @@ void draw_glue_text_gl(const RecoveryWindowState &state,
   draw_glue_styled_text_gl(state, text, x, y, style, large);
 }
 
-void draw_glue_styled_text_gl(const RecoveryWindowState &state,
-                              const std::string_view text, const float x,
-                              const float y, const GlueFontStyle style,
-                              const bool large,
-                              const std::uint8_t alpha) noexcept {
+static void draw_starcraft_font_with_colors(
+    const RecoveryWindowState &state, const std::string_view text,
+    const float x, const float y, const GlueFontStyle style,
+    const bool large, const std::uint8_t alpha,
+    const std::array<std::array<std::uint32_t, 8>, 6> &color_tables) noexcept {
   const starcraft::gds::BitmapFont &font =
       large ? state.glue.large_font : state.glue.small_font;
   if (text.empty()) {
@@ -967,12 +967,6 @@ void draw_glue_styled_text_gl(const RecoveryWindowState &state,
                       220U, large);
     return;
   }
-  const auto &color_tables =
-      state.glue.screen == GlueScreen::title
-          ? state.glue.title_font_colors
-          : state.glue.screen == GlueScreen::main_menu
-                ? state.glue.main_font_colors
-                : state.glue.network_font_colors;
   const std::size_t style_index = static_cast<std::size_t>(style);
   if (style_index >= color_tables.size()) {
     return;
@@ -1026,6 +1020,61 @@ void draw_glue_styled_text_gl(const RecoveryWindowState &state,
   glEnd();
   glColor4ub(255U, 255U, 255U, 255U);
   glEnable(GL_TEXTURE_2D);
+}
+
+void draw_glue_styled_text_gl(const RecoveryWindowState &state,
+                              const std::string_view text, const float x,
+                              const float y, const GlueFontStyle style,
+                              const bool large,
+                              const std::uint8_t alpha) noexcept {
+  const auto &color_tables =
+      state.glue.screen == GlueScreen::title
+          ? state.glue.title_font_colors
+          : state.glue.screen == GlueScreen::main_menu
+                ? state.glue.main_font_colors
+                : state.glue.network_font_colors;
+  draw_starcraft_font_with_colors(state, text, x, y, style, large, alpha,
+                                  color_tables);
+}
+
+void draw_game_dialog_styled_text_gl(
+    const RecoveryWindowState &state, const std::string_view text,
+    const float x, const float y, const GlueFontStyle style,
+    const bool large, const std::uint8_t alpha) noexcept {
+  const auto *color_tables = &state.game_dialog.font_colors;
+  if (state.game_dialog.screen == GameDialogScreen::score) {
+    const std::uint8_t race =
+        state.status == nullptr
+            ? 0U
+            : (std::min)(state.status->local_race,
+                         static_cast<std::uint8_t>(2U));
+    const std::size_t theme =
+        2U * race +
+        (state.game_dialog.outcome == MatchOutcome::victory ? 1U : 0U);
+    if (theme < state.game_dialog.score_font_colors.size()) {
+      color_tables = &state.game_dialog.score_font_colors[theme];
+    }
+  }
+  draw_starcraft_font_with_colors(state, text, x, y, style, large, alpha,
+                                  *color_tables);
+}
+
+void draw_game_dialog_centered_styled_text_gl(
+    const RecoveryWindowState &state, const std::string_view text,
+    const GlueControl &control, const GlueFontStyle style, const bool large,
+    const std::uint8_t alpha) noexcept {
+  const starcraft::gds::BitmapFont &font =
+      large ? state.glue.large_font : state.glue.small_font;
+  const float text_width =
+      font.glyphs.empty() ? 0.0F : font.text_width(text);
+  const float x =
+      (static_cast<float>(control.left + control.right + 1) - text_width) /
+      2.0F;
+  const float y =
+      (static_cast<float>(control.top + control.bottom) +
+       static_cast<float>(font.maximum_height)) /
+      2.0F;
+  draw_game_dialog_styled_text_gl(state, text, x, y, style, large, alpha);
 }
 
 void draw_game_text_gl(const RecoveryWindowState &state,

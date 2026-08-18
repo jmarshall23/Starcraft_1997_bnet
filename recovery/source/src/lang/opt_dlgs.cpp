@@ -104,68 +104,75 @@ void draw_solid_rect(const float left, const float top, const float right,
   glEnable(GL_TEXTURE_2D);
 }
 
-void dialog_bounds(const std::vector<GlueControl> &controls, int &left,
-                   int &top, int &right, int &bottom) noexcept {
-  left = 640;
-  top = 480;
-  right = 0;
-  bottom = 0;
-  for (const GlueControl &control : controls) {
-    left = (std::min)(left, static_cast<int>(control.left));
-    top = (std::min)(top, static_cast<int>(control.top));
-    right = (std::max)(right, static_cast<int>(control.right));
-    bottom = (std::max)(bottom, static_cast<int>(control.bottom));
+void dialog_bounds(const GameDialogRuntime &dialog, int &left, int &top,
+                   int &right, int &bottom) noexcept {
+  const std::size_t index = screen_index(dialog.screen);
+  if (index >= dialog.layout_bounds.size()) {
+    left = top = right = bottom = 0;
+    return;
   }
-  left = (std::max)(0, left - 20);
-  right = (std::min)(639, right + 20);
-  top = (std::max)(0, top);
-  bottom = (std::min)(479, bottom + 8);
+  const GameDialogBounds &bounds = dialog.layout_bounds[index];
+  left = bounds.left;
+  top = bounds.top;
+  right = bounds.right;
+  bottom = bounds.bottom;
+}
+
+void draw_tiled_frame(const SpritePreviewFrame &frame, const int left,
+                      const int top, const int right,
+                      const int bottom) noexcept {
+  if (frame.width == 0U || frame.height == 0U || right <= left ||
+      bottom <= top) {
+    return;
+  }
+  for (int y = top; y < bottom; y += frame.height) {
+    const int height = (std::min)(static_cast<int>(frame.height), bottom - y);
+    for (int x = left; x < right; x += frame.width) {
+      const int width = (std::min)(static_cast<int>(frame.width), right - x);
+      draw_preview_frame_gl(frame, static_cast<float>(x),
+                            static_cast<float>(y) * hud_vertical_scale(),
+                            static_cast<float>(width),
+                            static_cast<float>(height) * hud_vertical_scale());
+    }
+  }
 }
 
 void draw_dialog_tiles(const GameDialogRuntime &dialog, const int left,
                        const int top, const int right,
                        const int bottom) noexcept {
   draw_solid_rect(0.0F, 0.0F, 640.0F, 480.0F, 0U, 0U, 0U, 112U);
-  draw_solid_rect(static_cast<float>(left), static_cast<float>(top),
-                  static_cast<float>(right), static_cast<float>(bottom), 4U,
-                  8U, 12U, 238U);
   if (dialog.dialog_tile_frames.size() < 9U) {
+    draw_solid_rect(static_cast<float>(left), static_cast<float>(top),
+                    static_cast<float>(right), static_cast<float>(bottom), 4U,
+                    8U, 12U, 238U);
     draw_solid_rect(static_cast<float>(left), static_cast<float>(top),
                     static_cast<float>(right), static_cast<float>(top + 2),
                     120U, 88U, 36U, 255U);
     return;
   }
-  const float corner = 24.0F;
-  const float width = static_cast<float>(right - left);
-  const float height = static_cast<float>(bottom - top);
-  draw_preview_frame_gl(dialog.dialog_tile_frames[0], static_cast<float>(left),
-                        static_cast<float>(top) * hud_vertical_scale(), corner,
-                        corner * hud_vertical_scale());
-  draw_preview_frame_gl(dialog.dialog_tile_frames[1], left + corner,
-                        static_cast<float>(top) * hud_vertical_scale(),
-                        (std::max)(1.0F, width - 2.0F * corner),
-                        corner * hud_vertical_scale());
-  draw_preview_frame_gl(dialog.dialog_tile_frames[2], right - corner,
-                        static_cast<float>(top) * hud_vertical_scale(), corner,
-                        corner * hud_vertical_scale());
-  draw_preview_frame_gl(dialog.dialog_tile_frames[3], static_cast<float>(left),
-                        (top + corner) * hud_vertical_scale(), corner,
-                        (std::max)(1.0F, height - 2.0F * corner) *
-                            hud_vertical_scale());
-  draw_preview_frame_gl(dialog.dialog_tile_frames[5], right - corner,
-                        (top + corner) * hud_vertical_scale(), corner,
-                        (std::max)(1.0F, height - 2.0F * corner) *
-                            hud_vertical_scale());
-  draw_preview_frame_gl(dialog.dialog_tile_frames[6], static_cast<float>(left),
-                        (bottom - corner) * hud_vertical_scale(), corner,
-                        corner * hud_vertical_scale());
-  draw_preview_frame_gl(dialog.dialog_tile_frames[7], left + corner,
-                        (bottom - corner) * hud_vertical_scale(),
-                        (std::max)(1.0F, width - 2.0F * corner),
-                        corner * hud_vertical_scale());
-  draw_preview_frame_gl(dialog.dialog_tile_frames[8], right - corner,
-                        (bottom - corner) * hud_vertical_scale(), corner,
-                        corner * hud_vertical_scale());
+  constexpr int tile = 8;
+  const int exclusive_right = right + 1;
+  const int exclusive_bottom = bottom + 1;
+  draw_tiled_frame(dialog.dialog_tile_frames[4], left + tile, top + tile,
+                   exclusive_right - tile, exclusive_bottom - tile);
+  draw_tiled_frame(dialog.dialog_tile_frames[1], left + tile, top,
+                   exclusive_right - tile, top + tile);
+  draw_tiled_frame(dialog.dialog_tile_frames[7], left + tile,
+                   exclusive_bottom - tile, exclusive_right - tile,
+                   exclusive_bottom);
+  draw_tiled_frame(dialog.dialog_tile_frames[3], left, top + tile, left + tile,
+                   exclusive_bottom - tile);
+  draw_tiled_frame(dialog.dialog_tile_frames[5], exclusive_right - tile,
+                   top + tile, exclusive_right, exclusive_bottom - tile);
+  draw_tiled_frame(dialog.dialog_tile_frames[0], left, top, left + tile,
+                   top + tile);
+  draw_tiled_frame(dialog.dialog_tile_frames[2], exclusive_right - tile, top,
+                   exclusive_right, top + tile);
+  draw_tiled_frame(dialog.dialog_tile_frames[6], left,
+                   exclusive_bottom - tile, left + tile, exclusive_bottom);
+  draw_tiled_frame(dialog.dialog_tile_frames[8], exclusive_right - tile,
+                   exclusive_bottom - tile, exclusive_right,
+                   exclusive_bottom);
 }
 
 std::string table_string(const std::vector<std::uint8_t> &table,
@@ -206,7 +213,8 @@ void draw_wrapped_text(const RecoveryWindowState &state,
   std::size_t lines{};
   for (const char character : source) {
     if (character == '\n' || line.size() >= columns) {
-      draw_glue_text_gl(state, line, x, y, 210U, 210U, 210U, false);
+      draw_game_dialog_styled_text_gl(
+          state, line, x, y, GlueFontStyle::bright_green, false);
       line.clear();
       y += 13.0F;
       if (++lines >= max_lines) {
@@ -219,7 +227,81 @@ void draw_wrapped_text(const RecoveryWindowState &state,
     line.push_back(character);
   }
   if (!line.empty() && lines < max_lines) {
-    draw_glue_text_gl(state, line, x, y, 210U, 210U, 210U, false);
+    draw_game_dialog_styled_text_gl(
+        state, line, x, y, GlueFontStyle::bright_green, false);
+  }
+}
+
+const std::vector<SpritePreviewFrame> &dialog_control_art(
+    const RecoveryWindowState &state) noexcept {
+  const std::uint8_t race =
+      state.status == nullptr
+          ? 0U
+          : (std::min)(state.status->local_race,
+                       static_cast<std::uint8_t>(2U));
+  return state.game_dialog.dialog_control_frames[race];
+}
+
+GlueFontStyle dialog_control_font_style(const GlueControl &control,
+                                        const bool highlighted) noexcept {
+  if ((control.flags & 2U) != 0U) {
+    return GlueFontStyle::disabled;
+  }
+  // game\tFontGam.pcx uses the same six DLG color-row indices as the glue
+  // renderer, but its rows are purple, gold, white, disabled, red, and green.
+  if (highlighted) {
+    return GlueFontStyle::bright_green; // row 2: white
+  }
+  if (actionable(control)) {
+    return GlueFontStyle::green; // row 1: gold
+  }
+  return GlueFontStyle::gold; // row 0: lavender/purple
+}
+
+void draw_three_piece_control(const std::vector<SpritePreviewFrame> &frames,
+                              const std::size_t first,
+                              const GlueControl &control) noexcept {
+  if (first + 2U >= frames.size()) {
+    return;
+  }
+  const SpritePreviewFrame &left = frames[first];
+  const SpritePreviewFrame &middle = frames[first + 1U];
+  const SpritePreviewFrame &right = frames[first + 2U];
+  const float top = static_cast<float>(control.top) * hud_vertical_scale();
+  const float height =
+      static_cast<float>(control.bottom - control.top + 1) *
+      hud_vertical_scale();
+  const int left_width = left.width;
+  const int right_width = right.width;
+  const int middle_width =
+      (std::max)(1, static_cast<int>(control.right - control.left + 1) -
+                        left_width - right_width);
+  draw_preview_frame_gl(left, static_cast<float>(control.left), top,
+                        static_cast<float>(left_width), height);
+  draw_preview_frame_gl(middle,
+                        static_cast<float>(control.left + left_width), top,
+                        static_cast<float>(middle_width), height);
+  draw_preview_frame_gl(
+      right, static_cast<float>(control.right - right_width + 1), top,
+      static_cast<float>(right_width), height);
+}
+
+void draw_actionable_control(const RecoveryWindowState &state,
+                             const GlueControl &control, const bool hovered,
+                             const bool pressed) noexcept {
+  const auto &frames = dialog_control_art(state);
+  std::size_t base = control.type == 1U ? 103U
+                     : control.type == 3U ? 121U
+                                          : 112U;
+  base += pressed ? 3U : hovered ? 6U : 0U;
+  if (base + 2U < frames.size()) {
+    draw_three_piece_control(frames, base, control);
+  } else {
+    draw_solid_rect(static_cast<float>(control.left),
+                    static_cast<float>(control.top),
+                    static_cast<float>(control.right),
+                    static_cast<float>(control.bottom), 18U, 28U, 46U,
+                    230U);
   }
 }
 
@@ -232,18 +314,17 @@ void draw_dialog_controls(const RecoveryWindowState &state) noexcept {
     if (actionable(control)) {
       const bool hovered = dialog.hovered_control == control.identifier;
       const bool pressed = dialog.pressed_control == control.identifier;
-      draw_solid_rect(static_cast<float>(control.left),
-                      static_cast<float>(control.top),
-                      static_cast<float>(control.right),
-                      static_cast<float>(control.bottom),
-                      pressed ? 88U : hovered ? 52U : 20U,
-                      pressed ? 68U : hovered ? 62U : 34U,
-                      pressed ? 28U : hovered ? 76U : 50U, 210U);
-      draw_glue_centered_text_gl(
-          state, control.text, control, pressed ? 255U : 220U,
-          hovered ? 220U : 205U, hovered ? 96U : 180U,
+      if (control.type == 1U || control.type == 2U || control.type == 3U ||
+          control.type == 14U) {
+        draw_actionable_control(state, control, hovered, pressed);
+      }
+      draw_game_dialog_centered_styled_text_gl(
+          state, control.text, control,
+          dialog_control_font_style(control, hovered || pressed),
           control.type == 14U || control.type == 2U);
-      if (control.type == 4U || control.type == 3U) {
+      if (control.type == 4U ||
+          (control.type == 3U &&
+           dialog.screen == GameDialogScreen::voice_options)) {
         bool checked{};
         if (dialog.screen == GameDialogScreen::sound_options) {
           checked = control.identifier == 3 ? dialog.unit_speech
@@ -255,12 +336,15 @@ void draw_dialog_controls(const RecoveryWindowState &state) noexcept {
           checked = control.identifier ==
                     static_cast<std::int16_t>(5U - dialog.voice_mode);
         }
-        draw_solid_rect(static_cast<float>(control.left + 3),
-                        static_cast<float>(control.top + 3),
-                        static_cast<float>(control.left + 13),
-                        static_cast<float>(control.top + 13),
-                        checked ? 224U : 18U, checked ? 192U : 32U,
-                        checked ? 64U : 38U, 255U);
+        const auto &frames = dialog_control_art(state);
+        const std::size_t icon = checked ? 14U : 11U;
+        if (icon < frames.size()) {
+          draw_preview_frame_gl(
+              frames[icon], static_cast<float>(control.left + 2),
+              static_cast<float>(control.top + 2) * hud_vertical_scale(),
+              static_cast<float>(frames[icon].width),
+              static_cast<float>(frames[icon].height) * hud_vertical_scale());
+        }
       } else if (control.type == 6U) {
         std::uint8_t value{};
         if (dialog.screen == GameDialogScreen::sound_options) {
@@ -273,15 +357,26 @@ void draw_dialog_controls(const RecoveryWindowState &state) noexcept {
                                          : dialog.key_scroll;
           value = static_cast<std::uint8_t>(100U * speed / 6U);
         }
-        const float knob = control.left +
-                           (control.right - control.left) * value / 100.0F;
-        draw_solid_rect(knob - 3.0F, static_cast<float>(control.bottom - 8),
-                        knob + 3.0F, static_cast<float>(control.bottom - 1),
-                        232U, 202U, 86U, 255U);
+        const auto &frames = dialog_control_art(state);
+        if (frames.size() > 99U) {
+          GlueControl track = control;
+          track.top = static_cast<std::int16_t>(
+              (static_cast<int>(control.top) + control.bottom - 2) / 2);
+          track.bottom = static_cast<std::int16_t>(track.top + 2);
+          draw_three_piece_control(frames, 91U, track);
+          const float knob =
+              control.left + (control.right - control.left) * value / 100.0F;
+          draw_preview_frame_gl(
+              frames[99], knob - frames[99].width / 2.0F,
+              static_cast<float>(control.top) * hud_vertical_scale(),
+              static_cast<float>(frames[99].width),
+              static_cast<float>(frames[99].height) * hud_vertical_scale());
+        }
       }
     } else {
-      draw_glue_centered_text_gl(state, control.text, control, 232U, 220U,
-                                 176U, control.identifier == -1);
+      draw_game_dialog_centered_styled_text_gl(
+          state, control.text, control, dialog_control_font_style(control, false),
+          control.identifier == -1);
     }
   }
 
@@ -295,7 +390,8 @@ void draw_dialog_controls(const RecoveryWindowState &state) noexcept {
         break;
       }
       const std::string help = table_string(dialog.help_text_table, identifier);
-      draw_glue_text_gl(state, help, 190.0F, y, 210U, 210U, 210U, false);
+      draw_game_dialog_styled_text_gl(
+          state, help, 190.0F, y, GlueFontStyle::bright_green, false);
       y += 13.0F;
     }
   } else if (dialog.screen == GameDialogScreen::tips) {
@@ -527,16 +623,61 @@ GameDialogAction activate_control(RecoveryWindowState &state,
 }
 
 bool load_layout(starcraft::runtime::StormModule &storm, const char *path,
-                 std::vector<GlueControl> &controls) {
+                 std::vector<GlueControl> &controls,
+                 GameDialogBounds *const bounds = nullptr) {
   std::vector<std::uint8_t> bytes;
-  return storm.load_file(path, bytes) && parse_glue_layout(bytes, controls);
+  if (!storm.load_file(path, bytes) || !parse_glue_layout(bytes, controls)) {
+    return false;
+  }
+  if (bounds != nullptr) {
+    const std::int16_t left =
+        static_cast<std::int16_t>(read_u16(bytes, 4U));
+    const std::int16_t top =
+        static_cast<std::int16_t>(read_u16(bytes, 6U));
+    bounds->left = left;
+    bounds->top = top;
+    bounds->right = static_cast<std::int16_t>(
+        left + static_cast<std::int16_t>(read_u16(bytes, 8U)));
+    bounds->bottom = static_cast<std::int16_t>(
+        top + static_cast<std::int16_t>(read_u16(bytes, 10U)));
+  }
+  return true;
 }
 
 bool load_pcx(starcraft::runtime::StormModule &storm, const std::string &path,
-              SpritePreviewFrame &frame) {
+              SpritePreviewFrame &frame,
+              std::vector<std::uint8_t> *const palette = nullptr) {
   starcraft::runtime::DecodedPcx pcx{};
-  return storm.load_pcx(path.c_str(), pcx) &&
-         decode_pcx_frame(pcx, false, frame);
+  if (!storm.load_pcx(path.c_str(), pcx) ||
+      !decode_pcx_frame(pcx, false, frame)) {
+    return false;
+  }
+  if (palette != nullptr) {
+    *palette = pcx.palette;
+  }
+  return true;
+}
+
+bool decode_game_font_colors(
+    const starcraft::runtime::DecodedPcx &table,
+    const std::vector<std::uint8_t> &palette,
+    std::array<std::array<std::uint32_t, 8>, 6> &colors) noexcept {
+  if (table.width != 48U || table.height != 1U ||
+      table.pixels.size() != 48U || palette.size() != 1024U) {
+    return false;
+  }
+  colors = {};
+  for (std::size_t style = 0; style < colors.size(); ++style) {
+    for (std::size_t shade = 0; shade < colors[style].size(); ++shade) {
+      const std::size_t palette_index = table.pixels[style * 8U + shade];
+      const std::size_t color = palette_index * 4U;
+      colors[style][shade] =
+          (static_cast<std::uint32_t>(palette[color]) << 16U) |
+          (static_cast<std::uint32_t>(palette[color + 1U]) << 8U) |
+          palette[color + 2U];
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -565,9 +706,12 @@ bool initialize_game_dialog_assets(GameDialogRuntime &dialog,
 
   const auto layout = [&](const GameDialogScreen screen,
                           const char *const path) {
-    return load_layout(storm, path, dialog.layouts[screen_index(screen)]);
+    return load_layout(storm, path, dialog.layouts[screen_index(screen)],
+                       &dialog.layout_bounds[screen_index(screen)]);
   };
   std::vector<std::uint8_t> tile_group;
+  std::array<std::vector<std::uint8_t>, 3> control_groups{};
+  starcraft::runtime::DecodedPcx game_font_colors{};
   std::uint16_t tile_width{};
   std::uint16_t tile_height{};
   bool loaded =
@@ -587,9 +731,16 @@ bool initialize_game_dialog_assets(GameDialogRuntime &dialog,
       layout(GameDialogScreen::confirm_quit_program, R"(rez\quit.bin)") &&
       layout(GameDialogScreen::victory, R"(rez\wmission.bin)") &&
       layout(GameDialogScreen::defeat, R"(rez\lmission.bin)") &&
-      load_layout(storm, R"(rez\gluScore.bin)", dialog.score_controls) &&
+      load_layout(storm, R"(rez\gluScore.bin)", dialog.score_controls,
+                  &dialog.layout_bounds[screen_index(GameDialogScreen::score)]) &&
       storm.load_file(R"(dlgs\tile.grp)", tile_group) &&
-      decode_preview_frames(tile_group, status.hud_palette,
+      storm.load_file(R"(dlgs\zerg.grp)", control_groups[0]) &&
+      storm.load_file(R"(dlgs\terran.grp)", control_groups[1]) &&
+      storm.load_file(R"(dlgs\protoss.grp)", control_groups[2]) &&
+      storm.load_pcx(R"(game\tFontGam.pcx)", game_font_colors) &&
+      decode_game_font_colors(game_font_colors, status.game_palette,
+                              dialog.font_colors) &&
+      decode_preview_frames(tile_group, status.game_palette,
                             dialog.dialog_tile_frames, tile_width,
                             tile_height) &&
       dialog.dialog_tile_frames.size() == 9U &&
@@ -597,13 +748,25 @@ bool initialize_game_dialog_assets(GameDialogRuntime &dialog,
       storm.load_file(R"(rez\tips.tbl)", dialog.tips_table) &&
       storm.load_file(R"(rez\gluAll.tbl)", dialog.glue_text_table);
 
+  for (std::size_t race = 0U; loaded && race < control_groups.size(); ++race) {
+    std::uint16_t control_width{};
+    std::uint16_t control_height{};
+    loaded = decode_preview_frames(control_groups[race], status.game_palette,
+                                   dialog.dialog_control_frames[race],
+                                   control_width, control_height) &&
+             dialog.dialog_control_frames[race].size() == 139U;
+  }
+
   constexpr std::array<const char *, 6> score_themes{{
       R"(glue\scoreZd\)", R"(glue\scoreZv\)", R"(glue\scoreTd\)",
       R"(glue\scoreTv\)", R"(glue\scorePd\)", R"(glue\scorePv\)",
   }};
   for (std::size_t index = 0; loaded && index < score_themes.size(); ++index) {
+    std::vector<std::uint8_t> score_palette;
     loaded = load_pcx(storm, std::string{score_themes[index]} + "pMain.pcx",
-                      dialog.score_backgrounds[index]) &&
+                      dialog.score_backgrounds[index], &score_palette) &&
+             decode_game_font_colors(game_font_colors, score_palette,
+                                     dialog.score_font_colors[index]) &&
              load_pcx(storm,
                       std::string{score_themes[index]} + "scorebox.pcx",
                       dialog.score_boxes[index]);
@@ -635,6 +798,7 @@ void open_game_menu(RecoveryWindowState &state) noexcept {
     return;
   }
   enter_dialog(state.game_dialog, GameDialogScreen::game_menu);
+  (void)ensure_gameplay_music(state);
 }
 
 GameDialogAction game_dialog_mouse_move(RecoveryWindowState &state, const int x,
@@ -754,12 +918,11 @@ void draw_game_dialog_gl(const RecoveryWindowState &state,
     draw_score_screen_gl(state, now);
     return;
   }
-  const auto &controls = current_layout(state.game_dialog);
   int left{};
   int top{};
   int right{};
   int bottom{};
-  dialog_bounds(controls, left, top, right, bottom);
+  dialog_bounds(state.game_dialog, left, top, right, bottom);
   draw_dialog_tiles(state.game_dialog, left, top, right, bottom);
   draw_dialog_controls(state);
 }

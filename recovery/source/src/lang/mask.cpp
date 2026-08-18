@@ -297,7 +297,17 @@ bool rebuild_fog_render_surfaces(BootstrapStatus &status) noexcept {
     return false;
   }
   try {
-    status.fogged_terrain = status.terrain;
+    // This path runs whenever a sight source crosses a map tile. Keep the
+    // render surfaces as BGRA-only working buffers instead of copying the
+    // terrain's BGRA, palette-index, and opacity vectors on every rebuild.
+    status.fogged_terrain.x_offset = status.terrain.x_offset;
+    status.fogged_terrain.y_offset = status.terrain.y_offset;
+    status.fogged_terrain.width = status.terrain.width;
+    status.fogged_terrain.height = status.terrain.height;
+    status.fogged_terrain.bgra.resize(status.terrain.bgra.size());
+    status.fogged_terrain.palette_indices.clear();
+    status.fogged_terrain.opacity.clear();
+
     constexpr int grid_width = 26;
     constexpr int grid_height = 20;
     const int grid_left = floor_divide(static_cast<int>(status.camera_x) - 64,
@@ -333,41 +343,97 @@ bool rebuild_fog_render_surfaces(BootstrapStatus &status) noexcept {
             static_cast<std::uint8_t>(value >> 4U);
       }
     }
+
+    struct AxisBlend {
+      std::uint8_t first{};
+      std::uint8_t second{};
+      std::uint8_t fraction{};
+    };
+    std::array<AxisBlend, kMapViewportWidth> horizontal{};
+    for (int screen_x = 0; screen_x < kMapViewportWidth; ++screen_x) {
+      const int shifted = status.camera_x + screen_x - 16;
+      const int world_cell = floor_divide(shifted, 32);
+      const int cell = world_cell - grid_left;
+      horizontal[screen_x] = {
+          static_cast<std::uint8_t>((std::clamp)(cell, 0, grid_width - 1)),
+          static_cast<std::uint8_t>(
+              (std::clamp)(cell + 1, 0, grid_width - 1)),
+          static_cast<std::uint8_t>(shifted - world_cell * 32),
+      };
+    }
+    std::array<AxisBlend, kMapViewportHeight> vertical{};
     for (int screen_y = 0; screen_y < kMapViewportHeight; ++screen_y) {
-      const int world_y = status.camera_y + screen_y;
-      const int cell_y = floor_divide(world_y - 16, 32) - grid_top;
-      const int fraction_y = (world_y - 16) -
-                             floor_divide(world_y - 16, 32) * 32;
-      for (int screen_x = 0; screen_x < kMapViewportWidth; ++screen_x) {
-        const int world_x = status.camera_x + screen_x;
-        const int cell_x = floor_divide(world_x - 16, 32) - grid_left;
-        const int fraction_x = (world_x - 16) -
-                               floor_divide(world_x - 16, 32) * 32;
-        const int x0 = (std::clamp)(cell_x, 0, grid_width - 1);
-        const int x1 = (std::clamp)(cell_x + 1, 0, grid_width - 1);
-        const int y0 = (std::clamp)(cell_y, 0, grid_height - 1);
-        const int y1 = (std::clamp)(cell_y + 1, 0, grid_height - 1);
-        const unsigned top =
-            smooth[static_cast<std::size_t>(y0) * grid_width + x0] *
-                (32 - fraction_x) +
-            smooth[static_cast<std::size_t>(y0) * grid_width + x1] *
-                fraction_x;
-        const unsigned bottom =
-            smooth[static_cast<std::size_t>(y1) * grid_width + x0] *
-                (32 - fraction_x) +
-            smooth[static_cast<std::size_t>(y1) * grid_width + x1] *
-                fraction_x;
-        const std::uint8_t level = static_cast<std::uint8_t>(
-            (top * (32 - fraction_y) + bottom * fraction_y + 512U) >> 10U);
-        const std::size_t pixel =
-            static_cast<std::size_t>(screen_y) * kMapViewportWidth + screen_x;
-        status.fogged_terrain.bgra[pixel] = translated_dark_pixel(
-            status, status.terrain.palette_indices[pixel], level,
-            status.terrain.bgra[pixel]);
+      const int shifted = status.camera_y + screen_y - 16;
+      const int world_cell = floor_divide(shifted, 32);
+      const int cell = world_cell - grid_top;
+      vertical[screen_y] = {
+          static_cast<std::uint8_t>((std::clamp)(cell, 0, grid_height - 1)),
+          static_cast<std::uint8_t>(
+              (std::clamp)(cell + 1, 0, grid_height - 1)),
+          static_cast<std::uint8_t>(shifted - world_cell * 32),
+      };
+    }
+
+    // dark.pcx is a 32x256 palette translation. Expanding it once per fog
+    // rebuild avoids reconstructing the same packed color for every one of
+    // the viewport's 256,000 pixels.
+    std::array<std::array<std::uint32_t, 256>, 32> dark_pixels{};
+    const bool dark_palette_ready =
+        status.terrain_dark_levels.size() == 32U * 256U &&
+        status.game_palette.size() == 1024U;
+    if (dark_palette_ready) {
+      for (std::size_t level = 1U; level < kFullLight; ++level) {
+        for (std::size_t source = 0U; source < 256U; ++source) {
+          const std::uint8_t mapped =
+              status.terrain_dark_levels[level * 256U + source];
+          const std::size_t color = static_cast<std::size_t>(mapped) * 4U;
+          dark_pixels[level][source] =
+              0xFF000000U | status.game_palette[color + 2U] |
+              (static_cast<std::uint32_t>(status.game_palette[color + 1U])
+               << 8U) |
+              (static_cast<std::uint32_t>(status.game_palette[color]) << 16U);
+        }
       }
     }
 
-    status.fogged_minimap = status.minimap;
+    for (int screen_y = 0; screen_y < kMapViewportHeight; ++screen_y) {
+      const AxisBlend y = vertical[screen_y];
+      const std::size_t row0 = static_cast<std::size_t>(y.first) * grid_width;
+      const std::size_t row1 = static_cast<std::size_t>(y.second) * grid_width;
+      for (int screen_x = 0; screen_x < kMapViewportWidth; ++screen_x) {
+        const AxisBlend x = horizontal[screen_x];
+        const unsigned top =
+            smooth[row0 + x.first] * (32U - x.fraction) +
+            smooth[row0 + x.second] * x.fraction;
+        const unsigned bottom =
+            smooth[row1 + x.first] * (32U - x.fraction) +
+            smooth[row1 + x.second] * x.fraction;
+        const std::uint8_t level = static_cast<std::uint8_t>(
+            (top * (32U - y.fraction) + bottom * y.fraction + 512U) >> 10U);
+        const std::size_t pixel =
+            static_cast<std::size_t>(screen_y) * kMapViewportWidth + screen_x;
+        status.fogged_terrain.bgra[pixel] =
+            level >= kFullLight
+                ? status.terrain.bgra[pixel]
+                : level == 0U
+                      ? 0xFF000000U
+                      : dark_palette_ready
+                            ? dark_pixels[level]
+                                         [status.terrain.palette_indices[pixel]]
+                            : translated_dark_pixel(
+                                  status,
+                                  status.terrain.palette_indices[pixel], level,
+                                  status.terrain.bgra[pixel]);
+      }
+    }
+
+    status.fogged_minimap.x_offset = status.minimap.x_offset;
+    status.fogged_minimap.y_offset = status.minimap.y_offset;
+    status.fogged_minimap.width = status.minimap.width;
+    status.fogged_minimap.height = status.minimap.height;
+    status.fogged_minimap.bgra = status.minimap.bgra;
+    status.fogged_minimap.palette_indices.clear();
+    status.fogged_minimap.opacity.clear();
     if (status.minimap_ready && status.minimap.width == 128U &&
         status.minimap.height == 128U &&
         status.minimap.palette_indices.size() == status.minimap.bgra.size()) {

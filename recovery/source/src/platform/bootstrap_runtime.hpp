@@ -338,13 +338,27 @@ struct MatchScoreRow {
   std::uint32_t total{};
 };
 
+struct GameDialogBounds {
+  std::int16_t left{};
+  std::int16_t top{};
+  std::int16_t right{};
+  std::int16_t bottom{};
+};
+
 struct GameDialogRuntime {
   std::array<std::vector<GlueControl>,
              static_cast<std::size_t>(GameDialogScreen::count)>
       layouts{};
+  std::array<GameDialogBounds,
+             static_cast<std::size_t>(GameDialogScreen::count)>
+      layout_bounds{};
   std::vector<GlueControl> hud_menu_controls{};
   std::vector<GlueControl> score_controls{};
   std::vector<SpritePreviewFrame> dialog_tile_frames{};
+  std::array<std::vector<SpritePreviewFrame>, 3> dialog_control_frames{};
+  std::array<std::array<std::uint32_t, 8>, 6> font_colors{};
+  std::array<std::array<std::array<std::uint32_t, 8>, 6>, 6>
+      score_font_colors{};
   std::array<SpritePreviewFrame, 6> score_backgrounds{};
   std::array<SpritePreviewFrame, 6> score_boxes{};
   std::vector<std::uint8_t> help_text_table{};
@@ -1100,6 +1114,7 @@ struct RecoveryWindowState {
   std::uint32_t audio_play_count{};
   bool audio_ready{};
   bool music_playing{};
+  std::string active_music_path{};
   bool imgui_ready{};
   bool debug_console_open{};
   bool debug_console_focus{};
@@ -1207,6 +1222,14 @@ void draw_glue_centered_styled_text_gl(
     const GlueControl &control,
     GlueFontStyle style = GlueFontStyle::normal, bool large = true,
     std::uint8_t alpha = 255U) noexcept;
+void draw_game_dialog_styled_text_gl(
+    const RecoveryWindowState &state, std::string_view text, float x, float y,
+    GlueFontStyle style, bool large = false,
+    std::uint8_t alpha = 255U) noexcept;
+void draw_game_dialog_centered_styled_text_gl(
+    const RecoveryWindowState &state, std::string_view text,
+    const GlueControl &control, GlueFontStyle style, bool large = true,
+    std::uint8_t alpha = 255U) noexcept;
 void draw_title_gl(const RecoveryWindowState &state) noexcept;
 void draw_main_menu_gl(const RecoveryWindowState &state) noexcept;
 void draw_glue_ok_popup_gl(const RecoveryWindowState &state) noexcept;
@@ -1266,6 +1289,8 @@ void show_match_outcome(RecoveryWindowState &state,
 [[nodiscard]] bool play_result_music(RecoveryWindowState &state,
                                      MatchOutcome outcome) noexcept;
 [[nodiscard]] bool play_title_music(RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool play_gameplay_music(RecoveryWindowState &state) noexcept;
+[[nodiscard]] bool ensure_gameplay_music(RecoveryWindowState &state) noexcept;
 void build_match_scores(RecoveryWindowState &state) noexcept;
 void draw_score_screen_gl(const RecoveryWindowState &state,
                           std::uint32_t now) noexcept;
@@ -1709,6 +1734,8 @@ void draw_debug_console(RecoveryWindowState &state,
 void clear_selection(BootstrapStatus &status) noexcept;
 [[nodiscard]] std::size_t
 selection_count(const BootstrapStatus &status) noexcept;
+void apply_drag_box_selection(BootstrapStatus &status, int left, int right,
+                              int top, int bottom, bool additive) noexcept;
 void complete_selection_drag(RecoveryWindowState &state) noexcept;
 [[nodiscard]] bool set_camera_position(BootstrapStatus &status, int requested_x,
                                        int requested_y) noexcept;

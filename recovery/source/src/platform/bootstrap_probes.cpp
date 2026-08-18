@@ -235,6 +235,25 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       game_capture_argument == nullptr
           ? nullptr
           : game_capture_argument + sizeof(game_capture_option) - 1U;
+  constexpr char game_menu_capture_option[] = "--capture-game-menu=";
+  const char *const game_menu_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, game_menu_capture_option);
+  const char *const game_menu_capture_path =
+      game_menu_capture_argument == nullptr
+          ? nullptr
+          : game_menu_capture_argument + sizeof(game_menu_capture_option) -
+                1U;
+  constexpr char score_capture_option[] = "--capture-score=";
+  const char *const score_capture_argument =
+      command_line == nullptr
+          ? nullptr
+          : std::strstr(command_line, score_capture_option);
+  const char *const score_capture_path =
+      score_capture_argument == nullptr
+          ? nullptr
+          : score_capture_argument + sizeof(score_capture_option) - 1U;
   constexpr char battle_capture_option[] = "--capture-battle-ui=";
   const char *const battle_capture_argument =
       command_line == nullptr
@@ -266,7 +285,8 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
       popup_capture_path != nullptr ||
       connection_capture_path != nullptr ||
       map_capture_path != nullptr || lobby_capture_path != nullptr ||
-      game_capture_path != nullptr || battle_capture_path != nullptr) {
+      game_capture_path != nullptr || game_menu_capture_path != nullptr ||
+      score_capture_path != nullptr || battle_capture_path != nullptr) {
     handled = true;
     window_state.validate_render_pixels = opengl_probe;
     if (battle_ui_probe) {
@@ -939,8 +959,38 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
           render_opengl(window, window_state);
       bool game_flow_verified = !game_flow_probe;
       int game_flow_stage{};
+      bool game_menu_captured = game_menu_capture_path == nullptr;
+      bool score_captured = score_capture_path == nullptr;
+      const GameDialogRuntime &dialog_assets = window_state.game_dialog;
+      const auto valid_dialog_bounds = [](const GameDialogBounds &bounds) {
+        return bounds.right > bounds.left && bounds.bottom > bounds.top;
+      };
+      const bool original_dialog_assets =
+          dialog_assets.dialog_tile_frames.size() == 9U &&
+          std::all_of(dialog_assets.dialog_control_frames.begin(),
+                      dialog_assets.dialog_control_frames.end(),
+                      [](const auto &frames) { return frames.size() == 139U; }) &&
+          std::all_of(dialog_assets.score_backgrounds.begin(),
+                      dialog_assets.score_backgrounds.end(),
+                      [](const SpritePreviewFrame &frame) {
+                        return frame.width == 640U && frame.height == 480U &&
+                               !frame.bgra.empty();
+                      }) &&
+          std::all_of(dialog_assets.score_boxes.begin(),
+                      dialog_assets.score_boxes.end(),
+                      [](const SpritePreviewFrame &frame) {
+                        return frame.width == 96U && frame.height == 30U &&
+                               !frame.bgra.empty();
+                      }) &&
+          valid_dialog_bounds(
+              dialog_assets.layout_bounds[static_cast<std::size_t>(
+                  GameDialogScreen::game_menu)]) &&
+          valid_dialog_bounds(
+              dialog_assets.layout_bounds[static_cast<std::size_t>(
+                  GameDialogScreen::score)]) &&
+          dialog_assets.font_colors[1U][7U] != 0U;
       if (flow_valid && game_flow_probe &&
-          window_state.game_dialog.assets_ready &&
+          window_state.game_dialog.assets_ready && original_dialog_assets &&
           window_state.game_dialog.match_active) {
         const auto activate = [&](const std::int16_t identifier) {
           const auto &dialog = window_state.game_dialog;
@@ -987,7 +1037,14 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         if (hud_button_verified &&
             window_state.game_dialog.screen == GameDialogScreen::game_menu &&
             render_opengl(window, window_state)) {
-          game_flow_stage = 1;
+          game_menu_captured =
+              game_menu_capture_path == nullptr ||
+              capture_opengl_bmp(window, window_state,
+                                 game_menu_capture_path);
+          const bool gameplay_music_valid =
+              window_state.music_playing &&
+              window_state.active_music_path == status.music_path;
+          game_flow_stage = game_menu_captured && gameplay_music_valid ? 1 : 0;
           (void)activate(3);
           if (window_state.game_dialog.screen == GameDialogScreen::options) {
             (void)activate(1);
@@ -1026,17 +1083,28 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
         if (game_flow_stage == 3 &&
             window_state.game_dialog.screen == GameDialogScreen::none) {
           for (ScenarioUnitPreview &unit : status.units) {
-            if (unit.owner > 0U && unit.owner < 8U && unit.is_building) {
-              unit.destroyed_by_owner = 0U;
+            if (unit.owner < 8U && unit.owner != status.local_player &&
+                unit.is_building) {
+              unit.destroyed_by_owner = status.local_player;
               unit.alive = false;
             }
           }
           evaluate_melee_outcome(window_state);
           if (window_state.game_dialog.screen == GameDialogScreen::victory &&
               render_opengl(window, window_state)) {
-            game_flow_stage = 4;
+            constexpr std::array<const char *, 3> victory_music{{
+                R"(music\zvict.wav)", R"(music\tvict.wav)",
+                R"(music\pvict.wav)",
+            }};
+            const bool victory_music_valid =
+                status.local_race < victory_music.size() &&
+                window_state.music_playing &&
+                window_state.active_music_path ==
+                    victory_music[status.local_race];
+            game_flow_stage = victory_music_valid ? 4 : game_flow_stage;
             (void)activate(-2);
-            if (window_state.game_dialog.screen == GameDialogScreen::score) {
+            if (game_flow_stage == 4 &&
+                window_state.game_dialog.screen == GameDialogScreen::score) {
               game_flow_stage = 5;
             }
             if (game_flow_stage == 5 &&
@@ -1044,15 +1112,20 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               const auto local_score = std::find_if(
                   window_state.game_dialog.score_rows.begin(),
                   window_state.game_dialog.score_rows.end(),
-                  [](const MatchScoreRow &row) {
-                    return row.player == 0U && row.razed != 0U;
+                  [&status](const MatchScoreRow &row) {
+                    return row.player == status.local_player &&
+                           row.razed != 0U;
                   });
               if (local_score != window_state.game_dialog.score_rows.end()) {
                 game_flow_stage = 6;
               }
             }
             if (game_flow_stage == 6 && render_opengl(window, window_state)) {
-              game_flow_stage = 7;
+              score_captured =
+                  score_capture_path == nullptr ||
+                  capture_opengl_bmp(window, window_state,
+                                     score_capture_path);
+              game_flow_stage = score_captured ? 7 : game_flow_stage;
               for (std::int16_t category = 3; category <= 6; ++category) {
                 (void)activate(category);
               }
@@ -1061,10 +1134,12 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                       ScoreCategory::resources &&
                   render_opengl(window, window_state);
               window_state.game_dialog.screen = GameDialogScreen::none;
-              if (categories_valid && start_selected_glue_map(window_state)) {
+              if (game_flow_stage == 7 && categories_valid &&
+                  start_selected_glue_map(window_state)) {
                 for (ScenarioUnitPreview &unit : status.units) {
-                  if (unit.owner == 0U && unit.is_building) {
-                    unit.destroyed_by_owner = 1U;
+                  if (unit.owner == status.local_player && unit.is_building) {
+                    unit.destroyed_by_owner =
+                        status.local_player == 0U ? 1U : 0U;
                     unit.alive = false;
                   }
                 }
@@ -1072,19 +1147,30 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                 if (window_state.game_dialog.screen ==
                         GameDialogScreen::defeat &&
                     render_opengl(window, window_state)) {
-                  game_flow_stage = 8;
+                  constexpr std::array<const char *, 3> defeat_music{{
+                      R"(music\zdefeat.wav)", R"(music\tdefeat.wav)",
+                      R"(music\pdefeat.wav)",
+                  }};
+                  const bool defeat_music_valid =
+                      status.local_race < defeat_music.size() &&
+                      window_state.music_playing &&
+                      window_state.active_music_path ==
+                          defeat_music[status.local_race];
+                  game_flow_stage =
+                      defeat_music_valid ? 8 : game_flow_stage;
                   (void)activate(-2);
                   const bool defeat_scores_valid = std::any_of(
                       window_state.game_dialog.score_rows.begin(),
                       window_state.game_dialog.score_rows.end(),
-                      [](const MatchScoreRow &row) {
-                        return row.player == 0U &&
+                      [&status](const MatchScoreRow &row) {
+                        return row.player == status.local_player &&
                                row.structures_lost != 0U;
                       });
                   const GameDialogAction finished =
                       defeat_scores_valid ? activate(7)
                                           : GameDialogAction::none;
                   game_flow_verified =
+                      defeat_music_valid &&
                       window_state.game_dialog.screen ==
                           GameDialogScreen::score &&
                       finished == GameDialogAction::return_to_menu;
@@ -1146,6 +1232,7 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                      map_rendered && map_captured && lobby_rendered &&
                      lobby_captured && ready_rendered &&
                      selected_game_rendered && selected_game_captured &&
+                      game_menu_captured && score_captured &&
                       glue_worker_card_verified &&
                       glue_drone_movement_verified && glue_geyser_verified &&
                       glue_ai_verified &&
@@ -1200,6 +1287,55 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
                   status.unit_assets.size() &&
               status.unit_assets[visible->selection_circle_asset_index]
                       .image_draw_function == 13U;
+
+          if (selection_verified) {
+            ScenarioUnitPreview prototype = *visible;
+            std::vector<ScenarioUnitPreview> original_units =
+                std::move(status.units);
+            const auto selection_fixture =
+                [&](const std::uint32_t unit_id, const int game_x,
+                    const int game_y,
+                    const bool is_building) -> ScenarioUnitPreview {
+              ScenarioUnitPreview fixture = prototype;
+              fixture.unit_id = unit_id;
+              fixture.x = static_cast<std::uint16_t>(status.camera_x + game_x);
+              fixture.y = static_cast<std::uint16_t>(status.camera_y + game_y);
+              fixture.owner = status.local_player;
+              fixture.alive = true;
+              fixture.dying = false;
+              fixture.sprite_hidden = false;
+              fixture.selected = false;
+              fixture.is_building = is_building;
+              return fixture;
+            };
+            status.units = {
+                selection_fixture(0xFFF00001U, 80, 80, true),
+                selection_fixture(0xFFF00002U, 112, 80, false),
+                selection_fixture(0xFFF00003U, 144, 80, true),
+                selection_fixture(0xFFF00004U, 176, 80, false),
+            };
+
+            status.units[0].selected = true;
+            apply_drag_box_selection(status, 64, 192, 64, 96, true);
+            const bool mixed_box_verified =
+                selection_count(status) == 2 && !status.units[0].selected &&
+                status.units[1].selected && !status.units[2].selected &&
+                status.units[3].selected;
+
+            status.units[1].y =
+                static_cast<std::uint16_t>(status.camera_y + 200);
+            status.units[3].y =
+                static_cast<std::uint16_t>(status.camera_y + 200);
+            apply_drag_box_selection(status, 64, 192, 64, 96, true);
+            const bool buildings_only_verified =
+                selection_count(status) == 1 && status.units[0].selected &&
+                !status.units[1].selected && !status.units[2].selected &&
+                !status.units[3].selected;
+
+            status.units = std::move(original_units);
+            selection_verified =
+                mixed_box_verified && buildings_only_verified;
+          }
         }
       }
     }
@@ -3229,7 +3365,11 @@ int run_bootstrap_probes(const char *const command_line, const HWND window,
               static_cast<std::size_t>(status.scenario_width) *
                   status.scenario_height &&
           status.fogged_terrain.bgra.size() == status.terrain.bgra.size() &&
-          status.fogged_minimap.bgra.size() == status.minimap.bgra.size();
+          status.fogged_terrain.palette_indices.empty() &&
+          status.fogged_terrain.opacity.empty() &&
+          status.fogged_minimap.bgra.size() == status.minimap.bgra.size() &&
+          status.fogged_minimap.palette_indices.empty() &&
+          status.fogged_minimap.opacity.empty();
       fog_probe_stage = fog_verified ? 1 : 0;
 
       ScenarioUnitPreview *source{};

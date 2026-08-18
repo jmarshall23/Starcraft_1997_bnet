@@ -111,6 +111,7 @@ void shutdown_audio(RecoveryWindowState &state) noexcept {
   }
   state.audio_ready = false;
   state.music_playing = false;
+  state.active_music_path.clear();
   state.audio_source_cursor = 0U;
 }
 
@@ -205,6 +206,9 @@ bool initialize_audio(RecoveryWindowState &state) noexcept {
     alGetSourcei(state.music_source, AL_SOURCE_STATE, &music_state);
     state.music_playing =
         alGetError() == AL_NO_ERROR && music_state == AL_PLAYING;
+    if (state.music_playing) {
+      state.active_music_path = state.status->music_path;
+    }
   }
   return state.audio_ready;
 }

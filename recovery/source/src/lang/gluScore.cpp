@@ -20,28 +20,42 @@ const GlueControl *score_control(const GameDialogRuntime &dialog,
   return nullptr;
 }
 
-void draw_tab_background(const GlueControl &control, const bool selected,
-                         const bool hovered) noexcept {
-  glDisable(GL_TEXTURE_2D);
-  if (selected) {
-    glColor4ub(92U, 74U, 34U, 235U);
-  } else if (hovered) {
-    glColor4ub(50U, 70U, 82U, 220U);
-  } else {
-    glColor4ub(18U, 28U, 34U, 205U);
+void draw_score_three_piece(const RecoveryWindowState &state,
+                            const GlueControl &control,
+                            const std::size_t first) noexcept {
+  const std::uint8_t race = state.status == nullptr
+                                ? 0U
+                                : (std::min)(state.status->local_race,
+                                             static_cast<std::uint8_t>(2U));
+  const auto &frames = state.game_dialog.dialog_control_frames[race];
+  if (first + 2U >= frames.size()) {
+    return;
   }
-  glBegin(GL_QUADS);
-  glVertex2f(static_cast<float>(control.left),
-             static_cast<float>(control.top) * hud_vertical_scale());
-  glVertex2f(static_cast<float>(control.right),
-             static_cast<float>(control.top) * hud_vertical_scale());
-  glVertex2f(static_cast<float>(control.right),
-             static_cast<float>(control.bottom) * hud_vertical_scale());
-  glVertex2f(static_cast<float>(control.left),
-             static_cast<float>(control.bottom) * hud_vertical_scale());
-  glEnd();
-  glColor4ub(255U, 255U, 255U, 255U);
-  glEnable(GL_TEXTURE_2D);
+  const float top = static_cast<float>(control.top) * hud_vertical_scale();
+  const float height =
+      static_cast<float>(control.bottom - control.top + 1) *
+      hud_vertical_scale();
+  const int left_width = frames[first].width;
+  const int right_width = frames[first + 2U].width;
+  const int middle_width =
+      (std::max)(1, static_cast<int>(control.right - control.left + 1) -
+                        left_width - right_width);
+  draw_preview_frame_gl(frames[first], static_cast<float>(control.left), top,
+                        static_cast<float>(left_width), height);
+  draw_preview_frame_gl(frames[first + 1U],
+                        static_cast<float>(control.left + left_width), top,
+                        static_cast<float>(middle_width), height);
+  draw_preview_frame_gl(
+      frames[first + 2U],
+      static_cast<float>(control.right - right_width + 1), top,
+      static_cast<float>(right_width), height);
+}
+
+void draw_score_tab(const RecoveryWindowState &state,
+                    const GlueControl &control, const bool selected,
+                    const bool hovered) noexcept {
+  draw_score_three_piece(state, control,
+                         121U + (selected ? 6U : hovered ? 3U : 0U));
 }
 
 std::uint32_t animated_value(const std::uint32_t target,
@@ -137,10 +151,9 @@ void draw_number(const RecoveryWindowState &state,
   if (control == nullptr) {
     return;
   }
-  draw_glue_centered_text_gl(state, std::to_string(value), *control,
-                             total ? 255U : 218U,
-                             total ? 220U : 218U,
-                             total ? 96U : 218U, false);
+  draw_game_dialog_centered_styled_text_gl(
+      state, std::to_string(value), *control,
+      total ? GlueFontStyle::green : GlueFontStyle::bright_green, false);
 }
 
 } // namespace
@@ -168,11 +181,14 @@ void draw_score_screen_gl(const RecoveryWindowState &state,
   }
   const GlueControl *const title_control = score_control(dialog, 2);
   if (title_control != nullptr) {
-    draw_glue_centered_text_gl(state, title, *title_control, 255U, 224U,
-                               128U, true);
+    draw_game_dialog_centered_styled_text_gl(
+        state, title, *title_control,
+        dialog.outcome == MatchOutcome::victory ? GlueFontStyle::error
+                                                 : GlueFontStyle::normal,
+        true);
   }
 
-  for (std::int16_t identifier = 3; identifier <= 7; ++identifier) {
+  for (std::int16_t identifier = 3; identifier <= 6; ++identifier) {
     const GlueControl *const control = score_control(dialog, identifier);
     if (control == nullptr) {
       continue;
@@ -180,12 +196,24 @@ void draw_score_screen_gl(const RecoveryWindowState &state,
     const bool selected = identifier >= 3 && identifier <= 6 &&
                           identifier - 3 ==
                               static_cast<int>(dialog.score_category);
-    draw_tab_background(*control, selected,
-                        dialog.hovered_control == identifier);
-    draw_glue_centered_text_gl(
+    const bool hovered = dialog.hovered_control == identifier;
+    draw_score_tab(state, *control, selected, hovered);
+    draw_game_dialog_centered_styled_text_gl(
         state, control->text, *control,
-        selected || dialog.hovered_control == identifier ? 255U : 216U,
-        selected ? 220U : 216U, selected ? 96U : 216U, true);
+        selected || hovered ? GlueFontStyle::bright_green
+                            : GlueFontStyle::green,
+        true);
+  }
+  if (const GlueControl *const ok = score_control(dialog, 7); ok != nullptr) {
+    const bool hovered = dialog.hovered_control == 7;
+    const bool pressed = dialog.pressed_control == 7;
+    draw_score_three_piece(state, *ok,
+                           112U + (pressed ? 3U : hovered ? 6U : 0U));
+    draw_game_dialog_centered_styled_text_gl(
+        state, ok->text, *ok,
+        hovered || pressed ? GlueFontStyle::bright_green
+                           : GlueFontStyle::green,
+        true);
   }
 
   const auto labels = headings(dialog, dialog.score_category);
@@ -193,15 +221,15 @@ void draw_score_screen_gl(const RecoveryWindowState &state,
     const GlueControl *const control =
         score_control(dialog, static_cast<std::int16_t>(9U + column));
     if (control != nullptr) {
-      draw_glue_centered_text_gl(state, labels[column], *control, 232U, 220U,
-                                 168U, false);
+      draw_game_dialog_centered_styled_text_gl(
+          state, labels[column], *control, GlueFontStyle::gold, false);
     }
   }
   if (const GlueControl *const total = score_control(dialog, 8);
       total != nullptr) {
-    draw_glue_centered_text_gl(state, total->text.empty() ? "Total Score"
-                                                          : total->text,
-                               *total, 255U, 220U, 96U, false);
+    draw_game_dialog_centered_styled_text_gl(
+        state, total->text.empty() ? "Total Score" : total->text, *total,
+        GlueFontStyle::green, false);
   }
 
   const std::uint32_t elapsed = now - dialog.score_started_tick;
@@ -210,22 +238,32 @@ void draw_score_screen_gl(const RecoveryWindowState &state,
     const MatchScoreRow &row = dialog.score_rows[row_index];
     const std::int16_t base =
         static_cast<std::int16_t>(12U + 6U * row_index);
-    const GlueControl *const box = score_control(dialog, base);
-    if (box != nullptr && theme < dialog.score_boxes.size() &&
+    if (theme < dialog.score_boxes.size() &&
         !dialog.score_boxes[theme].bgra.empty()) {
-      draw_preview_frame_gl(
-          dialog.score_boxes[theme], static_cast<float>(box->left),
-          static_cast<float>(box->top) * hud_vertical_scale(),
-          static_cast<float>(box->right - box->left + 1),
-          static_cast<float>(box->bottom - box->top + 1) *
-              hud_vertical_scale());
+      for (std::int16_t column = 0; column < 4; ++column) {
+        const GlueControl *const value_control =
+            score_control(dialog, base + 2 + column);
+        if (value_control != nullptr) {
+          draw_preview_frame_gl(
+              dialog.score_boxes[theme],
+              static_cast<float>(value_control->left),
+              static_cast<float>(value_control->top) * hud_vertical_scale(),
+              static_cast<float>(dialog.score_boxes[theme].width),
+              static_cast<float>(dialog.score_boxes[theme].height) *
+                  hud_vertical_scale());
+        }
+      }
     }
     const GlueControl *const name = score_control(dialog, base + 1);
     if (name != nullptr) {
-      draw_glue_centered_text_gl(state, row.name, *name,
-                                 row.player == 0U ? 255U : 216U,
-                                 row.victorious ? 224U : 180U,
-                                 row.victorious ? 96U : 180U, false);
+      const bool local = state.status != nullptr &&
+                         row.player == state.status->local_player;
+      draw_game_dialog_centered_styled_text_gl(
+          state, row.name, *name,
+          row.victorious ? GlueFontStyle::error
+                         : local ? GlueFontStyle::green
+                                 : GlueFontStyle::gold,
+          false);
     }
     const auto values = category_values(row, dialog.score_category);
     for (std::size_t column = 0; column < values.size(); ++column) {

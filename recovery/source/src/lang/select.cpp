@@ -22,6 +22,72 @@ std::size_t selection_count(const BootstrapStatus &status) noexcept {
   return count;
 }
 
+void apply_drag_box_selection(BootstrapStatus &status, const int left,
+                              const int right, const int top, const int bottom,
+                              const bool additive) noexcept {
+  const auto inside_box = [&](const ScenarioUnitPreview &unit) noexcept {
+    if (!unit.alive || unit.dying || unit.sprite_hidden ||
+        unit.owner != status.local_player ||
+        !fog_unit_visible(status, unit, status.local_player)) {
+      return false;
+    }
+    const int center_x = unit.x - status.camera_x;
+    const int center_y = unit.y - status.camera_y;
+    return center_x >= left && center_x <= right && center_y >= top &&
+           center_y <= bottom;
+  };
+
+  bool contains_mobile_unit = false;
+  ScenarioUnitPreview *first_building = nullptr;
+  for (ScenarioUnitPreview &unit : status.units) {
+    if (!inside_box(unit)) {
+      continue;
+    }
+    if (!unit.is_building) {
+      contains_mobile_unit = true;
+    } else if (first_building == nullptr) {
+      first_building = &unit;
+    }
+  }
+
+  if (!contains_mobile_unit && first_building == nullptr) {
+    if (!additive) {
+      clear_selection(status);
+    }
+    return;
+  }
+
+  if (!contains_mobile_unit) {
+    // Structures cannot form a drag-selection group. Even with a selection
+    // modifier held, a structures-only box resolves to one deterministic
+    // primary structure in scenario order.
+    clear_selection(status);
+    first_building->selected = true;
+    return;
+  }
+
+  if (!additive) {
+    clear_selection(status);
+  } else {
+    // A mobile-unit group cannot retain a structure that was selected before
+    // this additive drag.
+    for (ScenarioUnitPreview &unit : status.units) {
+      if (unit.is_building) {
+        unit.selected = false;
+      }
+    }
+  }
+
+  std::size_t selected = selection_count(status);
+  for (ScenarioUnitPreview &unit : status.units) {
+    if (!unit.is_building && !unit.selected && inside_box(unit) &&
+        selected < 12U) {
+      unit.selected = true;
+      ++selected;
+    }
+  }
+}
+
 void complete_selection_drag(RecoveryWindowState &state) noexcept {
   BootstrapStatus *const status = state.status;
   if (status == nullptr) {
@@ -83,9 +149,6 @@ void complete_selection_drag(RecoveryWindowState &state) noexcept {
     return;
   }
 
-  if (!additive) {
-    clear_selection(*status);
-  }
   const int left =
       (std::min)(state.selection_start_x, state.selection_current_x);
   const int right =
@@ -94,21 +157,7 @@ void complete_selection_drag(RecoveryWindowState &state) noexcept {
       (std::min)(state.selection_start_y, state.selection_current_y);
   const int bottom =
       (std::max)(state.selection_start_y, state.selection_current_y);
-  std::size_t selected = selection_count(*status);
-  for (ScenarioUnitPreview &unit : status->units) {
-    if (!unit.alive || unit.dying || unit.sprite_hidden ||
-        !fog_unit_visible(*status, unit, status->local_player)) {
-      continue;
-    }
-    const int center_x = unit.x - status->camera_x;
-    const int center_y = unit.y - status->camera_y;
-    if (!unit.selected && unit.owner == status->local_player && center_x >= left &&
-        center_x <= right && center_y >= top && center_y <= bottom &&
-        selected < 12) {
-      unit.selected = true;
-      ++selected;
-    }
-  }
+  apply_drag_box_selection(*status, left, right, top, bottom, additive);
   const ScenarioUnitPreview *const primary = first_selected_unit(*status);
   if (primary != nullptr && queue_unit_response(*status, *primary, false)) {
     (void)play_pending_game_sound(state);
