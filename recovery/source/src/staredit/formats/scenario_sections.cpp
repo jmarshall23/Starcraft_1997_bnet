@@ -270,4 +270,108 @@ bool write_force_section(const ForceSectionData& forces,
   }
 }
 
+bool parse_sound_section(const std::vector<std::uint8_t>& payload,
+                         SoundSectionData& sounds) noexcept {
+  sounds = {};
+  if (payload.size() % sizeof(std::uint32_t) != 0U ||
+      payload.size() > sound_slot_count * sizeof(std::uint32_t)) {
+    return false;
+  }
+  sounds.stored_slot_count = payload.size() / sizeof(std::uint32_t);
+  for (std::size_t slot = 0U; slot < sounds.stored_slot_count; ++slot) {
+    sounds.string_ids[slot] = read_u32(payload.data() + slot * 4U);
+  }
+  return true;
+}
+
+bool write_sound_section(const SoundSectionData& sounds,
+                         std::vector<std::uint8_t>& payload) noexcept {
+  try {
+    payload.assign(sound_slot_count * sizeof(std::uint32_t), 0U);
+    for (std::size_t slot = 0U; slot < sound_slot_count; ++slot) {
+      write_u32(payload, slot * 4U, sounds.string_ids[slot]);
+    }
+    return true;
+  } catch (...) {
+    payload.clear();
+    return false;
+  }
+}
+
+bool parse_trigger_section(const std::vector<std::uint8_t>& payload,
+                           std::vector<TriggerRecord>& triggers) noexcept {
+  triggers.clear();
+  if (payload.size() % trigger_record_bytes != 0U) {
+    return false;
+  }
+  try {
+    const std::size_t count = payload.size() / trigger_record_bytes;
+    triggers.resize(count);
+    for (std::size_t index = 0U; index < count; ++index) {
+      std::copy_n(payload.begin() + index * trigger_record_bytes,
+                  trigger_record_bytes, triggers[index].bytes.begin());
+    }
+    return true;
+  } catch (...) {
+    triggers.clear();
+    return false;
+  }
+}
+
+bool write_trigger_section(const std::vector<TriggerRecord>& triggers,
+                           std::vector<std::uint8_t>& payload) noexcept {
+  if (triggers.size() >
+      (std::numeric_limits<std::size_t>::max)() / trigger_record_bytes) {
+    return false;
+  }
+  try {
+    payload.resize(triggers.size() * trigger_record_bytes);
+    for (std::size_t index = 0U; index < triggers.size(); ++index) {
+      std::copy(triggers[index].bytes.begin(), triggers[index].bytes.end(),
+                payload.begin() + index * trigger_record_bytes);
+    }
+    return true;
+  } catch (...) {
+    payload.clear();
+    return false;
+  }
+}
+
+std::uint8_t trigger_condition_type(const TriggerRecord& trigger,
+                                    const std::size_t index) noexcept {
+  if (index >= trigger_condition_count) {
+    return 0U;
+  }
+  return trigger.bytes[index * trigger_condition_bytes + 15U];
+}
+
+std::uint8_t trigger_action_type(const TriggerRecord& trigger,
+                                 const std::size_t index) noexcept {
+  if (index >= trigger_action_count) {
+    return 0U;
+  }
+  constexpr std::size_t actions_offset =
+      trigger_condition_count * trigger_condition_bytes;
+  return trigger.bytes[actions_offset + index * trigger_action_bytes + 26U];
+}
+
+bool trigger_owner_enabled(const TriggerRecord& trigger,
+                           const std::size_t owner) noexcept {
+  if (owner >= trigger_owner_count) {
+    return false;
+  }
+  constexpr std::size_t owners_offset = trigger_record_bytes - trigger_owner_count;
+  return trigger.bytes[owners_offset + owner] != 0U;
+}
+
+void set_trigger_owner(TriggerRecord& trigger,
+                       const std::size_t owner,
+                       const bool enabled) noexcept {
+  if (owner >= trigger_owner_count) {
+    return;
+  }
+  constexpr std::size_t owners_offset = trigger_record_bytes - trigger_owner_count;
+  trigger.bytes[owners_offset + owner] = enabled ? 1U : 0U;
+}
+
 }  // namespace staredit::formats

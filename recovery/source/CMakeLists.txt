@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.24)
 project(StarCraftRecovery VERSION 0.0.1 LANGUAGES C CXX)
 
 get_filename_component(STARCRAFT_RECOVERY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(STAREDIT_OUTPUT_DIRECTORY "${STARCRAFT_RECOVERY_ROOT}" CACHE PATH
+    "Directory where StarEdit.exe and its debug files are emitted")
 set(LIBSMACKER_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/libsmacker")
 set(OPENAL_SOFT_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/openal-soft")
 set(IMGUI_ROOT "${STARCRAFT_RECOVERY_ROOT}/thirdparty/imgui")
@@ -320,6 +322,7 @@ add_library(staredit_formats STATIC
   src/staredit/formats/mpq_writer.cpp
   src/staredit/formats/retail_chk.cpp
   src/staredit/formats/scenario_sections.cpp
+  src/staredit/triggers/trigger_model.cpp
   src/staredit/terrain/isom_catalog.cpp
   src/staredit/terrain/isom_terrain_editor.cpp
   src/staredit/terrain/isom_topology.cpp
@@ -347,6 +350,7 @@ add_executable(StarEdit WIN32
   src/staredit/new_map_dialog.cpp
   src/staredit/object_art.cpp
   src/staredit/scenario_dialogs.cpp
+  src/staredit/triggers/trigger_editor.cpp
   src/staredit/unit_properties_dialog.cpp
 )
 target_include_directories(
@@ -366,11 +370,11 @@ set_target_properties(StarEdit PROPERTIES
   OUTPUT_NAME "StarEdit"
   PDB_NAME "StarEdit"
   COMPILE_PDB_NAME "StarEdit"
-  RUNTIME_OUTPUT_DIRECTORY "${STARCRAFT_RECOVERY_ROOT}"
-  RUNTIME_OUTPUT_DIRECTORY_DEBUG "${STARCRAFT_RECOVERY_ROOT}"
-  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${STARCRAFT_RECOVERY_ROOT}"
-  RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${STARCRAFT_RECOVERY_ROOT}"
-  RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${STARCRAFT_RECOVERY_ROOT}"
+  RUNTIME_OUTPUT_DIRECTORY "${STAREDIT_OUTPUT_DIRECTORY}"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG "${STAREDIT_OUTPUT_DIRECTORY}"
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${STAREDIT_OUTPUT_DIRECTORY}"
+  RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${STAREDIT_OUTPUT_DIRECTORY}"
+  RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${STAREDIT_OUTPUT_DIRECTORY}"
 )
 if(MSVC)
   target_compile_options(StarEdit PRIVATE /W4 /permissive- /Zc:preprocessor)
@@ -378,6 +382,9 @@ endif()
 
 add_executable(archive_inventory tools/archive_inventory.cpp)
 target_link_libraries(archive_inventory PRIVATE starcraft_core)
+
+add_executable(scenario_inventory tools/scenario_inventory.cpp)
+target_link_libraries(scenario_inventory PRIVATE starcraft_core)
 
 add_executable(stat_text_inventory tools/stat_text_inventory.cpp)
 target_link_libraries(stat_text_inventory PRIVATE starcraft_core)

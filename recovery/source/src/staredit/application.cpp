@@ -6,6 +6,7 @@
 #include "map_view.hpp"
 #include "minimap.hpp"
 #include "resource.h"
+#include "triggers/trigger_model.hpp"
 
 #include "starcraft/game/scenario.hpp"
 #include "starcraft/runtime/storm.hpp"
@@ -825,6 +826,34 @@ int run_new_map_variants_probe(
         }
       }
     }
+    if (terrain_brushes.empty() || !terrain_document.begin_tile_edit()) {
+      return 32;
+    }
+    for (std::size_t stroke = 0U; stroke < 48U; ++stroke) {
+      const std::uint16_t x = static_cast<std::uint16_t>(
+          8U + (stroke * 11U) % (terrain_document.width() - 16U));
+      const std::uint16_t y = static_cast<std::uint16_t>(
+          8U + (stroke * 17U) % (terrain_document.height() - 16U));
+      if (!terrain_document.paint_terrain(
+              x, y, terrain_brushes[stroke % terrain_brushes.size()], 3U)) {
+        terrain_document.cancel_tile_edit();
+        return 33;
+      }
+    }
+    if (!terrain_document.commit_tile_edit()) {
+      return 34;
+    }
+    for (std::uint16_t y = 0U; y < terrain_document.height(); ++y) {
+      for (std::uint16_t x = 0U; x < terrain_document.width(); ++x) {
+        std::uint16_t tile{};
+        if (!terrain_document.tile_at(x, y, tile) || tile == 0U) {
+          return 35;
+        }
+      }
+    }
+    if (!terrain_document.undo() || terrain_document.modified()) {
+      return 36;
+    }
   }
   return 0;
 }
@@ -913,6 +942,90 @@ int run_editor_layers_probe(const std::filesystem::path& data_root) noexcept {
       current_forces.names != original_forces.names) {
     return 11;
   }
+
+  std::vector<ScenarioSound> original_sounds{};
+  if (!document.scenario_sounds(original_sounds)) {
+    return 12;
+  }
+  std::vector<ScenarioSound> changed_sounds = original_sounds;
+  changed_sounds.push_back(
+      {static_cast<std::uint16_t>(changed_sounds.size()), 0U,
+       R"(sound\staredit-probe.wav)"});
+  std::vector<ScenarioSound> current_sounds{};
+  if (!document.set_scenario_sounds(changed_sounds) || !document.modified() ||
+      !document.scenario_sounds(current_sounds) ||
+      current_sounds.size() != changed_sounds.size() ||
+      current_sounds.back().slot != changed_sounds.back().slot ||
+      current_sounds.back().path != changed_sounds.back().path ||
+      !document.undo() ||
+      document.modified() || !document.scenario_sounds(current_sounds) ||
+      current_sounds != original_sounds) {
+    return 13;
+  }
+
+  std::vector<formats::TriggerRecord> original_triggers{};
+  if (!document.scenario_triggers(original_triggers)) {
+    return 14;
+  }
+  std::vector<formats::TriggerRecord> changed_triggers = original_triggers;
+  formats::TriggerRecord trigger{};
+  formats::set_trigger_owner(trigger, 0U, true);
+  triggers::Condition always{};
+  always.type = 22U;
+  std::size_t trigger_slot{};
+  if (!triggers::append_condition(trigger, always, trigger_slot) ||
+      trigger_slot != 0U) {
+    return 15;
+  }
+  triggers::Action victory{};
+  victory.type = 1U;
+  if (!triggers::append_action(trigger, victory, trigger_slot) ||
+      trigger_slot != 0U) {
+    return 16;
+  }
+  changed_triggers.push_back(trigger);
+  std::vector<formats::TriggerRecord> current_triggers{};
+  if (!document.set_scenario_triggers(changed_triggers) ||
+      !document.modified() || !document.scenario_triggers(current_triggers) ||
+      current_triggers != changed_triggers ||
+      triggers::condition(current_triggers.back(), 0U).type != 22U ||
+      triggers::action(current_triggers.back(), 0U).type != 1U ||
+      !document.undo() ||
+      document.modified() || !document.scenario_triggers(current_triggers) ||
+      current_triggers != original_triggers) {
+    return 17;
+  }
+
+  std::vector<formats::TriggerRecord> original_briefing{};
+  if (!document.scenario_briefing(original_briefing)) {
+    return 18;
+  }
+  formats::TriggerRecord briefing_record{};
+  formats::set_trigger_owner(briefing_record, 0U, true);
+  triggers::Action wait{};
+  wait.type = 1U;
+  wait.time = 1000U;
+  if (!triggers::append_action(briefing_record, wait, trigger_slot)) {
+    return 19;
+  }
+  std::vector<formats::TriggerRecord> changed_briefing = original_briefing;
+  changed_briefing.push_back(briefing_record);
+  std::vector<formats::TriggerRecord> current_briefing{};
+  if (!document.set_scenario_briefing(changed_briefing) ||
+      !document.scenario_briefing(current_briefing) ||
+      current_briefing != changed_briefing ||
+      triggers::action(current_briefing.back(), 0U).time != 1000U ||
+      !document.undo() || document.modified() ||
+      !document.scenario_briefing(current_briefing) ||
+      current_briefing != original_briefing) {
+    return 20;
+  }
+
+  std::vector<ScenarioAiScript> scripts{};
+  if (!document.trigger_ai_scripts(scripts) || scripts.empty() ||
+      triggers::fourcc_string(scripts.front().id).size() != 4U) {
+    return 21;
+  }
   return 0;
 }
 
@@ -929,8 +1042,26 @@ int run_retail_save_probe(const std::filesystem::path& data_root) noexcept {
   constexpr std::uint16_t unit_type = 106U;
   constexpr std::uint16_t unit_x = 512U;
   constexpr std::uint16_t unit_y = 640U;
+  formats::TriggerRecord saved_trigger{};
+  formats::set_trigger_owner(saved_trigger, 0U, true);
+  triggers::Condition saved_condition{};
+  saved_condition.type = 22U;
+  triggers::Action saved_action{};
+  saved_action.type = 15U;
+  (void)triggers::parse_fourcc("Terr", saved_action.secondary);
+  std::size_t saved_slot{};
+  formats::TriggerRecord saved_briefing{};
+  formats::set_trigger_owner(saved_briefing, 0U, true);
+  triggers::Action briefing_wait{};
+  briefing_wait.type = 1U;
+  briefing_wait.time = 750U;
   if (!document.set_scenario_properties(properties) ||
-      !document.place_object(EditorLayer::units, unit_type, unit_x, unit_y)) {
+      !document.place_object(EditorLayer::units, unit_type, unit_x, unit_y) ||
+      !triggers::append_condition(saved_trigger, saved_condition, saved_slot) ||
+      !triggers::append_action(saved_trigger, saved_action, saved_slot) ||
+      !triggers::append_action(saved_briefing, briefing_wait, saved_slot) ||
+      !document.set_scenario_triggers({saved_trigger}) ||
+      !document.set_scenario_briefing({saved_briefing})) {
     return 3;
   }
 
@@ -957,13 +1088,21 @@ int run_retail_save_probe(const std::filesystem::path& data_root) noexcept {
       result = 7;
       EditorDocument reopened{};
       ScenarioProperties reopened_properties{};
+      std::vector<formats::TriggerRecord> reopened_triggers{};
+      std::vector<formats::TriggerRecord> reopened_briefing{};
       if (reopened.load(archive_path, data_root, error)) {
         result = 8;
         if (reopened.format() == ScenarioFormat::retail_chk &&
             reopened.unit_count() == 1U &&
             reopened.scenario_properties(reopened_properties) &&
             reopened_properties.name == properties.name &&
-            reopened_properties.description == properties.description) {
+            reopened_properties.description == properties.description &&
+            reopened.scenario_triggers(reopened_triggers) &&
+            reopened_triggers ==
+                std::vector<formats::TriggerRecord>{saved_trigger} &&
+            reopened.scenario_briefing(reopened_briefing) &&
+            reopened_briefing ==
+                std::vector<formats::TriggerRecord>{saved_briefing}) {
           result = 9;
           starcraft::runtime::StormModule storm{data_root / L"storm.dll"};
           void* archive{};
@@ -1023,6 +1162,16 @@ int run_new_map_dialog_resource_probe(const HINSTANCE instance) noexcept {
   // FNV-1a of EditLocal.dll RT_DIALOG:1200 from the licensed 1998 editor.
   if (hash != 0x1AD9C6504571BC30ULL) {
     return 4;
+  }
+  if (FindResourceW(instance, MAKEINTRESOURCEW(IDD_SOUNDS), RT_DIALOG) ==
+          nullptr ||
+      FindResourceW(instance, MAKEINTRESOURCEW(IDD_TRIGGERS), RT_DIALOG) ==
+          nullptr ||
+      FindResourceW(instance, MAKEINTRESOURCEW(IDD_TRIGGER_CONDITION),
+                    RT_DIALOG) == nullptr ||
+      FindResourceW(instance, MAKEINTRESOURCEW(IDD_TRIGGER_ACTION), RT_DIALOG) ==
+          nullptr) {
+    return 6;
   }
   const NewMapSettings original_defaults{};
   if (original_defaults.width != 128U ||

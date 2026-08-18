@@ -89,6 +89,23 @@ struct ScenarioForces {
   bool supports_flags{};
 };
 
+struct ScenarioSound {
+  std::uint16_t slot{};
+  std::uint32_t string_id{};
+  std::string path{};
+
+  [[nodiscard]] bool operator==(const ScenarioSound& other) const noexcept {
+    return slot == other.slot && string_id == other.string_id &&
+           path == other.path;
+  }
+};
+
+struct ScenarioAiScript {
+  std::uint32_t id{};
+  std::uint16_t string_id{};
+  std::string name{};
+};
+
 class EditorDocument final {
  public:
   static constexpr std::size_t tile_width = 32;
@@ -192,6 +209,20 @@ class EditorDocument final {
   [[nodiscard]] bool scenario_forces(ScenarioForces& forces) const noexcept;
   [[nodiscard]] bool set_scenario_forces(
       const ScenarioForces& forces) noexcept;
+  [[nodiscard]] bool scenario_sounds(
+      std::vector<ScenarioSound>& sounds) const noexcept;
+  [[nodiscard]] bool set_scenario_sounds(
+      const std::vector<ScenarioSound>& sounds) noexcept;
+  [[nodiscard]] bool scenario_triggers(
+      std::vector<formats::TriggerRecord>& triggers) const noexcept;
+  [[nodiscard]] bool set_scenario_triggers(
+      const std::vector<formats::TriggerRecord>& triggers) noexcept;
+  [[nodiscard]] bool scenario_briefing(
+      std::vector<formats::TriggerRecord>& briefing) const noexcept;
+  [[nodiscard]] bool set_scenario_briefing(
+      const std::vector<formats::TriggerRecord>& briefing) noexcept;
+  [[nodiscard]] bool trigger_ai_scripts(
+      std::vector<ScenarioAiScript>& scripts) const noexcept;
   [[nodiscard]] const std::vector<std::uint16_t>& object_brushes(
       EditorLayer layer) const noexcept;
   [[nodiscard]] bool place_object(EditorLayer layer,

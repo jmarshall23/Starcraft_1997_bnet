@@ -61,6 +61,8 @@ struct MapViewState {
   int unit_drag_offset_y{};
   int location_start_x{};
   int location_start_y{};
+  int last_paint_tile_x{-1};
+  int last_paint_tile_y{-1};
   std::vector<std::uint32_t> cached_pixels{};
   int cached_width{};
   int cached_height{};
@@ -300,6 +302,12 @@ bool paint_at(MapViewState& state,
   if (!tile_from_client(state, client_x, client_y, tile_x, tile_y)) {
     return false;
   }
+  if (state.last_paint_tile_x == static_cast<int>(tile_x) &&
+      state.last_paint_tile_y == static_cast<int>(tile_y)) {
+    return false;
+  }
+  state.last_paint_tile_x = tile_x;
+  state.last_paint_tile_y = tile_y;
   if (state.document->logical_terrain_ready()) {
     return state.document->paint_terrain(
         tile_x, tile_y, *state.brush_tile, state.brush_size);
@@ -328,6 +336,8 @@ void finish_stroke(const HWND window, MapViewState& state) noexcept {
     return;
   }
   state.painting = false;
+  state.last_paint_tile_x = -1;
+  state.last_paint_tile_y = -1;
   if (GetCapture() == window) {
     ReleaseCapture();
   }
@@ -347,6 +357,8 @@ void cancel_stroke(const HWND window, MapViewState& state) noexcept {
     return;
   }
   state.painting = false;
+  state.last_paint_tile_x = -1;
+  state.last_paint_tile_y = -1;
   if (state.layer == EditorLayer::fog) {
     state.document->cancel_fog_edit();
   } else {
@@ -1082,6 +1094,8 @@ LRESULT CALLBACK map_view_proc(const HWND window,
           }
         } else if (state->document->begin_tile_edit()) {
           state->painting = true;
+          state->last_paint_tile_x = -1;
+          state->last_paint_tile_y = -1;
           SetCapture(window);
           if (paint_at(*state, x, y)) {
             invalidate_map_cache(*state);

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -141,6 +142,18 @@ class EditContext final {
            static_cast<std::size_t>(point.y) < isom_.row_count();
   }
 
+  void include_changed(const Point point) noexcept {
+    if (!in_bounds(point)) {
+      return;
+    }
+    const std::size_t x = static_cast<std::size_t>(point.x);
+    const std::size_t y = static_cast<std::size_t>(point.y);
+    changed_left_ = (std::min)(changed_left_, x);
+    changed_top_ = (std::min)(changed_top_, y);
+    changed_right_ = (std::max)(changed_right_, x);
+    changed_bottom_ = (std::max)(changed_bottom_, y);
+  }
+
   [[nodiscard]] static bool diamond_valid(const Point point) noexcept {
     return ((point.x + point.y) & 1) == 0;
   }
@@ -184,6 +197,7 @@ class EditContext final {
     formats::IsomEntry* const value = mutable_entry(point);
     if (value != nullptr) {
       value->links[2].raw |= kVisited;
+      include_changed(point);
     }
   }
 
@@ -199,6 +213,7 @@ class EditContext final {
     if (value == nullptr) {
       return;
     }
+    include_changed(rect);
     const std::uint16_t base = static_cast<std::uint16_t>(isom_value << 4U);
     std::size_t first_side{};
     std::size_t second_side{};
@@ -431,8 +446,9 @@ class EditContext final {
     const std::size_t left_index = isom_y * map_width_ + left_x;
     const std::size_t right_index = left_index + 1U;
     if (candidates == nullptr || candidates->empty()) {
-      set_tile(left_index, 0U);
-      set_tile(right_index, 0U);
+      // Never turn an unresolved transition into a visible black tile pair.
+      // Keep the last valid terrain; adjacent ISOM updates may resolve this
+      // rectangle on the next pass.
       return true;
     }
 
@@ -533,9 +549,12 @@ class EditContext final {
   }
 
   [[nodiscard]] bool regenerate_tiles() noexcept {
+    if (changed_left_ == kNoCoordinate) {
+      return true;
+    }
     bool success = true;
-    for (std::size_t y = 0U; y < isom_.row_count(); ++y) {
-      for (std::size_t x = 0U; x < isom_.column_count(); ++x) {
+    for (std::size_t y = changed_top_; y <= changed_bottom_; ++y) {
+      for (std::size_t x = changed_left_; x <= changed_right_; ++x) {
         formats::IsomEntry* const rect = isom_.mutable_entry(x, y);
         if (rect == nullptr) {
           success = false;
@@ -548,8 +567,8 @@ class EditContext final {
         }
       }
     }
-    for (std::size_t y = 0U; y < isom_.row_count(); ++y) {
-      for (std::size_t x = 0U; x < isom_.column_count(); ++x) {
+    for (std::size_t y = changed_top_; y <= changed_bottom_; ++y) {
+      for (std::size_t x = changed_left_; x <= changed_right_; ++x) {
         formats::IsomEntry* const rect = isom_.mutable_entry(x, y);
         if (rect != nullptr) {
           for (formats::IsomLink& link : rect->links) {
@@ -569,6 +588,12 @@ class EditContext final {
   const IsomCatalog& catalog_;
   const IsomTopology& topology_;
   const starcraft::gds::TilesetData& tileset_;
+  static constexpr std::size_t kNoCoordinate =
+      (std::numeric_limits<std::size_t>::max)();
+  std::size_t changed_left_{kNoCoordinate};
+  std::size_t changed_top_{kNoCoordinate};
+  std::size_t changed_right_{};
+  std::size_t changed_bottom_{};
 };
 
 }  // namespace
@@ -594,21 +619,12 @@ bool IsomTerrainEditor::paint(
     return false;
   }
   try {
-    formats::IsomSection old_isom = isom;
-    std::vector<std::uint16_t> old_editor = editor_tiles;
-    std::vector<std::uint16_t> old_game = game_tiles;
-    try {
-      EditContext context{isom, editor_tiles, game_tiles, map_width, map_height,
-                          catalog, topology, tileset};
-      if (context.paint(tile_x, tile_y, terrain_type, brush_extent)) {
-        return true;
-      }
-    } catch (...) {
-    }
-    isom = std::move(old_isom);
-    editor_tiles = std::move(old_editor);
-    game_tiles = std::move(old_game);
-    return false;
+    // EditorDocument owns a single full-layer snapshot for the complete mouse
+    // stroke. Taking three more full copies for every WM_MOUSEMOVE made
+    // brushing scale with map size instead of the changed terrain area.
+    EditContext context{isom, editor_tiles, game_tiles, map_width, map_height,
+                        catalog, topology, tileset};
+    return context.paint(tile_x, tile_y, terrain_type, brush_extent);
   } catch (...) {
     return false;
   }

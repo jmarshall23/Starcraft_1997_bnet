@@ -91,11 +91,9 @@ HMENU create_application_menu(HMENU& window_menu) noexcept {
   append_item(scenario, MF_STRING, ID_SCENARIO_PLAYERS,
               L"&Player Settings...");
   append_item(scenario, MF_STRING, ID_SCENARIO_FORCES, L"&Forces...");
-  append_item(scenario, MF_STRING | MF_GRAYED, ID_SCENARIO_SOUNDS,
-              L"&Sounds...");
-  append_item(scenario, MF_STRING | MF_GRAYED, ID_SCENARIO_TRIGGERS,
-              L"&Triggers...");
-  append_item(scenario, MF_STRING | MF_GRAYED, ID_SCENARIO_BRIEFING,
+  append_item(scenario, MF_STRING, ID_SCENARIO_SOUNDS, L"&Sounds...");
+  append_item(scenario, MF_STRING, ID_SCENARIO_TRIGGERS, L"&Triggers...");
+  append_item(scenario, MF_STRING, ID_SCENARIO_BRIEFING,
               L"Mission &Briefing...");
 
   append_item(window_menu, MF_STRING, ID_WINDOW_CASCADE, L"&Cascade");
@@ -441,6 +439,33 @@ void MainFrame::on_command(const UINT command) noexcept {
       EditorDocument* const document = active_editor_document(mdi_client_);
       if (document != nullptr &&
           show_forces_dialog(window_, instance_, *document)) {
+        refresh_active_document_view(mdi_client_);
+        update_status();
+      }
+      return;
+    }
+    case ID_SCENARIO_SOUNDS: {
+      EditorDocument* const document = active_editor_document(mdi_client_);
+      if (document != nullptr &&
+          show_sounds_dialog(window_, instance_, *document)) {
+        refresh_active_document_view(mdi_client_);
+        update_status();
+      }
+      return;
+    }
+    case ID_SCENARIO_TRIGGERS: {
+      EditorDocument* const document = active_editor_document(mdi_client_);
+      if (document != nullptr &&
+          show_triggers_dialog(window_, instance_, *document)) {
+        refresh_active_document_view(mdi_client_);
+        update_status();
+      }
+      return;
+    }
+    case ID_SCENARIO_BRIEFING: {
+      EditorDocument* const document = active_editor_document(mdi_client_);
+      if (document != nullptr &&
+          show_mission_briefing_dialog(window_, instance_, *document)) {
         refresh_active_document_view(mdi_client_);
         update_status();
       }

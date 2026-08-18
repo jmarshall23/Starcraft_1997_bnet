@@ -20,4 +20,17 @@ class EditorDocument;
                                       HINSTANCE instance,
                                       EditorDocument& document) noexcept;
 
+[[nodiscard]] bool show_sounds_dialog(HWND parent,
+                                      HINSTANCE instance,
+                                      EditorDocument& document) noexcept;
+
+[[nodiscard]] bool show_triggers_dialog(HWND parent,
+                                         HINSTANCE instance,
+                                         EditorDocument& document) noexcept;
+
+[[nodiscard]] bool show_mission_briefing_dialog(
+    HWND parent,
+    HINSTANCE instance,
+    EditorDocument& document) noexcept;
+
 }  // namespace staredit

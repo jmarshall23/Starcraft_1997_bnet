@@ -2,7 +2,9 @@
 
 #include "document.hpp"
 #include "resource.h"
+#include "triggers/trigger_editor.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +35,13 @@ struct ForcesState {
   ScenarioForces forces{};
   int selected_player{};
   int selected_force{};
+  bool accepted{};
+};
+
+struct SoundsState {
+  EditorDocument* document{};
+  std::vector<ScenarioSound> sounds{};
+  int selected{-1};
   bool accepted{};
 };
 
@@ -446,6 +455,136 @@ INT_PTR CALLBACK forces_proc(const HWND dialog,
   return FALSE;
 }
 
+void refresh_sound_list(const HWND dialog, SoundsState& state) noexcept {
+  SendDlgItemMessageW(dialog, IDC_SOUND_LIST, LB_RESETCONTENT, 0, 0);
+  for (const ScenarioSound& sound : state.sounds) {
+    std::wstring label = L"Slot " + std::to_wstring(sound.slot + 1U) + L": ";
+    if (!sound.path.empty()) {
+      label += widen_chk_string(sound.path);
+    } else {
+      label += L"<missing STR " + std::to_wstring(sound.string_id) + L">";
+    }
+    SendDlgItemMessageW(dialog, IDC_SOUND_LIST, LB_ADDSTRING, 0,
+                        reinterpret_cast<LPARAM>(label.c_str()));
+  }
+  if (state.selected >= static_cast<int>(state.sounds.size())) {
+    state.selected = static_cast<int>(state.sounds.size()) - 1;
+  }
+  if (state.selected >= 0) {
+    SendDlgItemMessageW(dialog, IDC_SOUND_LIST, LB_SETCURSEL,
+                        state.selected, 0);
+    const std::wstring path = widen_chk_string(
+        state.sounds[static_cast<std::size_t>(state.selected)].path);
+    SetDlgItemTextW(dialog, IDC_SOUND_PATH, path.c_str());
+  } else {
+    SetDlgItemTextW(dialog, IDC_SOUND_PATH, L"");
+  }
+}
+
+INT_PTR CALLBACK sounds_proc(const HWND dialog,
+                             const UINT message,
+                             const WPARAM wparam,
+                             const LPARAM lparam) noexcept {
+  auto* state =
+      reinterpret_cast<SoundsState*>(GetWindowLongPtrW(dialog, DWLP_USER));
+  if (message == WM_INITDIALOG) {
+    state = reinterpret_cast<SoundsState*>(lparam);
+    if (state == nullptr || state->document == nullptr ||
+        !state->document->scenario_sounds(state->sounds)) {
+      MessageBoxW(dialog, L"The WAV or STR section is not readable.",
+                  L"Sounds", MB_OK | MB_ICONERROR);
+      EndDialog(dialog, IDCANCEL);
+      return TRUE;
+    }
+    SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+    SendDlgItemMessageW(dialog, IDC_SOUND_PATH, EM_SETLIMITTEXT, 1023U, 0);
+    state->selected = state->sounds.empty() ? -1 : 0;
+    refresh_sound_list(dialog, *state);
+    return TRUE;
+  }
+  if (message != WM_COMMAND || state == nullptr) {
+    return FALSE;
+  }
+  const int control = LOWORD(wparam);
+  if (control == IDC_SOUND_LIST && HIWORD(wparam) == LBN_SELCHANGE) {
+    state->selected = static_cast<int>(SendDlgItemMessageW(
+        dialog, IDC_SOUND_LIST, LB_GETCURSEL, 0, 0));
+    refresh_sound_list(dialog, *state);
+    return TRUE;
+  }
+  if (control == IDC_SOUND_ADD) {
+    std::string path{};
+    if (!read_chk_string(dialog, IDC_SOUND_PATH, path) || path.empty()) {
+      MessageBoxW(dialog, L"Enter a WAV path first.", L"Sounds",
+                  MB_OK | MB_ICONINFORMATION);
+      return TRUE;
+    }
+    std::array<bool, formats::sound_slot_count> used{};
+    for (const ScenarioSound& sound : state->sounds) {
+      used[sound.slot] = true;
+    }
+    const auto free = std::find(used.begin(), used.end(), false);
+    if (free == used.end()) {
+      MessageBoxW(dialog, L"All 512 WAV slots are already used.", L"Sounds",
+                  MB_OK | MB_ICONERROR);
+      return TRUE;
+    }
+    const std::uint16_t slot =
+        static_cast<std::uint16_t>(std::distance(used.begin(), free));
+    state->sounds.push_back({slot, 0U, std::move(path)});
+    std::sort(state->sounds.begin(), state->sounds.end(),
+              [](const ScenarioSound& left, const ScenarioSound& right) {
+                return left.slot < right.slot;
+              });
+    state->selected = static_cast<int>(std::distance(
+        state->sounds.begin(),
+        std::find_if(state->sounds.begin(), state->sounds.end(),
+                     [slot](const ScenarioSound& sound) {
+                       return sound.slot == slot;
+                     })));
+    refresh_sound_list(dialog, *state);
+    return TRUE;
+  }
+  if (control == IDC_SOUND_UPDATE && state->selected >= 0 &&
+      state->selected < static_cast<int>(state->sounds.size())) {
+    std::string path{};
+    if (!read_chk_string(dialog, IDC_SOUND_PATH, path) || path.empty()) {
+      MessageBoxW(dialog, L"The WAV path cannot be empty.", L"Sounds",
+                  MB_OK | MB_ICONINFORMATION);
+      return TRUE;
+    }
+    ScenarioSound& sound =
+        state->sounds[static_cast<std::size_t>(state->selected)];
+    if (sound.path != path) {
+      sound.path = std::move(path);
+      sound.string_id = 0U;
+    }
+    refresh_sound_list(dialog, *state);
+    return TRUE;
+  }
+  if (control == IDC_SOUND_REMOVE && state->selected >= 0 &&
+      state->selected < static_cast<int>(state->sounds.size())) {
+    state->sounds.erase(state->sounds.begin() + state->selected);
+    refresh_sound_list(dialog, *state);
+    return TRUE;
+  }
+  if (control == IDOK) {
+    if (!state->document->set_scenario_sounds(state->sounds)) {
+      MessageBoxW(dialog, L"The WAV/STR changes could not be written.",
+                  L"Sounds", MB_OK | MB_ICONERROR);
+      return TRUE;
+    }
+    state->accepted = true;
+    EndDialog(dialog, IDOK);
+    return TRUE;
+  }
+  if (control == IDCANCEL) {
+    EndDialog(dialog, IDCANCEL);
+    return TRUE;
+  }
+  return FALSE;
+}
+
 }  // namespace
 
 bool show_player_settings_dialog(const HWND parent,
@@ -476,6 +615,28 @@ bool show_forces_dialog(const HWND parent,
       instance, MAKEINTRESOURCEW(IDD_FORCES), parent, forces_proc,
       reinterpret_cast<LPARAM>(&state));
   return result == IDOK && state.accepted;
+}
+
+bool show_sounds_dialog(const HWND parent,
+                        const HINSTANCE instance,
+                        EditorDocument& document) noexcept {
+  SoundsState state{&document};
+  const INT_PTR result = DialogBoxParamW(
+      instance, MAKEINTRESOURCEW(IDD_SOUNDS), parent, sounds_proc,
+      reinterpret_cast<LPARAM>(&state));
+  return result == IDOK && state.accepted;
+}
+
+bool show_triggers_dialog(const HWND parent,
+                          const HINSTANCE instance,
+                          EditorDocument& document) noexcept {
+  return triggers::show_trigger_editor(parent, instance, document, false);
+}
+
+bool show_mission_briefing_dialog(const HWND parent,
+                                  const HINSTANCE instance,
+                                  EditorDocument& document) noexcept {
+  return triggers::show_trigger_editor(parent, instance, document, true);
 }
 
 }  // namespace staredit

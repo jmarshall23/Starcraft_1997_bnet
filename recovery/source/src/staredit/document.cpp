@@ -1511,6 +1511,199 @@ bool EditorDocument::set_scenario_forces(
   }
 }
 
+bool EditorDocument::scenario_sounds(
+    std::vector<ScenarioSound>& sounds) const noexcept {
+  sounds.clear();
+  try {
+    formats::SoundSectionData data{};
+    const formats::ChkSection* const section =
+        chk_.section(starcraft::data::chk_section_sounds);
+    if (section != nullptr &&
+        !formats::parse_sound_section(section->payload, data)) {
+      return false;
+    }
+    ScenarioStringBinding strings{};
+    if (!load_scenario_strings(chk_, strings)) {
+      return false;
+    }
+    for (std::size_t slot = 0U; slot < formats::sound_slot_count; ++slot) {
+      const std::uint32_t id = data.string_ids[slot];
+      if (id != 0U) {
+        sounds.push_back({static_cast<std::uint16_t>(slot), id,
+                          std::string{strings.table.value(id)}});
+      }
+    }
+    return true;
+  } catch (...) {
+    sounds.clear();
+    return false;
+  }
+}
+
+bool EditorDocument::set_scenario_sounds(
+    const std::vector<ScenarioSound>& sounds) noexcept {
+  if (!editing_ready_ || sounds.size() > formats::sound_slot_count) {
+    return false;
+  }
+  std::array<bool, formats::sound_slot_count> used_slots{};
+  for (const ScenarioSound& sound : sounds) {
+    if (sound.slot >= formats::sound_slot_count || used_slots[sound.slot] ||
+        sound.path.find('\0') != std::string::npos ||
+        (sound.path.empty() && sound.string_id == 0U)) {
+      return false;
+    }
+    used_slots[sound.slot] = true;
+  }
+  std::vector<ScenarioSound> current{};
+  if (!scenario_sounds(current)) {
+    return false;
+  }
+  if (current == sounds) {
+    return true;
+  }
+  try {
+    formats::SoundSectionData data{};
+    const formats::ChkSection* const existing =
+        chk_.section(starcraft::data::chk_section_sounds);
+    if (existing != nullptr &&
+        !formats::parse_sound_section(existing->payload, data)) {
+      return false;
+    }
+    data.string_ids.fill(0U);
+    ScenarioStringBinding strings{};
+    if (!load_scenario_strings(chk_, strings)) {
+      return false;
+    }
+    const std::size_t old_string_count = strings.table.size();
+    for (const ScenarioSound& sound : sounds) {
+      std::uint32_t id = sound.string_id;
+      if (!sound.path.empty()) {
+        std::uint16_t short_id{};
+        if (!strings.table.find_or_append(sound.path, short_id)) {
+          return false;
+        }
+        id = short_id;
+      }
+      data.string_ids[sound.slot] = id;
+    }
+    std::vector<std::uint8_t> sound_payload{};
+    if (!formats::write_sound_section(data, sound_payload)) {
+      return false;
+    }
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>
+        replacements{};
+    if (strings.table.size() != old_string_count) {
+      std::vector<std::uint8_t> string_payload{};
+      std::string error{};
+      if (!strings.table.serialize(string_payload, error)) {
+        return false;
+      }
+      replacements.emplace_back(strings.tag, std::move(string_payload));
+    }
+    replacements.emplace_back(starcraft::data::chk_section_sounds,
+                              std::move(sound_payload));
+    return commit_section_edits(std::move(replacements));
+  } catch (...) {
+    return false;
+  }
+}
+
+bool EditorDocument::scenario_triggers(
+    std::vector<formats::TriggerRecord>& triggers) const noexcept {
+  triggers.clear();
+  const formats::ChkSection* const section =
+      chk_.section(starcraft::data::chk_section_triggers);
+  return section == nullptr ||
+         formats::parse_trigger_section(section->payload, triggers);
+}
+
+bool EditorDocument::set_scenario_triggers(
+    const std::vector<formats::TriggerRecord>& triggers) noexcept {
+  if (!editing_ready_) {
+    return false;
+  }
+  std::vector<formats::TriggerRecord> current{};
+  if (!scenario_triggers(current)) {
+    return false;
+  }
+  if (current == triggers) {
+    return true;
+  }
+  std::vector<std::uint8_t> payload{};
+  return formats::write_trigger_section(triggers, payload) &&
+         commit_section_edits({{starcraft::data::chk_section_triggers,
+                                std::move(payload)}});
+}
+
+bool EditorDocument::scenario_briefing(
+    std::vector<formats::TriggerRecord>& briefing) const noexcept {
+  briefing.clear();
+  const formats::ChkSection* const section =
+      chk_.section(starcraft::data::chk_section_briefing);
+  return section == nullptr ||
+         formats::parse_trigger_section(section->payload, briefing);
+}
+
+bool EditorDocument::set_scenario_briefing(
+    const std::vector<formats::TriggerRecord>& briefing) noexcept {
+  if (!editing_ready_) {
+    return false;
+  }
+  std::vector<formats::TriggerRecord> current{};
+  if (!scenario_briefing(current)) {
+    return false;
+  }
+  if (current == briefing) {
+    return true;
+  }
+  std::vector<std::uint8_t> payload{};
+  return formats::write_trigger_section(briefing, payload) &&
+         commit_section_edit(starcraft::data::chk_section_briefing,
+                             std::move(payload));
+}
+
+bool EditorDocument::trigger_ai_scripts(
+    std::vector<ScenarioAiScript>& scripts) const noexcept {
+  scripts.clear();
+  if (data_root_.empty()) {
+    return false;
+  }
+  try {
+    starcraft::runtime::StormModule storm{data_root_ / L"storm.dll"};
+    starcraft::runtime::AssetArchives archives{};
+    if (!storm.loaded() || !archives.open(storm, data_root_)) {
+      return false;
+    }
+    std::vector<std::uint8_t> bytes{};
+    const bool loaded = storm.load_file(R"(scripts\aiscript.bin)", bytes);
+    (void)archives.close(storm);
+    if (!loaded || bytes.size() < 16U) {
+      return false;
+    }
+
+    const starcraft::data::StringTableView strings{stat_text_.data(),
+                                                   stat_text_.size()};
+    constexpr std::size_t entry_bytes = 16U;
+    constexpr std::size_t maximum_entries = 4096U;
+    for (std::size_t offset = 0U, count = 0U;
+         offset + entry_bytes <= bytes.size() && count < maximum_entries;
+         offset += entry_bytes, ++count) {
+      const std::uint32_t id = read_u32(bytes.data(), offset);
+      if (id == 0U) {
+        break;
+      }
+      const std::uint16_t string_id = read_u16(bytes.data(), offset + 8U);
+      const std::string_view name =
+          strings.valid() ? strings.one_based(string_id) : std::string_view{};
+      scripts.push_back({id, string_id, std::string{name}});
+    }
+    return !scripts.empty();
+  } catch (...) {
+    scripts.clear();
+    return false;
+  }
+}
+
 const std::vector<std::uint16_t>& EditorDocument::object_brushes(
     const EditorLayer layer) const noexcept {
   switch (layer) {
