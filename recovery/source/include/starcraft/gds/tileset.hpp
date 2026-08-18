@@ -18,6 +18,7 @@ namespace starcraft::gds {
 // Recovered from StarCraft.exe's pointer table at 0x004F2708, consumed by
 // lang\gamemap.cpp::sub_454730 at 0x00454730.
 [[nodiscard]] std::string_view beta_tileset_name(std::uint16_t tileset_id) noexcept;
+[[nodiscard]] std::string_view tileset_name(std::uint16_t tileset_id) noexcept;
 
 struct IndexedMapTile {
   static constexpr std::size_t width = 32;

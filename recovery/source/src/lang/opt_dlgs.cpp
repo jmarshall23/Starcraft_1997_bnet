@@ -1,5 +1,7 @@
 #include "../platform/bootstrap_runtime.hpp"
 
+#include "starcraft/runtime/asset_archives.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -690,17 +692,8 @@ bool initialize_game_dialog_assets(GameDialogRuntime &dialog,
     return false;
   }
   starcraft::runtime::StormModule storm{root / L"storm.dll"};
-  void *base{};
-  void *patch{};
-  if (!storm.loaded() ||
-      !storm.open_archive(root / L"StarDat.mpq", &base, 1000U) ||
-      !storm.open_archive(root / L"patch_rt.mpq", &patch, 2000U)) {
-    if (patch != nullptr) {
-      (void)storm.close_archive(patch);
-    }
-    if (base != nullptr) {
-      (void)storm.close_archive(base);
-    }
+  starcraft::runtime::AssetArchives archives{};
+  if (!storm.loaded() || !archives.open(storm, root)) {
     return false;
   }
 
@@ -772,7 +765,7 @@ bool initialize_game_dialog_assets(GameDialogRuntime &dialog,
                       dialog.score_boxes[index]);
   }
 
-  const bool closed = storm.close_archive(patch) && storm.close_archive(base);
+  const bool closed = archives.close(storm);
   if (!dialog.hud_menu_controls.empty()) {
     for (GlueControl &control : dialog.hud_menu_controls) {
       if (control.identifier == 1 && control.text.find("MENU") != std::string::npos) {

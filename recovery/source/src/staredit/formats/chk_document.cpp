@@ -12,7 +12,7 @@ namespace {
 constexpr std::uint32_t kVersionTag =
     starcraft::data::chk_fourcc('V', 'E', 'R', ' ');
 constexpr std::uint32_t kRetailSpriteTag =
-    starcraft::data::chk_fourcc('T', 'H', 'G', '2');
+    starcraft::data::chk_section_sprites_retail;
 
 std::uint32_t read_u32(const std::uint8_t* const bytes) noexcept {
   return static_cast<std::uint32_t>(bytes[0]) |

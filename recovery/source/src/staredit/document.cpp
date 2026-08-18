@@ -1,10 +1,14 @@
 #include "document.hpp"
 
+#include "formats/mpq_writer.hpp"
+#include "formats/retail_chk.hpp"
+
 #include "starcraft/data/chk.hpp"
 #include "starcraft/data/dat.hpp"
 #include "starcraft/gds/grp.hpp"
 #include "starcraft/lang/iscript.hpp"
 #include "starcraft/runtime/storm.hpp"
+#include "starcraft/runtime/asset_archives.hpp"
 #include "terrain/isom_terrain_editor.hpp"
 
 #include <algorithm>
@@ -25,6 +29,33 @@ constexpr std::size_t kMaximumChkBytes = 64U * 1024U * 1024U;
 
 std::wstring widen_ascii(const std::string& value) {
   return std::wstring{value.begin(), value.end()};
+}
+
+struct ScenarioStringBinding {
+  std::uint32_t tag{starcraft::data::chk_section_strings};
+  bool exists{};
+  formats::ChkStringTable table{};
+};
+
+bool load_scenario_strings(const formats::ChkDocument& chk,
+                           ScenarioStringBinding& binding) noexcept {
+  binding = {};
+  const formats::ChkSection* section =
+      chk.section(starcraft::data::chk_section_extended_strings);
+  formats::ChkStringFormat format = formats::ChkStringFormat::extended_u32;
+  if (section != nullptr) {
+    binding.tag = starcraft::data::chk_section_extended_strings;
+  } else {
+    section = chk.section(starcraft::data::chk_section_strings);
+    format = formats::ChkStringFormat::classic_u16;
+    binding.tag = starcraft::data::chk_section_strings;
+  }
+  binding.exists = section != nullptr;
+  if (section == nullptr) {
+    return true;
+  }
+  std::string error{};
+  return binding.table.parse(section->payload, format, error);
 }
 
 std::wstring lowercase_extension(const std::filesystem::path& path) {
@@ -158,6 +189,121 @@ bool write_transactional_file(const std::filesystem::path& target,
   }
 }
 
+bool write_transactional_scenario_archive(
+    const std::filesystem::path& target,
+    const std::filesystem::path& storm_path,
+    const std::vector<std::uint8_t>& chk_bytes,
+    std::wstring& error) noexcept {
+  error.clear();
+  std::filesystem::path temporary{};
+  try {
+    const std::filesystem::path absolute = std::filesystem::absolute(target);
+    const std::filesystem::path directory = absolute.parent_path();
+    std::error_code directory_error{};
+    if (directory.empty() ||
+        !std::filesystem::is_directory(directory, directory_error)) {
+      error = L"The scenario destination directory does not exist.";
+      return false;
+    }
+    const std::wstring stem = absolute.filename().wstring() +
+                              L".staredit-" +
+                              std::to_wstring(GetCurrentProcessId()) + L"-";
+    for (std::uint32_t attempt = 0U; attempt < 100U; ++attempt) {
+      const std::filesystem::path candidate =
+          directory / (stem + std::to_wstring(attempt) + L".tmp");
+      HANDLE reservation = CreateFileW(
+          candidate.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+          FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+      if (reservation != INVALID_HANDLE_VALUE) {
+        CloseHandle(reservation);
+        temporary = candidate;
+        break;
+      }
+      if (GetLastError() != ERROR_FILE_EXISTS) {
+        break;
+      }
+    }
+    if (temporary.empty()) {
+      error = L"A temporary scenario archive could not be reserved.";
+      return false;
+    }
+
+    std::string mpq_error{};
+    if (!formats::write_single_file_mpq(
+            temporary, R"(staredit\scenario.chk)", chk_bytes, mpq_error)) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"The temporary SCX archive could not be written: " +
+              widen_ascii(mpq_error);
+      return false;
+    }
+    starcraft::runtime::StormModule storm{storm_path};
+    void* archive{};
+    std::vector<std::uint8_t> verification{};
+    const bool opened =
+        storm.loaded() && storm.open_archive(temporary, &archive, 4000U);
+    const bool loaded = opened && storm.load_file_from_archive(
+                                      archive, R"(staredit\scenario.chk)",
+                                      verification);
+    const bool closed = archive == nullptr || storm.close_archive(archive);
+    formats::ChkDocument parsed{};
+    std::string parse_error{};
+    if (!storm.loaded()) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"The temporary SCX could not load storm.dll.";
+      return false;
+    }
+    if (!opened) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"The temporary SCX could not be opened by Storm.";
+      return false;
+    }
+    if (!loaded) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"Storm could not read staredit\\scenario.chk from the "
+              L"temporary SCX.";
+      return false;
+    }
+    if (!closed) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"Storm could not close the temporary SCX.";
+      return false;
+    }
+    if (verification != chk_bytes) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"The temporary SCX returned different scenario.chk bytes.";
+      return false;
+    }
+    if (!parsed.parse(std::move(verification), parse_error)) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"The temporary SCX returned an invalid CHK: " +
+              widen_ascii(parse_error);
+      return false;
+    }
+    if (parsed.dialect().dialect != formats::ChkDialect::retail_chk) {
+      (void)DeleteFileW(temporary.c_str());
+      error = L"The temporary SCX did not contain a retail CHK.";
+      return false;
+    }
+    if (MoveFileExW(temporary.c_str(), absolute.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ==
+        FALSE) {
+      const DWORD move_error = GetLastError();
+      (void)DeleteFileW(temporary.c_str());
+      error = L"The validated SCX could not replace the destination "
+              L"(Windows error " +
+              std::to_wstring(move_error) + L").";
+      return false;
+    }
+    return true;
+  } catch (...) {
+    if (!temporary.empty()) {
+      (void)DeleteFileW(temporary.c_str());
+    }
+    error = L"The retail scenario archive could not be completed.";
+    return false;
+  }
+}
+
 std::uint16_t read_u16(const std::uint8_t* const bytes,
                        const std::size_t offset) noexcept {
   return static_cast<std::uint16_t>(bytes[offset]) |
@@ -216,6 +362,7 @@ bool EditorDocument::load(const std::filesystem::path& path,
                           std::wstring& error) noexcept {
   reset();
   error.clear();
+  data_root_ = data_root;
   path_ = path;
   title_ = path.filename().wstring();
   source_is_archive_ = lowercase_extension(path) != L".chk";
@@ -227,8 +374,7 @@ bool EditorDocument::load(const std::filesystem::path& path,
     return false;
   }
 
-  void* base_archive{};
-  void* patch_archive{};
+  starcraft::runtime::AssetArchives asset_archives{};
   void* map_archive{};
   std::vector<std::uint8_t> chk_bytes{};
   const auto close_archives = [&]() noexcept {
@@ -236,29 +382,19 @@ bool EditorDocument::load(const std::filesystem::path& path,
       (void)storm.close_archive(map_archive);
       map_archive = nullptr;
     }
-    if (patch_archive != nullptr) {
-      (void)storm.close_archive(patch_archive);
-      patch_archive = nullptr;
-    }
-    if (base_archive != nullptr) {
-      (void)storm.close_archive(base_archive);
-      base_archive = nullptr;
-    }
+    (void)asset_archives.close(storm);
   };
 
-  if (!storm.open_archive(data_root / L"StarDat.mpq", &base_archive, 1000U)) {
-    error = L"StarDat.mpq could not be opened from:\n" + data_root.wstring();
+  if (!asset_archives.open(storm, data_root)) {
+    error = L"No supported beta or retail StarCraft MPQ set could be opened "
+            L"from:\n" + data_root.wstring();
     close_archives();
     return false;
-  }
-  std::error_code patch_error{};
-  if (std::filesystem::is_regular_file(data_root / L"patch_rt.mpq", patch_error)) {
-    (void)storm.open_archive(data_root / L"patch_rt.mpq", &patch_archive, 2000U);
   }
 
   bool chk_loaded{};
   if (source_is_archive_) {
-    chk_loaded = storm.open_archive(path, &map_archive, 3000U) &&
+    chk_loaded = storm.open_archive(path, &map_archive, 4000U) &&
                  storm.load_file_from_archive(
                      map_archive, R"(staredit\scenario.chk)", chk_bytes);
     if (map_archive != nullptr) {
@@ -288,7 +424,7 @@ bool EditorDocument::load(const std::filesystem::path& path,
   editing_ready_ = undo_stack_.initialize(64U);
 
   const std::string_view recovered_name =
-      starcraft::gds::beta_tileset_name(tileset_id_);
+      starcraft::gds::tileset_name(tileset_id_);
   tileset_name_.assign(recovered_name);
   if (tileset_name_.empty()) {
     error = L"The scenario uses an unsupported tileset id: " +
@@ -307,11 +443,11 @@ bool EditorDocument::load(const std::filesystem::path& path,
     close_archives();
     return false;
   }
-  if (!isom_catalog_.build(tileset_id_, tileset_)) {
-    error = L"The tileset logical-terrain catalog could not be constructed.";
-    close_archives();
-    return false;
-  }
+  // The recovered logical ISOM definitions cover the five tilesets present in
+  // the older editor. Retail expansion maps (Desert, Ice, and Twilight) still
+  // load and use CV5 group brushes; their low-level terrain painter remains
+  // available until those transition catalogs are recovered.
+  (void)isom_catalog_.build(tileset_id_, tileset_);
   if (!build_terrain_brush_inventory(error)) {
     close_archives();
     return false;
@@ -377,9 +513,8 @@ bool EditorDocument::create_blank(
     }
 
     starcraft::runtime::StormModule storm{data_root / L"storm.dll"};
-    void* base_archive{};
-    if (!storm.loaded() ||
-        !storm.open_archive(data_root / L"StarDat.mpq", &base_archive, 1000U)) {
+    starcraft::runtime::AssetArchives asset_archives{};
+    if (!storm.loaded() || !asset_archives.open(storm, data_root)) {
       error = L"The terrain assets for the new scenario could not be opened.";
       reset();
       return false;
@@ -387,14 +522,14 @@ bool EditorDocument::create_blank(
     tileset_ = {};
     isom_catalog_ = {};
     isom_topology_ = {};
-    tileset_name_.assign(starcraft::gds::beta_tileset_name(tileset_id_));
+    tileset_name_.assign(starcraft::gds::tileset_name(tileset_id_));
     const bool terrain_loaded = !tileset_name_.empty() &&
                                 tileset_.load(storm, tileset_name_) &&
                                 isom_topology_.build(tileset_) &&
                                 isom_catalog_.build(tileset_id_, tileset_) &&
                                 build_terrain_brush_inventory(error);
     if (!terrain_loaded) {
-      (void)storm.close_archive(base_archive);
+      (void)asset_archives.close(storm);
       if (error.empty()) {
         error = L"The selected tileset could not be initialized.";
       }
@@ -411,7 +546,7 @@ bool EditorDocument::create_blank(
       doodad_art_.clear();
     }
     (void)build_object_art_cache(storm);
-    (void)storm.close_archive(base_archive);
+    (void)asset_archives.close(storm);
 
     const auto terrain = std::find_if(
         terrain_brushes_.begin(), terrain_brushes_.end(),
@@ -495,6 +630,16 @@ bool EditorDocument::create_blank(
       reset();
       return false;
     }
+
+    std::string retail_error{};
+    if (!formats::convert_to_retail_chk(chk_, retail_error) ||
+        !normalize_object_prototypes()) {
+      error = L"The blank scenario could not be converted to retail CHK: " +
+              widen_ascii(retail_error);
+      reset();
+      return false;
+    }
+    format_ = chk_.dialect().dialect;
 
     if (!parse_object_sections(error) || !parse_auxiliary_sections(error) ||
         !undo_stack_.initialize(64U)) {
@@ -736,6 +881,64 @@ bool EditorDocument::export_raw_chk(const std::filesystem::path& path,
     return false;
   }
   return write_transactional_file(path, serialized, error);
+}
+
+bool EditorDocument::save_retail_archive(
+    const std::filesystem::path& path,
+    std::wstring& error) noexcept {
+  error.clear();
+  if (!editing_ready_ || path.empty() || data_root_.empty()) {
+    error = L"The scenario is not ready to save.";
+    return false;
+  }
+  try {
+    formats::ChkDocument retail = chk_;
+    std::string conversion_error{};
+    if (!formats::convert_to_retail_chk(retail, conversion_error)) {
+      error = L"The scenario could not be converted to retail CHK: " +
+              widen_ascii(conversion_error);
+      return false;
+    }
+    std::vector<std::uint8_t> serialized{};
+    std::string serialization_error{};
+    if (!retail.serialize(serialized, serialization_error)) {
+      error = L"The retail CHK could not be serialized: " +
+              widen_ascii(serialization_error);
+      return false;
+    }
+    if (!write_transactional_scenario_archive(
+            path, data_root_ / L"storm.dll", serialized, error)) {
+      return false;
+    }
+
+    const bool converted =
+        chk_.dialect().dialect != formats::ChkDialect::retail_chk;
+    chk_ = std::move(retail);
+    format_ = chk_.dialect().dialect;
+    section_count_ = chk_.section_count();
+    std::wstring parse_error{};
+    if (!parse_object_sections(parse_error) ||
+        !parse_auxiliary_sections(parse_error) ||
+        !normalize_object_prototypes()) {
+      error = L"The saved retail CHK could not be activated: " + parse_error;
+      return false;
+    }
+    if (converted) {
+      if (!undo_stack_.initialize(64U)) {
+        error = L"The undo history could not be reset after retail conversion.";
+        return false;
+      }
+    } else {
+      undo_stack_.mark_origin();
+    }
+    path_ = path;
+    title_ = path.filename().wstring();
+    source_is_archive_ = true;
+    return true;
+  } catch (...) {
+    error = L"There was not enough memory to save the retail scenario.";
+    return false;
+  }
 }
 const std::vector<UnitMarker>& EditorDocument::unit_markers() const noexcept {
   return unit_markers_;
@@ -1120,6 +1323,194 @@ bool EditorDocument::set_player_settings(
   }
 }
 
+bool EditorDocument::scenario_properties(
+    ScenarioProperties& properties) const noexcept {
+  properties = {};
+  try {
+    formats::ScenarioPropertyReferences references{};
+    const formats::ChkSection* const section =
+        chk_.section(starcraft::data::chk_section_scenario_properties);
+    if (section != nullptr &&
+        !formats::parse_scenario_property_references(section->payload,
+                                                      references)) {
+      return false;
+    }
+    ScenarioStringBinding strings{};
+    if (!load_scenario_strings(chk_, strings)) {
+      return false;
+    }
+    properties.name = strings.table.value(references.name_string_id);
+    properties.description =
+        strings.table.value(references.description_string_id);
+    return true;
+  } catch (...) {
+    properties = {};
+    return false;
+  }
+}
+
+bool EditorDocument::set_scenario_properties(
+    const ScenarioProperties& properties) noexcept {
+  if (!editing_ready_ || properties.name.find('\0') != std::string::npos ||
+      properties.description.find('\0') != std::string::npos) {
+    return false;
+  }
+  ScenarioProperties current{};
+  if (!scenario_properties(current)) {
+    return false;
+  }
+  if (current.name == properties.name &&
+      current.description == properties.description) {
+    return true;
+  }
+  try {
+    ScenarioStringBinding strings{};
+    if (!load_scenario_strings(chk_, strings)) {
+      return false;
+    }
+    const std::size_t old_string_count = strings.table.size();
+    formats::ScenarioPropertyReferences references{};
+    if (!strings.table.find_or_append(properties.name,
+                                      references.name_string_id) ||
+        !strings.table.find_or_append(properties.description,
+                                      references.description_string_id)) {
+      return false;
+    }
+
+    const formats::ChkSection* const existing =
+        chk_.section(starcraft::data::chk_section_scenario_properties);
+    std::vector<std::uint8_t> property_payload =
+        existing == nullptr ? std::vector<std::uint8_t>{}
+                            : existing->payload;
+    if (!formats::write_scenario_property_references(references,
+                                                      property_payload)) {
+      return false;
+    }
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>
+        replacements{};
+    if (strings.table.size() != old_string_count) {
+      std::vector<std::uint8_t> string_payload{};
+      std::string error{};
+      if (!strings.table.serialize(string_payload, error)) {
+        return false;
+      }
+      replacements.emplace_back(strings.tag, std::move(string_payload));
+    }
+    replacements.emplace_back(
+        starcraft::data::chk_section_scenario_properties,
+        std::move(property_payload));
+    return commit_section_edits(std::move(replacements));
+  } catch (...) {
+    return false;
+  }
+}
+
+bool EditorDocument::scenario_forces(ScenarioForces& forces) const noexcept {
+  forces = {};
+  try {
+    formats::ForceSectionData data{};
+    const formats::ChkSection* const section =
+        chk_.section(starcraft::data::chk_section_forces);
+    if (section != nullptr) {
+      if (!formats::parse_force_section(section->payload, data)) {
+        return false;
+      }
+    } else {
+      data.supports_flags =
+          chk_.dialect().dialect == formats::ChkDialect::retail_chk;
+    }
+    ScenarioStringBinding strings{};
+    if (!load_scenario_strings(chk_, strings)) {
+      return false;
+    }
+    forces.player_force = data.player_force;
+    forces.flags = data.flags;
+    forces.supports_flags = data.supports_flags;
+    for (std::size_t force = 0U; force < formats::force_count; ++force) {
+      forces.names[force] = strings.table.value(data.name_string_ids[force]);
+    }
+    return true;
+  } catch (...) {
+    forces = {};
+    return false;
+  }
+}
+
+bool EditorDocument::set_scenario_forces(
+    const ScenarioForces& forces) noexcept {
+  if (!editing_ready_ ||
+      std::any_of(forces.player_force.begin(), forces.player_force.end(),
+                  [](const std::uint8_t force) {
+                    return force >= formats::force_count;
+                  }) ||
+      std::any_of(forces.names.begin(), forces.names.end(),
+                  [](const std::string& name) {
+                    return name.find('\0') != std::string::npos;
+                  })) {
+    return false;
+  }
+  ScenarioForces current{};
+  if (!scenario_forces(current)) {
+    return false;
+  }
+  if (current.player_force == forces.player_force &&
+      current.names == forces.names &&
+      (!current.supports_flags || current.flags == forces.flags)) {
+    return true;
+  }
+  try {
+    const formats::ChkSection* const existing =
+        chk_.section(starcraft::data::chk_section_forces);
+    formats::ForceSectionData data{};
+    if (existing != nullptr) {
+      if (!formats::parse_force_section(existing->payload, data)) {
+        return false;
+      }
+    } else {
+      data.supports_flags =
+          chk_.dialect().dialect == formats::ChkDialect::retail_chk;
+    }
+    data.player_force = forces.player_force;
+    if (data.supports_flags) {
+      data.flags = forces.flags;
+    }
+
+    ScenarioStringBinding strings{};
+    if (!load_scenario_strings(chk_, strings)) {
+      return false;
+    }
+    const std::size_t old_string_count = strings.table.size();
+    for (std::size_t force = 0U; force < formats::force_count; ++force) {
+      if (!strings.table.find_or_append(forces.names[force],
+                                        data.name_string_ids[force])) {
+        return false;
+      }
+    }
+
+    std::vector<std::uint8_t> force_payload =
+        existing == nullptr ? std::vector<std::uint8_t>{}
+                            : existing->payload;
+    if (!formats::write_force_section(data, force_payload)) {
+      return false;
+    }
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>
+        replacements{};
+    if (strings.table.size() != old_string_count) {
+      std::vector<std::uint8_t> string_payload{};
+      std::string error{};
+      if (!strings.table.serialize(string_payload, error)) {
+        return false;
+      }
+      replacements.emplace_back(strings.tag, std::move(string_payload));
+    }
+    replacements.emplace_back(starcraft::data::chk_section_forces,
+                              std::move(force_payload));
+    return commit_section_edits(std::move(replacements));
+  } catch (...) {
+    return false;
+  }
+}
+
 const std::vector<std::uint16_t>& EditorDocument::object_brushes(
     const EditorLayer layer) const noexcept {
   switch (layer) {
@@ -1314,6 +1705,7 @@ const TeamColorTable& EditorDocument::team_colors() const noexcept {
 
 void EditorDocument::reset() noexcept {
   path_.clear();
+  data_root_.clear();
   title_.clear();
   chk_ = {};
   isom_ = {};
@@ -1791,6 +2183,36 @@ bool EditorDocument::build_object_brush_inventory() noexcept {
   }
 }
 
+bool EditorDocument::normalize_object_prototypes() noexcept {
+  try {
+    const formats::PlacementRecordLayout units =
+        unit_placement_layout(chk_.dialect());
+    const auto normalize = [](formats::PlacementRecord& record,
+                              const formats::PlacementRecordLayout& layout) {
+      if (record.raw.size() == layout.record_bytes) {
+        return;
+      }
+      formats::PlacementRecord converted = formats::make_placement_record(
+          layout, record.type, record.x, record.y, record.owner);
+      converted.enabled = record.enabled;
+      converted.flags = record.flags;
+      record = std::move(converted);
+    };
+    for (formats::PlacementRecord& prototype : unit_prototypes_) {
+      normalize(prototype, units);
+    }
+    for (formats::PlacementRecord& prototype : sprite_prototypes_) {
+      normalize(prototype, chk_.dialect().sprites);
+    }
+    for (DoodadTemplate& doodad : doodad_templates_) {
+      normalize(doodad.prototype, chk_.dialect().doodads);
+    }
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool EditorDocument::build_object_art_cache(
     starcraft::runtime::StormModule& storm) noexcept {
   unit_art_.clear();
@@ -1886,6 +2308,22 @@ bool EditorDocument::build_object_art_cache(
       return art;
     };
 
+    const starcraft::data::DatField* const sprite_images =
+        data.sprites().field(0U);
+    if (sprite_images != nullptr) {
+      const std::size_t sprite_count = sprite_images->element_count();
+      for (std::size_t type = 0U; type < sprite_count; ++type) {
+        const std::uint16_t sprite_type = static_cast<std::uint16_t>(type);
+        if (std::find(sprite_brushes_.begin(), sprite_brushes_.end(),
+                      sprite_type) == sprite_brushes_.end()) {
+          sprite_brushes_.push_back(sprite_type);
+          sprite_prototypes_.push_back(formats::make_placement_record(
+              chk_.dialect().sprites, sprite_type, 0U, 0U));
+        }
+      }
+      std::sort(sprite_brushes_.begin(), sprite_brushes_.end());
+    }
+
     for (const std::uint16_t type : unit_brushes_) {
       std::uint16_t image_id{};
       if (data.unit_image_id(type, image_id)) {
@@ -1895,8 +2333,6 @@ bool EditorDocument::build_object_art_cache(
         }
       }
     }
-    const starcraft::data::DatField* const sprite_images =
-        data.sprites().field(0U);
     for (const std::uint16_t type : sprite_brushes_) {
       std::uint16_t image_id{};
       if (sprite_images != nullptr && sprite_images->value(type, image_id)) {
@@ -2288,25 +2724,57 @@ bool EditorDocument::commit_object_edit(
 bool EditorDocument::commit_section_edit(
     const std::uint32_t tag,
     std::vector<std::uint8_t> after) noexcept {
-  if (!editing_ready_) {
+  try {
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>
+        replacements{};
+    replacements.emplace_back(tag, std::move(after));
+    if (!commit_section_edits(std::move(replacements))) {
+      return false;
+    }
+    std::wstring parse_error{};
+    return parse_auxiliary_sections(parse_error);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool EditorDocument::commit_section_edits(
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>
+        replacements) noexcept {
+  if (!editing_ready_ || replacements.empty()) {
     return false;
   }
   try {
-    const formats::ChkSection* const existing = chk_.section(tag, 0U);
-    if (existing != nullptr && existing->payload == after) {
-      return true;
-    }
-    undo::TileEditCommand command{};
-    command.section_changes.push_back(
-        {tag, 0U, existing != nullptr, true,
-         existing == nullptr ? std::vector<std::uint8_t>{} : existing->payload,
-         after});
     formats::ChkDocument candidate = chk_;
-    const bool written = existing != nullptr
-                             ? candidate.replace_section(tag, 0U, after)
-                             : candidate.append_section(tag, after);
-    if (!written) {
-      return false;
+    undo::TileEditCommand command{};
+    for (std::size_t index = 0U; index < replacements.size(); ++index) {
+      const std::uint32_t tag = replacements[index].first;
+      if (std::any_of(replacements.begin(), replacements.begin() + index,
+                      [tag](const auto& replacement) {
+                        return replacement.first == tag;
+                      })) {
+        return false;
+      }
+      const std::vector<std::uint8_t>& after = replacements[index].second;
+      const formats::ChkSection* const existing = chk_.section(tag, 0U);
+      if (existing != nullptr && existing->payload == after) {
+        continue;
+      }
+      const bool written =
+          existing != nullptr
+              ? candidate.replace_section(tag, 0U, after)
+              : candidate.append_section(tag, after);
+      if (!written) {
+        return false;
+      }
+      command.section_changes.push_back(
+          {tag, 0U, existing != nullptr, true,
+           existing == nullptr ? std::vector<std::uint8_t>{}
+                               : existing->payload,
+           after});
+    }
+    if (command.section_changes.empty()) {
+      return true;
     }
     formats::ChkDocument previous = chk_;
     chk_ = std::move(candidate);
@@ -2315,8 +2783,7 @@ bool EditorDocument::commit_section_edit(
       return false;
     }
     section_count_ = chk_.section_count();
-    std::wstring parse_error{};
-    return parse_auxiliary_sections(parse_error);
+    return true;
   } catch (...) {
     return false;
   }
@@ -2352,6 +2819,10 @@ bool EditorDocument::build_terrain_brush_inventory(
               [](const std::uint16_t left, const std::uint16_t right) {
                 return (left >> 4U) < (right >> 4U);
               });
+    if (terrain_brushes_.empty()) {
+      error = L"The map does not reference any valid terrain groups.";
+      return false;
+    }
     return true;
   } catch (...) {
     terrain_brushes_.clear();

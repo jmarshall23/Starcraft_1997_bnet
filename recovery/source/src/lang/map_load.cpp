@@ -12,6 +12,7 @@
 #include "starcraft/lang/iscript.hpp"
 #include "starcraft/lang/place_unit.hpp"
 #include "starcraft/runtime/storm.hpp"
+#include "starcraft/runtime/asset_archives.hpp"
 
 #include <algorithm>
 #include <array>
@@ -182,7 +183,7 @@ BootstrapStatus probe_assets(
   const std::filesystem::path root = locate_input_root();
   if (root.empty()) {
     status.primary = "Licensed input directory was not found.";
-    status.detail = "Run beside storm.dll and StarDat.mpq, or from the "
+    status.detail = "Run beside storm.dll and a supported StarCraft MPQ set, or from the "
                     "configured build tree.";
     return status;
   }
@@ -193,18 +194,9 @@ BootstrapStatus probe_assets(
     return status;
   }
 
-  void *archive{};
-  if (!storm.open_archive(root / L"StarDat.mpq", &archive, 1000)) {
-    status.primary = "Storm loaded, but StarDat.mpq could not be opened.";
-    return status;
-  }
-  void *patch_archive{};
-  const bool patch_opened =
-      storm.open_archive(root / L"patch_rt.mpq", &patch_archive, 2000);
-  if (!patch_opened) {
-    const bool archive_closed = storm.close_archive(archive);
-    (void)archive_closed;
-    status.primary = "Storm loaded, but patch_rt.mpq could not be opened.";
+  starcraft::runtime::AssetArchives asset_archives{};
+  if (!asset_archives.open(storm, root)) {
+    status.primary = "Storm loaded, but no beta or retail asset MPQs could be opened.";
     return status;
   }
 
@@ -220,7 +212,7 @@ BootstrapStatus probe_assets(
   status.map_name = relative_map.generic_string();
   std::replace(status.map_name.begin(), status.map_name.end(), '/', '\\');
   void *map_archive{};
-  const bool map_opened = storm.open_archive(map_path, &map_archive, 3000);
+  const bool map_opened = storm.open_archive(map_path, &map_archive, 4000);
   std::vector<std::uint8_t> map_chk;
   const bool map_loaded =
       map_opened && storm.load_file_from_archive(
@@ -355,7 +347,7 @@ BootstrapStatus probe_assets(
     status.camera_y = static_cast<std::uint16_t>(32U * status.camera_tile_y);
 
     const std::string_view recovered_tileset_name =
-        starcraft::gds::beta_tileset_name(scenario.tileset_id());
+        starcraft::gds::tileset_name(scenario.tileset_id());
     status.tileset_name.assign(recovered_tileset_name);
     if (!recovered_tileset_name.empty() &&
         terrain_tileset.load(storm, recovered_tileset_name)) {
@@ -1323,8 +1315,7 @@ BootstrapStatus probe_assets(
     melee_start_ready = melee_start_ready && fog_ready;
   }
 
-  const bool patch_closed = storm.close_archive(patch_archive);
-  const bool archive_closed = storm.close_archive(archive);
+  const bool assets_closed = asset_archives.close(storm);
   status.assets_ready =
       map_loaded && scenario_loaded && data_loaded && focus_unit_found &&
       focus_asset_ready && scv_asset_ready && geyser_asset_ready &&
@@ -1360,7 +1351,7 @@ BootstrapStatus probe_assets(
           static_cast<std::size_t>(status.scenario_width) *
               status.scenario_height &&
       status.scenario.valid() && status.active_player_count >= 2 &&
-      !status.units.empty() && map_closed && patch_closed && archive_closed;
+      !status.units.empty() && map_closed && assets_closed;
   if (status.assets_ready) {
     char detail[300]{};
     std::snprintf(detail, sizeof(detail),
@@ -1384,7 +1375,8 @@ BootstrapStatus probe_assets(
                       " as a read-only Storm archive.";
     } else if (!scenario_loaded) {
       status.detail =
-          "Could not parse the beta CHK sections from staredit\\scenario.chk.";
+          "Could not parse the supported CHK sections from "
+          "staredit\\scenario.chk.";
     } else if (!data_loaded) {
       status.detail = "Failed DAT/TBL asset: " + data.failed_asset();
     } else if (!focus_unit_found) {
@@ -1460,7 +1452,7 @@ BootstrapStatus probe_assets(
     } else if (!status.scenario.valid() || status.active_player_count < 2U ||
                status.units.empty()) {
       status.detail = "The selected scenario runtime has no playable units.";
-    } else if (!map_closed || !patch_closed || !archive_closed) {
+    } else if (!map_closed || !assets_closed) {
       status.detail = "A read-only Storm archive did not close cleanly.";
     } else {
       status.detail = "A HUD, status panel, sound, or team-color runtime "

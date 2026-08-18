@@ -10,11 +10,11 @@ constexpr std::size_t kRetailUnitBytes = 36U;
 constexpr std::size_t kBetaSpriteBytes = 6U;
 constexpr std::size_t kRetailSpriteBytes = 10U;
 constexpr std::uint32_t kBetaDoodadTag =
-    starcraft::data::chk_fourcc('D', 'O', 'O', 'D');
+    starcraft::data::chk_section_doodads;
 constexpr std::uint32_t kRetailDoodadTag =
-    starcraft::data::chk_fourcc('D', 'D', '2', ' ');
+    starcraft::data::chk_section_doodads_retail;
 constexpr std::uint32_t kRetailSpriteTag =
-    starcraft::data::chk_fourcc('T', 'H', 'G', '2');
+    starcraft::data::chk_section_sprites_retail;
 
 UnitRecordLayout beta_units() noexcept {
   return {kBetaUnitBytes, 0U, 2U, 4U, 12U};

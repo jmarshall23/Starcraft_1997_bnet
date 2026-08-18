@@ -1,5 +1,7 @@
 #include "../platform/bootstrap_runtime.hpp"
 
+#include "starcraft/runtime/asset_archives.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +30,7 @@ std::filesystem::path locate_input_root() {
     }};
     for (const auto &candidate : candidates) {
       if (std::filesystem::is_regular_file(candidate / L"storm.dll") &&
-          std::filesystem::is_regular_file(candidate / L"StarDat.mpq")) {
+          starcraft::runtime::has_supported_asset_archives(candidate)) {
         return candidate;
       }
     }

@@ -13,6 +13,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <cstdint>
+#include <cwctype>
 #include <memory>
 #include <new>
 #include <string>
@@ -54,6 +55,10 @@ HMENU create_application_menu(HMENU& window_menu) noexcept {
 
   append_item(file, MF_STRING, ID_FILE_NEW, L"&New\tCtrl+N");
   append_item(file, MF_STRING, ID_FILE_OPEN, L"&Open...\tCtrl+O");
+  append_item(file, MF_STRING | MF_GRAYED, ID_FILE_SAVE,
+              L"&Save\tCtrl+S");
+  append_item(file, MF_STRING | MF_GRAYED, ID_FILE_SAVE_AS,
+              L"Save &As...");
   append_item(file, MF_STRING, ID_FILE_CLOSE, L"&Close");
   append_item(file, MF_STRING | MF_GRAYED, ID_FILE_EXPORT_CHK,
               L"Export scenario.&chk...");
@@ -80,12 +85,12 @@ HMENU create_application_menu(HMENU& window_menu) noexcept {
   append_item(brush, MF_STRING, ID_BRUSH_SIZE_3, L"&3 x 3");
   append_item(brush, MF_STRING, ID_BRUSH_SIZE_5, L"&5 x 5");
 
-  append_item(scenario, MF_STRING, ID_SCENARIO_SUMMARY, L"&Summary...");
+  append_item(scenario, MF_STRING, ID_SCENARIO_SUMMARY,
+              L"&Scenario Properties...");
   append_item(scenario, MF_SEPARATOR, 0, nullptr);
   append_item(scenario, MF_STRING, ID_SCENARIO_PLAYERS,
               L"&Player Settings...");
-  append_item(scenario, MF_STRING | MF_GRAYED, ID_SCENARIO_FORCES,
-              L"&Forces...");
+  append_item(scenario, MF_STRING, ID_SCENARIO_FORCES, L"&Forces...");
   append_item(scenario, MF_STRING | MF_GRAYED, ID_SCENARIO_SOUNDS,
               L"&Sounds...");
   append_item(scenario, MF_STRING | MF_GRAYED, ID_SCENARIO_TRIGGERS,
@@ -260,11 +265,13 @@ bool MainFrame::on_create() noexcept {
   status_bar_ = CreateWindowExW(0, STATUSCLASSNAMEW, L"Ready",
                                 WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0,
                                 0, 0, window_, nullptr, instance_, nullptr);
-  std::array<ACCEL, 5> accelerator_entries{{
+  std::array<ACCEL, 6> accelerator_entries{{
       {static_cast<BYTE>(FVIRTKEY | FCONTROL), static_cast<WORD>('N'),
        ID_FILE_NEW},
       {static_cast<BYTE>(FVIRTKEY | FCONTROL), static_cast<WORD>('O'),
        ID_FILE_OPEN},
+      {static_cast<BYTE>(FVIRTKEY | FCONTROL), static_cast<WORD>('S'),
+       ID_FILE_SAVE},
       {static_cast<BYTE>(FVIRTKEY | FCONTROL), static_cast<WORD>('Z'),
        ID_EDIT_UNDO},
       {static_cast<BYTE>(FVIRTKEY | FCONTROL), static_cast<WORD>('Y'),
@@ -323,6 +330,12 @@ void MainFrame::on_command(const UINT command) noexcept {
       return;
     case ID_FILE_CLOSE:
       close_active_document();
+      return;
+    case ID_FILE_SAVE:
+      save_active_document(false);
+      return;
+    case ID_FILE_SAVE_AS:
+      save_active_document(true);
       return;
     case ID_FILE_EXPORT_CHK:
       export_active_chk();
@@ -405,15 +418,30 @@ void MainFrame::on_command(const UINT command) noexcept {
       update_status();
       return;
     }
-    case ID_SCENARIO_SUMMARY:
-      show_scenario_summary();
+    case ID_SCENARIO_SUMMARY: {
+      EditorDocument* const document = active_editor_document(mdi_client_);
+      if (document != nullptr &&
+          show_scenario_properties_dialog(window_, instance_, *document)) {
+        refresh_active_document_view(mdi_client_);
+        update_status();
+      }
       return;
+    }
     case ID_SCENARIO_PLAYERS: {
       EditorDocument* const document = active_editor_document(mdi_client_);
       if (document != nullptr &&
           show_player_settings_dialog(window_, instance_, *document)) {
         refresh_active_document_view(mdi_client_);
         refresh_minimap(minimap_);
+        update_status();
+      }
+      return;
+    }
+    case ID_SCENARIO_FORCES: {
+      EditorDocument* const document = active_editor_document(mdi_client_);
+      if (document != nullptr &&
+          show_forces_dialog(window_, instance_, *document)) {
+        refresh_active_document_view(mdi_client_);
         update_status();
       }
       return;
@@ -492,6 +520,70 @@ void MainFrame::export_active_chk() noexcept {
                reinterpret_cast<LPARAM>(status.c_str()));
 }
 
+void MainFrame::save_active_document(const bool force_save_as) noexcept {
+  EditorDocument* const document = active_editor_document(mdi_client_);
+  if (document == nullptr) {
+    return;
+  }
+  std::filesystem::path destination = document->path();
+  std::wstring extension{};
+  try {
+    extension = destination.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](const wchar_t value) {
+                     return static_cast<wchar_t>(std::towlower(value));
+                   });
+  } catch (...) {
+    destination.clear();
+  }
+  if (force_save_as || destination.empty() || extension != L".scx") {
+    std::array<wchar_t, 32768> path{};
+    try {
+      std::filesystem::path suggested = destination.filename();
+      if (suggested.empty()) {
+        suggested = L"Untitled.scx";
+      } else {
+        suggested.replace_extension(L".scx");
+      }
+      const std::wstring value = suggested.wstring();
+      if (value.size() >= path.size()) {
+        return;
+      }
+      std::copy(value.begin(), value.end(), path.begin());
+    } catch (...) {
+      return;
+    }
+    constexpr wchar_t filter[] =
+        L"Retail StarCraft Scenarios (*.scx)\0*.scx\0All files (*.*)\0*.*\0\0";
+    OPENFILENAMEW save{};
+    save.lStructSize = sizeof(save);
+    save.hwndOwner = window_;
+    save.hInstance = instance_;
+    save.lpstrFilter = filter;
+    save.lpstrFile = path.data();
+    save.nMaxFile = static_cast<DWORD>(path.size());
+    save.lpstrDefExt = L"scx";
+    save.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST |
+                 OFN_HIDEREADONLY;
+    if (GetSaveFileNameW(&save) == FALSE) {
+      return;
+    }
+    destination = path.data();
+  }
+  std::wstring error{};
+  if (!document->save_retail_archive(destination, error)) {
+    MessageBoxW(window_, error.c_str(), L"Scenario save failed",
+                MB_OK | MB_ICONERROR);
+    return;
+  }
+  refresh_active_document_view(mdi_client_);
+  refresh_minimap(minimap_);
+  update_status();
+  std::wstring status = L"Saved retail SCX: " + destination.wstring();
+  SendMessageW(status_bar_, SB_SETTEXTW, 0,
+               reinterpret_cast<LPARAM>(status.c_str()));
+}
+
 void MainFrame::choose_and_open_document() noexcept {
   std::array<wchar_t, 32768> path{};
   std::wstring initial_directory{};
@@ -547,47 +639,6 @@ bool MainFrame::close_all_documents() noexcept {
   }
 }
 
-void MainFrame::show_scenario_summary() const noexcept {
-  const EditorDocument* const document = active_document(mdi_client_);
-  if (document == nullptr) {
-    MessageBoxW(window_, L"Open a scenario first.", L"Scenario Summary",
-                MB_OK | MB_ICONINFORMATION);
-    return;
-  }
-  try {
-    std::wstring summary = L"File: " + document->path().wstring();
-    summary += L"\nContainer: ";
-    summary += document->source_is_archive() ? L"SCM/SCX archive" : L"raw CHK";
-    summary += L"\nCHK dialect: ";
-    summary += scenario_format_name(document->format());
-    summary += L"\nDimensions: " + std::to_wstring(document->width()) + L" x " +
-               std::to_wstring(document->height()) + L" tiles";
-    summary += L"\nTileset: " + widen_ascii(document->tileset_name()) + L" (" +
-               std::to_wstring(document->tileset_id()) + L")";
-    summary += L"\nSections: " + std::to_wstring(document->section_count());
-    summary += L"\nUnits: " + std::to_wstring(document->unit_count());
-    summary += L"\nDoodads: " + std::to_wstring(document->doodad_count());
-    summary += L"\nSprites: " + std::to_wstring(document->sprite_count());
-    summary += L"\nISOM entries: ";
-    summary += document->has_isom()
-                   ? std::to_wstring(document->isom_entry_count())
-                   : L"not present";
-    summary += L"\nISOM CV5 group pairs: " +
-               std::to_wstring(document->isom_group_pair_count());
-    summary += L"\nISOM terrain types: " +
-               std::to_wstring(document->isom_terrain_type_count());
-    summary += L"\nModified: ";
-    summary += document->modified() ? L"yes" : L"no";
-    summary += L"\nLossless source round trip: ";
-    summary += document->chk_round_trip_matches_source() ? L"yes" : L"no";
-    MessageBoxW(window_, summary.c_str(), L"Scenario Summary",
-                MB_OK | MB_ICONINFORMATION);
-  } catch (...) {
-    MessageBoxW(window_, L"The scenario summary could not be formatted.",
-                L"Scenario Summary", MB_OK | MB_ICONERROR);
-  }
-}
-
 void MainFrame::update_status() noexcept {
   if (status_bar_ == nullptr) {
     return;
@@ -597,6 +648,12 @@ void MainFrame::update_status() noexcept {
                  MF_BYCOMMAND |
                      (document == nullptr ? MF_GRAYED : MF_ENABLED));
   EnableMenuItem(menu_, ID_FILE_EXPORT_CHK,
+                 MF_BYCOMMAND |
+                     (document == nullptr ? MF_GRAYED : MF_ENABLED));
+  EnableMenuItem(menu_, ID_FILE_SAVE,
+                 MF_BYCOMMAND |
+                     (document == nullptr ? MF_GRAYED : MF_ENABLED));
+  EnableMenuItem(menu_, ID_FILE_SAVE_AS,
                  MF_BYCOMMAND |
                      (document == nullptr ? MF_GRAYED : MF_ENABLED));
   EnableMenuItem(menu_, ID_EDIT_UNDO,

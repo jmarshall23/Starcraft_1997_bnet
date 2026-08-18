@@ -25,6 +25,7 @@ bool UndoStack::initialize(const std::size_t maximum_commands) noexcept {
 void UndoStack::clear() noexcept {
   history_.clear();
   cursor_ = 0U;
+  origin_cursor_ = 0U;
   origin_reachable_ = true;
 }
 
@@ -37,6 +38,9 @@ bool UndoStack::push(TileEditCommand&& command) noexcept {
   // initialize() reserves the hard limit, so the operations below cannot
   // allocate. This lets EditorDocument commit a stroke atomically.
   if (cursor_ < history_.size()) {
+    if (origin_reachable_ && origin_cursor_ > cursor_) {
+      origin_reachable_ = false;
+    }
     history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_),
                    history_.end());
   }
@@ -45,7 +49,13 @@ bool UndoStack::push(TileEditCommand&& command) noexcept {
     if (cursor_ != 0U) {
       --cursor_;
     }
-    origin_reachable_ = false;
+    if (origin_reachable_) {
+      if (origin_cursor_ == 0U) {
+        origin_reachable_ = false;
+      } else {
+        --origin_cursor_;
+      }
+    }
   }
   history_.push_back(std::move(command));
   cursor_ = history_.size();
@@ -192,7 +202,11 @@ bool UndoStack::redo(std::vector<std::uint16_t>& game_tiles,
 bool UndoStack::can_undo() const noexcept { return cursor_ != 0U; }
 bool UndoStack::can_redo() const noexcept { return cursor_ < history_.size(); }
 bool UndoStack::at_origin() const noexcept {
-  return origin_reachable_ && cursor_ == 0U;
+  return origin_reachable_ && cursor_ == origin_cursor_;
+}
+void UndoStack::mark_origin() noexcept {
+  origin_cursor_ = cursor_;
+  origin_reachable_ = true;
 }
 std::size_t UndoStack::undo_count() const noexcept { return cursor_; }
 std::size_t UndoStack::redo_count() const noexcept {

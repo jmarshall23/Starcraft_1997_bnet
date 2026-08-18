@@ -136,6 +136,7 @@ add_library(starcraft_core STATIC
   src/lang/tile2.cpp
   src/net/lockstep.cpp
   src/runtime/invariant.cpp
+  src/runtime/asset_archives.cpp
   src/runtime/storm.cpp
   src/staredit/mapcomn/creep.cpp
 )
@@ -316,6 +317,9 @@ add_library(staredit_formats STATIC
   src/staredit/formats/chk_document.cpp
   src/staredit/formats/isom_section.cpp
   src/staredit/formats/object_sections.cpp
+  src/staredit/formats/mpq_writer.cpp
+  src/staredit/formats/retail_chk.cpp
+  src/staredit/formats/scenario_sections.cpp
   src/staredit/terrain/isom_catalog.cpp
   src/staredit/terrain/isom_terrain_editor.cpp
   src/staredit/terrain/isom_topology.cpp
@@ -595,6 +599,10 @@ if(BUILD_TESTING)
     NAME core_data_tests
     COMMAND core_data_tests "${STARCRAFT_INPUT_ROOT}"
   )
+
+  add_executable(asset_archives_tests tests/asset_archives_tests.cpp)
+  target_link_libraries(asset_archives_tests PRIVATE starcraft_core)
+  add_test(NAME asset_archives_tests COMMAND asset_archives_tests)
 
   add_executable(unit_layout_tests tests/unit_layout_tests.cpp)
   target_include_directories(unit_layout_tests PRIVATE include)
@@ -884,6 +892,10 @@ if(BUILD_TESTING)
       NAME staredit_editor_layers_probe
       COMMAND StarEdit "--probe-editor-layers"
     )
+    add_test(
+      NAME staredit_retail_save_probe
+      COMMAND StarEdit "--probe-retail-save"
+    )
   endif()
 
   add_executable(staredit_chk_document_tests
@@ -897,6 +909,18 @@ if(BUILD_TESTING)
   )
   target_link_libraries(staredit_object_sections_tests PRIVATE staredit_formats)
   add_test(NAME staredit_object_sections_tests COMMAND staredit_object_sections_tests)
+
+  add_executable(staredit_scenario_sections_tests
+    tests/staredit_scenario_sections_tests.cpp
+  )
+  target_link_libraries(staredit_scenario_sections_tests PRIVATE staredit_formats)
+  add_test(NAME staredit_scenario_sections_tests COMMAND staredit_scenario_sections_tests)
+
+  add_executable(staredit_retail_chk_tests
+    tests/staredit_retail_chk_tests.cpp
+  )
+  target_link_libraries(staredit_retail_chk_tests PRIVATE staredit_formats starcraft_core)
+  add_test(NAME staredit_retail_chk_tests COMMAND staredit_retail_chk_tests)
 
   add_executable(staredit_terrain_brush_tests
     tests/staredit_terrain_brush_tests.cpp

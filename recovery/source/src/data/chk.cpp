@@ -145,9 +145,11 @@ bool ChkView::player_race(const std::size_t player, std::uint8_t& race) const no
 
 std::size_t ChkView::unit_count() const noexcept {
   ChkSection value{};
-  return section(chk_section_units, 0, value) && value.size % sizeof(BetaUnitPlacement) == 0
-      ? value.size / sizeof(BetaUnitPlacement)
-      : 0;
+  const std::size_t record_bytes = unit_record_bytes();
+  return record_bytes != 0U && section(chk_section_units, 0, value) &&
+                 value.size % record_bytes == 0U
+             ? value.size / record_bytes
+             : 0;
 }
 
 bool ChkView::unit(const std::size_t index, BetaUnitPlacement& output) const noexcept {
@@ -158,6 +160,30 @@ bool ChkView::unit(const std::size_t index, BetaUnitPlacement& output) const noe
   }
   const std::size_t offset = index * sizeof(BetaUnitPlacement);
   std::memcpy(&output, value.bytes + offset, sizeof(output));
+  return true;
+}
+
+bool ChkView::unit(const std::size_t index, UnitPlacement& output) const noexcept {
+  output = {};
+  ChkSection value{};
+  const std::size_t record_bytes = unit_record_bytes();
+  if (record_bytes == 0U || !section(chk_section_units, 0, value) ||
+      value.size % record_bytes != 0U || index >= value.size / record_bytes) {
+    return false;
+  }
+  const std::uint8_t* const record = value.bytes + index * record_bytes;
+  const std::size_t x_offset = record_bytes == 36U ? 4U : 0U;
+  const std::size_t y_offset = record_bytes == 36U ? 6U : 2U;
+  const std::size_t type_offset = record_bytes == 36U ? 8U : 4U;
+  const std::size_t owner_offset = record_bytes == 36U ? 16U : 12U;
+  output.x = static_cast<std::uint16_t>(record[x_offset]) |
+             static_cast<std::uint16_t>(record[x_offset + 1U] << 8U);
+  output.y = static_cast<std::uint16_t>(record[y_offset]) |
+             static_cast<std::uint16_t>(record[y_offset + 1U] << 8U);
+  output.unit_type = static_cast<std::uint16_t>(record[type_offset]) |
+                     static_cast<std::uint16_t>(record[type_offset + 1U]
+                                                << 8U);
+  output.owner = record[owner_offset];
   return true;
 }
 
@@ -219,6 +245,29 @@ bool ChkView::read_u32(const std::size_t offset, std::uint32_t& output) const no
            (static_cast<std::uint32_t>(bytes_[offset + 2]) << 16U) |
            (static_cast<std::uint32_t>(bytes_[offset + 3]) << 24U);
   return true;
+}
+
+std::size_t ChkView::unit_record_bytes() const noexcept {
+  ChkSection units{};
+  if (!section(chk_section_units, 0U, units)) {
+    return 0U;
+  }
+  constexpr std::uint32_t version_tag = chk_fourcc('V', 'E', 'R', ' ');
+  ChkSection version{};
+  if (section(version_tag, 0U, version) && version.size >= 2U) {
+    const std::uint16_t value =
+        static_cast<std::uint16_t>(version.bytes[0U]) |
+        static_cast<std::uint16_t>(version.bytes[1U] << 8U);
+    return value >= 59U ? 36U : sizeof(BetaUnitPlacement);
+  }
+  const bool beta = units.size % sizeof(BetaUnitPlacement) == 0U;
+  const bool retail = units.size % 36U == 0U;
+  if (beta != retail) {
+    return beta ? sizeof(BetaUnitPlacement) : 36U;
+  }
+  ChkSection beta_sprites{};
+  const bool has_beta_sprites = section(chk_section_sprites, 0U, beta_sprites);
+  return has_beta_sprites ? sizeof(BetaUnitPlacement) : (retail ? 36U : 0U);
 }
 
 }  // namespace starcraft::data

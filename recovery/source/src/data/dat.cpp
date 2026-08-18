@@ -23,10 +23,32 @@ constexpr std::array<DatFieldShape, 48> kUnitShapes{{
     {1, 228}, {1, 228}, {1, 228}, {1, 228}, {1, 228}, {1, 228},
 }};
 
+// Retail 1.x/Brood War keeps the same field ordering through cargo capacity,
+// then stores 16-bit build/destroy scores, the editor string id, the Brood
+// War flag, and editor availability. Buildings also shrink from 98 beta rows
+// to the retail 96-row range (unit ids 106..201).
+constexpr std::array<DatFieldShape, 51> kRetailUnitShapes{{
+    {1, 228}, {2, 228}, {2, 228}, {2, 96},  {4, 228}, {1, 228}, {1, 228},
+    {2, 228}, {4, 228}, {1, 228}, {1, 228}, {1, 228}, {1, 228}, {1, 228},
+    {1, 228}, {1, 228}, {1, 228}, {1, 228}, {1, 228}, {4, 228}, {1, 228},
+    {1, 228}, {1, 228}, {1, 228}, {1, 228}, {1, 228}, {2, 106}, {2, 228},
+    {2, 228}, {2, 106}, {2, 106}, {2, 106}, {2, 106}, {2, 456}, {2, 192},
+    {2, 912}, {2, 228}, {2, 228}, {2, 228}, {2, 228}, {2, 228}, {1, 228},
+    {1, 228}, {1, 228}, {1, 228}, {1, 228}, {2, 228}, {2, 228}, {2, 228},
+    {1, 228}, {2, 228},
+}};
+
 constexpr std::array<DatFieldShape, 24> kWeaponShapes{{
     {2, 66}, {4, 66}, {1, 66}, {2, 66}, {4, 66}, {4, 66}, {1, 66}, {1, 66},
     {1, 66}, {1, 66}, {1, 66}, {2, 66}, {2, 66}, {2, 66}, {2, 66}, {2, 66},
     {1, 66}, {1, 66}, {1, 66}, {1, 66}, {1, 66}, {1, 66}, {2, 66}, {2, 66},
+}};
+
+constexpr std::array<DatFieldShape, 24> kRetailWeaponShapes{{
+    {2, 130}, {4, 130}, {1, 130}, {2, 130}, {4, 130}, {4, 130},
+    {1, 130}, {1, 130}, {1, 130}, {1, 130}, {1, 130}, {2, 130},
+    {2, 130}, {2, 130}, {2, 130}, {2, 130}, {1, 130}, {1, 130},
+    {1, 130}, {1, 130}, {1, 130}, {1, 130}, {2, 130}, {2, 130},
 }};
 
 constexpr std::array<DatFieldShape, 6> kFlingyShapes{{
@@ -38,12 +60,21 @@ constexpr std::array<DatFieldShape, 6> kFlingyShapes{{
     {1, 175},
 }};
 
+constexpr std::array<DatFieldShape, 7> kRetailFlingyShapes{{
+    {2, 209}, {4, 209}, {2, 209}, {4, 209},
+    {1, 209}, {1, 209}, {1, 209},
+}};
+
 constexpr std::array<DatFieldShape, 5> kSpriteShapes{{
     {2, 267},
     {1, 164},
     {1, 267},
     {1, 164},
     {1, 164},
+}};
+
+constexpr std::array<DatFieldShape, 5> kRetailSpriteShapes{{
+    {2, 517}, {1, 387}, {1, 517}, {1, 387}, {1, 387},
 }};
 
 constexpr std::array<DatFieldShape, 16> kImageShapes{{
@@ -65,11 +96,22 @@ constexpr std::array<DatFieldShape, 16> kImageShapes{{
     {1, 590},
 }};
 
+constexpr std::array<DatFieldShape, 16> kRetailImageShapes{{
+    {4, 999}, {1, 999}, {1, 999}, {1, 999}, {1, 999}, {1, 999},
+    {1, 999}, {1, 999}, {4, 999}, {4, 999}, {4, 999}, {4, 999},
+    {4, 999}, {4, 999}, {4, 999}, {1, 999},
+}};
+
 // StarCraft.exe descriptor tables 0x00502000 and 0x00502A78. The research
 // tables contain 28 technology rows and 46 upgrade rows respectively.
 constexpr std::array<DatFieldShape, 9> kTechnologyShapes{{
     {2, 28}, {2, 28}, {2, 28}, {2, 28}, {2, 28},
     {2, 28}, {2, 28}, {2, 28}, {1, 28},
+}};
+
+constexpr std::array<DatFieldShape, 9> kRetailTechnologyShapes{{
+    {2, 44}, {2, 44}, {2, 44}, {2, 44}, {4, 44},
+    {2, 44}, {2, 44}, {1, 44}, {2, 44},
 }};
 
 // StarCraft.exe descriptor table 0x004FAA00: one word field, twelve byte
@@ -81,13 +123,29 @@ constexpr std::array<DatFieldShape, 15> kOrderShapes{{
     {1, 156}, {1, 156}, {1, 156}, {2, 156}, {2, 156},
 }};
 
+constexpr std::array<DatFieldShape, 19> kRetailOrderShapes{{
+    {2, 189}, {1, 189}, {1, 189}, {1, 189}, {1, 189}, {1, 189},
+    {1, 189}, {1, 189}, {1, 189}, {1, 189}, {1, 189}, {1, 189},
+    {1, 189}, {1, 189}, {1, 189}, {1, 189}, {2, 189}, {2, 189},
+    {1, 189},
+}};
+
 constexpr std::array<DatFieldShape, 11> kUpgradeShapes{{
     {2, 46}, {2, 46}, {2, 46}, {2, 46}, {2, 46}, {2, 46},
     {2, 46}, {2, 46}, {2, 46}, {1, 46}, {1, 46},
 }};
 
+constexpr std::array<DatFieldShape, 12> kRetailUpgradeShapes{{
+    {2, 61}, {2, 61}, {2, 61}, {2, 61}, {2, 61}, {2, 61},
+    {2, 61}, {2, 61}, {2, 61}, {1, 61}, {1, 61}, {1, 61},
+}};
+
 constexpr std::array<DatFieldShape, 1> kMapDataShapes{{
     {4, 13},
+}};
+
+constexpr std::array<DatFieldShape, 1> kRetailMapDataShapes{{
+    {4, 65},
 }};
 
 // StarCraft.exe descriptor table 0x004FAE20 consumed by
@@ -101,6 +159,32 @@ constexpr std::array<DatFieldShape, 6> kPortraitShapes{{
     {1, 87},
     {1, 87},
 }};
+
+constexpr std::array<DatFieldShape, 6> kRetailPortraitShapes{{
+    {4, 110}, {4, 110}, {1, 110}, {1, 110}, {1, 110}, {1, 110},
+}};
+
+template <std::size_t Size>
+constexpr std::size_t dat_payload_bytes(
+    const std::array<DatFieldShape, Size>& shapes) noexcept {
+  std::size_t bytes{};
+  for (const DatFieldShape shape : shapes) {
+    bytes += static_cast<std::size_t>(shape.element_width) *
+             shape.element_count;
+  }
+  return bytes;
+}
+
+static_assert(dat_payload_bytes(kRetailUnitShapes) == 19192U);
+static_assert(dat_payload_bytes(kRetailWeaponShapes) == 5460U);
+static_assert(dat_payload_bytes(kRetailFlingyShapes) == 3135U);
+static_assert(dat_payload_bytes(kRetailSpriteShapes) == 2712U);
+static_assert(dat_payload_bytes(kRetailImageShapes) == 39960U);
+static_assert(dat_payload_bytes(kRetailTechnologyShapes) == 836U);
+static_assert(dat_payload_bytes(kRetailOrderShapes) == 4158U);
+static_assert(dat_payload_bytes(kRetailUpgradeShapes) == 1281U);
+static_assert(dat_payload_bytes(kRetailMapDataShapes) == 260U);
+static_assert(dat_payload_bytes(kRetailPortraitShapes) == 1320U);
 
 template <std::size_t Size>
 bool load_dat(runtime::StormModule &storm, const char *const path,
@@ -238,26 +322,64 @@ StringTableView::one_based(const std::uint16_t string_id) const noexcept {
 bool CoreDataSet::load(runtime::StormModule &storm) noexcept {
   failed_asset_.clear();
   total_payload_bytes_ = 0;
-  if (!load_dat(storm, R"(arr\units.dat)", kUnitShapes, units_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\weapons.dat)", kWeaponShapes, weapons_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\flingy.dat)", kFlingyShapes, flingy_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\sprites.dat)", kSpriteShapes, sprites_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\images.dat)", kImageShapes, images_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\techdata.dat)", kTechnologyShapes,
-                technologies_, total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\orders.dat)", kOrderShapes, orders_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\upgrades.dat)", kUpgradeShapes, upgrades_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\mapdata.dat)", kMapDataShapes, mapdata_,
-                total_payload_bytes_, failed_asset_) ||
-      !load_dat(storm, R"(arr\portdata.dat)", kPortraitShapes, portraits_,
-                total_payload_bytes_, failed_asset_)) {
+  retail_assets_ = false;
+
+  std::vector<std::uint8_t> unit_payload{};
+  if (!storm.load_file(R"(arr\units.dat)", unit_payload)) {
+    failed_asset_ = R"(arr\units.dat)";
+    return false;
+  }
+  if (!units_.unpack(unit_payload, kUnitShapes.data(), kUnitShapes.size())) {
+    if (!units_.unpack(unit_payload, kRetailUnitShapes.data(),
+                       kRetailUnitShapes.size())) {
+      failed_asset_ = R"(arr\units.dat)";
+      return false;
+    }
+    retail_assets_ = true;
+  }
+  total_payload_bytes_ += unit_payload.size();
+
+  const bool tables_loaded =
+      retail_assets_
+          ? load_dat(storm, R"(arr\weapons.dat)", kRetailWeaponShapes,
+                     weapons_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\flingy.dat)", kRetailFlingyShapes,
+                         flingy_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\sprites.dat)", kRetailSpriteShapes,
+                         sprites_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\images.dat)", kRetailImageShapes,
+                         images_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\techdata.dat)",
+                         kRetailTechnologyShapes, technologies_,
+                         total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\orders.dat)", kRetailOrderShapes,
+                         orders_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\upgrades.dat)", kRetailUpgradeShapes,
+                         upgrades_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\mapdata.dat)", kRetailMapDataShapes,
+                         mapdata_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\portdata.dat)",
+                         kRetailPortraitShapes, portraits_,
+                         total_payload_bytes_, failed_asset_)
+          : load_dat(storm, R"(arr\weapons.dat)", kWeaponShapes, weapons_,
+                     total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\flingy.dat)", kFlingyShapes, flingy_,
+                         total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\sprites.dat)", kSpriteShapes,
+                         sprites_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\images.dat)", kImageShapes, images_,
+                         total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\techdata.dat)", kTechnologyShapes,
+                         technologies_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\orders.dat)", kOrderShapes, orders_,
+                         total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\upgrades.dat)", kUpgradeShapes,
+                         upgrades_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\mapdata.dat)", kMapDataShapes,
+                         mapdata_, total_payload_bytes_, failed_asset_) &&
+                load_dat(storm, R"(arr\portdata.dat)", kPortraitShapes,
+                         portraits_, total_payload_bytes_, failed_asset_);
+  if (!tables_loaded) {
     return false;
   }
   if (!storm.load_file(R"(arr\images.tbl)", image_strings_)) {
@@ -320,6 +442,7 @@ const std::vector<std::uint8_t> &CoreDataSet::iscript() const noexcept {
 const std::vector<std::uint8_t> &CoreDataSet::map_strings() const noexcept {
   return map_strings_;
 }
+bool CoreDataSet::retail_assets() const noexcept { return retail_assets_; }
 std::size_t CoreDataSet::total_payload_bytes() const noexcept {
   return total_payload_bytes_;
 }
@@ -342,8 +465,17 @@ bool CoreDataSet::extract_unit_traits(
     if (!race->value(type, traits[type].race_flags) ||
         !provided->value(type, traits[type].supply_provided) ||
         !required->value(type, traits[type].supply_required) ||
-        !flags->value(type, traits[type].dat_flags) ||
-        !score->value(type, traits[type].score_value)) {
+        !flags->value(type, traits[type].dat_flags)) {
+      return false;
+    }
+    if (retail_assets_) {
+      std::uint16_t retail_score{};
+      if (!score->value(type, retail_score)) {
+        return false;
+      }
+      traits[type].score_value = static_cast<std::uint8_t>(
+          (std::min)(retail_score, std::uint16_t{UINT8_MAX}));
+    } else if (!score->value(type, traits[type].score_value)) {
       return false;
     }
   }
@@ -442,13 +574,15 @@ bool CoreDataSet::unit_image_id(const std::uint16_t unit_type,
   const DatField *const unit_graphics = units_.field(0);
   const DatField *const flingy_sprite = flingy_.field(0);
   const DatField *const sprite_image = sprites_.field(0);
+  const DatField *const image_names = images_.field(0);
   std::uint8_t flingy_id{};
   std::uint16_t sprite_id{};
   return unit_graphics != nullptr && flingy_sprite != nullptr &&
-         sprite_image != nullptr &&
+         sprite_image != nullptr && image_names != nullptr &&
          unit_graphics->value(unit_type, flingy_id) &&
          flingy_sprite->value(flingy_id, sprite_id) &&
-         sprite_image->value(sprite_id, image_id) && image_id < 590;
+         sprite_image->value(sprite_id, image_id) &&
+         image_id < image_names->element_count();
 }
 
 bool CoreDataSet::unit_construction_image_id(
@@ -458,10 +592,11 @@ bool CoreDataSet::unit_construction_image_id(
   // CImage used while a Zerg CUnit is under construction. A zero entry makes
   // the original routine fall back to the unit's normal sprite image.
   const DatField *const construction_images = units_.field(4U);
+  const DatField *const image_names = images_.field(0U);
   std::uint32_t value{};
-  if (construction_images == nullptr ||
+  if (construction_images == nullptr || image_names == nullptr ||
       !construction_images->value(unit_type, value) || value == 0U ||
-      value >= 590U) {
+      value >= image_names->element_count()) {
     return false;
   }
   image_id = static_cast<std::uint16_t>(value);
@@ -479,21 +614,31 @@ bool CoreDataSet::unit_selection_circle(
   const DatField *const flingy_sprites = flingy_.field(0U);
   const DatField *const circle_images = sprites_.field(3U);
   const DatField *const circle_y_offsets = sprites_.field(4U);
+  const DatField *const image_names = images_.field(0U);
   std::uint8_t flingy_id{};
   std::uint16_t sprite_id{};
   std::uint8_t circle_image_offset{};
   std::uint8_t raw_y_offset{};
   if (unit_flingy == nullptr || flingy_sprites == nullptr ||
       circle_images == nullptr || circle_y_offsets == nullptr ||
+      image_names == nullptr ||
       !unit_flingy->value(unit_type, flingy_id) ||
-      !flingy_sprites->value(flingy_id, sprite_id) || sprite_id >= 164U ||
-      !circle_images->value(sprite_id, circle_image_offset) ||
-      !circle_y_offsets->value(sprite_id, raw_y_offset)) {
+      !flingy_sprites->value(flingy_id, sprite_id)) {
     return false;
   }
-  image_id = static_cast<std::uint16_t>(532U + circle_image_offset);
+  const std::size_t circle_index =
+      retail_assets_
+          ? (sprite_id >= 130U ? static_cast<std::size_t>(sprite_id - 130U)
+                               : SIZE_MAX)
+          : sprite_id;
+  if (!circle_images->value(circle_index, circle_image_offset) ||
+      !circle_y_offsets->value(circle_index, raw_y_offset)) {
+    return false;
+  }
+  image_id = static_cast<std::uint16_t>(
+      (retail_assets_ ? 561U : 532U) + circle_image_offset);
   y_offset = static_cast<std::int8_t>(raw_y_offset);
-  return image_id < 590U;
+  return image_id < image_names->element_count();
 }
 
 bool CoreDataSet::unit_sprite_elevation(
@@ -514,14 +659,17 @@ bool CoreDataSet::weapon_image_id(const std::uint16_t weapon_type,
   const DatField *const weapon_graphics = weapons_.field(1);
   const DatField *const flingy_sprite = flingy_.field(0);
   const DatField *const sprite_image = sprites_.field(0);
+  const DatField *const image_names = images_.field(0);
   std::uint32_t flingy_id{};
   std::uint16_t sprite_id{};
   return weapon_graphics != nullptr && flingy_sprite != nullptr &&
-         sprite_image != nullptr &&
-         weapon_graphics->value(weapon_type, flingy_id) && flingy_id < 175U &&
+         sprite_image != nullptr && image_names != nullptr &&
+         weapon_graphics->value(weapon_type, flingy_id) &&
+         flingy_id < flingy_sprite->element_count() &&
          flingy_id != 0U &&
          flingy_sprite->value(flingy_id, sprite_id) &&
-         sprite_image->value(sprite_id, image_id) && image_id < 590U;
+         sprite_image->value(sprite_id, image_id) &&
+         image_id < image_names->element_count();
 }
 
 bool CoreDataSet::unit_placement_size(const std::uint16_t unit_type,
@@ -584,13 +732,16 @@ bool CoreDataSet::unit_movement_traits(
   // CFlingy.cpp::sub_405FB0 at 0x00405FB0 initializes the live CFlingy from
   // these five flingy.dat fields. The beta runtime doubles DAT top speed and
   // acceleration, doubles a turn value below 64, and clamps larger turns to
-  // 127. Preserve those exact conversions at the data boundary.
+  // 127. Preserve those conversions for beta data; retail DAT values already
+  // use the runtime scale.
   const DatField *const unit_graphics = units_.field(0);
   const DatField *const top_speeds = flingy_.field(1);
   const DatField *const accelerations = flingy_.field(2);
-  const DatField *const turn_speeds = flingy_.field(3);
-  const DatField *const direction_thresholds = flingy_.field(4);
-  const DatField *const movement_controls = flingy_.field(5);
+  const DatField *const turn_speeds = flingy_.field(retail_assets_ ? 4U : 3U);
+  const DatField *const direction_thresholds =
+      flingy_.field(retail_assets_ ? 5U : 4U);
+  const DatField *const movement_controls =
+      flingy_.field(retail_assets_ ? 6U : 5U);
   std::uint8_t flingy_id{};
   std::uint32_t raw_top_speed{};
   std::uint16_t raw_acceleration{};
@@ -604,14 +755,19 @@ bool CoreDataSet::unit_movement_traits(
       !turn_speeds->value(flingy_id, raw_turn_speed) ||
       !direction_thresholds->value(flingy_id, traits.direction_threshold) ||
       !movement_controls->value(flingy_id, traits.movement_control) ||
-      raw_top_speed > UINT32_MAX / 2U || raw_acceleration > UINT16_MAX / 2U) {
+      (!retail_assets_ && (raw_top_speed > UINT32_MAX / 2U ||
+                           raw_acceleration > UINT16_MAX / 2U))) {
     return false;
   }
-  traits.top_speed = raw_top_speed * 2U;
-  traits.acceleration = static_cast<std::uint16_t>(raw_acceleration * 2U);
-  traits.turn_speed = raw_turn_speed < 64U
-                          ? static_cast<std::uint8_t>(raw_turn_speed * 2U)
-                          : static_cast<std::uint8_t>(127U);
+  traits.top_speed = retail_assets_ ? raw_top_speed : raw_top_speed * 2U;
+  traits.acceleration =
+      retail_assets_ ? raw_acceleration
+                     : static_cast<std::uint16_t>(raw_acceleration * 2U);
+  traits.turn_speed =
+      retail_assets_ ? raw_turn_speed
+                     : (raw_turn_speed < 64U
+                            ? static_cast<std::uint8_t>(raw_turn_speed * 2U)
+                            : static_cast<std::uint8_t>(127U));
   return traits.top_speed != 0 && traits.acceleration != 0 &&
          traits.turn_speed != 0;
 }
@@ -688,8 +844,14 @@ bool CoreDataSet::unit_simulation_traits(
   }
   traits.max_shield_points =
       shield_enable != 0U ? static_cast<std::uint32_t>(raw_shields) << 8U : 0U;
-  traits.has_ground_weapon = traits.ground_weapon < 66U;
-  traits.has_air_weapon = traits.air_weapon < 66U;
+  const DatField *const weapon_graphics = weapons_.field(1U);
+  if (weapon_graphics == nullptr) {
+    return false;
+  }
+  traits.has_ground_weapon =
+      traits.ground_weapon < weapon_graphics->element_count();
+  traits.has_air_weapon =
+      traits.air_weapon < weapon_graphics->element_count();
   // CUnitInit.cpp::sub_42DD70 raises units.dat's acquisition range to each
   // weapon's range in tiles, then clamps it below the unit sight radius.
   traits.seek_range = static_cast<std::uint8_t>((std::min)(
@@ -791,7 +953,8 @@ bool CoreDataSet::weapon_simulation_traits(
   std::uint32_t flingy_id{};
   std::uint32_t raw_top_speed{};
   const bool base_ready =
-      weapon < 66U && graphics != nullptr && range != nullptr &&
+      graphics != nullptr && weapon < graphics->element_count() &&
+      range != nullptr &&
       upgrade != nullptr &&
          damage_class != nullptr && inner != nullptr && median != nullptr &&
          outer != nullptr && damage != nullptr && factor != nullptr &&
@@ -814,21 +977,23 @@ bool CoreDataSet::weapon_simulation_traits(
          projectile_count->value(weapon, traits.projectile_count) &&
          forward_offset->value(weapon, traits.forward_offset) &&
          vertical_offset->value(weapon, traits.vertical_offset);
-  if (!base_ready || flingy_id >= 175U) {
+  if (!base_ready || flingy_speeds == nullptr ||
+      flingy_id >= flingy_speeds->element_count()) {
     return false;
   }
   // weapons.dat field 1 is the CFlingy type passed to sub_41D8B0 by
   // CBullet::sub_402940. Zero is the original no-projectile sentinel used by
-  // melee weapons. Nonzero projectile flingies use the same doubled fixed
-  // speed conversion as ordinary unit flingies in sub_405FB0.
+  // melee weapons. Nonzero beta projectile flingies use the same doubled
+  // fixed-speed conversion as ordinary unit flingies in sub_405FB0; retail
+  // values are already stored at runtime scale.
   traits.has_projectile_graphic = flingy_id != 0U;
   if (traits.has_projectile_graphic) {
-    if (flingy_speeds == nullptr ||
-        !flingy_speeds->value(flingy_id, raw_top_speed) ||
-        raw_top_speed > UINT32_MAX / 2U) {
+    if (!flingy_speeds->value(flingy_id, raw_top_speed) ||
+        (!retail_assets_ && raw_top_speed > UINT32_MAX / 2U)) {
       return false;
     }
-    traits.projectile_top_speed = raw_top_speed * 2U;
+    traits.projectile_top_speed =
+        retail_assets_ ? raw_top_speed : raw_top_speed * 2U;
   }
   return traits.projectile_count == 1U || traits.projectile_count == 2U;
 }
@@ -838,7 +1003,8 @@ bool CoreDataSet::weapon_display_traits(
     std::uint16_t &icon) const noexcept {
   const DatField *const labels = weapons_.field(0);
   const DatField *const icons = weapons_.field(23);
-  return weapon < 66U && labels != nullptr && icons != nullptr &&
+  return labels != nullptr && weapon < labels->element_count() &&
+         icons != nullptr &&
          labels->value(weapon, label_string_id) &&
          icons->value(weapon, icon);
 }
@@ -847,10 +1013,12 @@ bool CoreDataSet::order_spell_traits(const std::uint16_t order,
                                      std::uint8_t &weapon,
                                      std::uint8_t &technology,
                                      std::uint8_t &animation) const noexcept {
-  const DatField *const weapons = orders_.field(10);
-  const DatField *const technologies = orders_.field(11);
-  const DatField *const animations = orders_.field(12);
-  return order < 156U && weapons != nullptr && technologies != nullptr &&
+  const std::size_t first = retail_assets_ ? 13U : 10U;
+  const DatField *const weapons = orders_.field(first);
+  const DatField *const technologies = orders_.field(first + 1U);
+  const DatField *const animations = orders_.field(first + 2U);
+  return weapons != nullptr && order < weapons->element_count() &&
+         technologies != nullptr &&
          animations != nullptr && weapons->value(order, weapon) &&
          technologies->value(order, technology) &&
          animations->value(order, animation);
@@ -887,7 +1055,8 @@ bool CoreDataSet::upgrade_display_traits(
     std::uint16_t &icon) const noexcept {
   const DatField *const icons = upgrades_.field(7);
   const DatField *const labels = upgrades_.field(8);
-  return upgrade < 46U && icons != nullptr && labels != nullptr &&
+  return icons != nullptr && upgrade < icons->element_count() &&
+         labels != nullptr &&
          icons->value(upgrade, icon) &&
          labels->value(upgrade, label_string_id);
 }

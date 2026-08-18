@@ -39,9 +39,9 @@ class MainFrame final {
       std::unique_ptr<EditorDocument> document) noexcept;
   void choose_and_open_document() noexcept;
   void export_active_chk() noexcept;
+  void save_active_document(bool force_save_as) noexcept;
   void close_active_document() noexcept;
   [[nodiscard]] bool close_all_documents() noexcept;
-  void show_scenario_summary() const noexcept;
   void update_status() noexcept;
 
   static LRESULT CALLBACK window_proc(HWND window,

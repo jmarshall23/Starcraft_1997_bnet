@@ -104,10 +104,12 @@ bool enumerate_glue_maps(starcraft::runtime::StormModule &storm,
       const DWORD attributes = GetFileAttributesW(entry.path().c_str());
       // gluMap.cpp::sub_461750 at 0x00461750 uses FindFirst/FindNext,
       // excludes hidden files, and compares the configured map extension
-      // without regard to case before handing the entry to sub_4621A0.
+      // without regard to case before handing the entry to sub_4621A0. Accept
+      // retail SCX beside the recovered SCM extension as well.
       if (entry.is_regular_file() && attributes != INVALID_FILE_ATTRIBUTES &&
           (attributes & FILE_ATTRIBUTE_HIDDEN) == 0U &&
-          _wcsicmp(extension.c_str(), L".scm") == 0) {
+          (_wcsicmp(extension.c_str(), L".scm") == 0 ||
+           _wcsicmp(extension.c_str(), L".scx") == 0)) {
         paths.push_back(entry.path());
       }
     }

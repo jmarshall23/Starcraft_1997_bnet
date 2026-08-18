@@ -7,6 +7,9 @@
 #include "minimap.hpp"
 #include "resource.h"
 
+#include "starcraft/game/scenario.hpp"
+#include "starcraft/runtime/storm.hpp"
+
 #include <algorithm>
 #include <array>
 #include <commctrl.h>
@@ -788,7 +791,136 @@ int run_editor_layers_probe(const std::filesystem::path& data_root) noexcept {
       current_ownership[0] != original_owner) {
     return 7;
   }
+  ScenarioProperties original_properties{};
+  if (!document.scenario_properties(original_properties)) {
+    return 8;
+  }
+  ScenarioProperties changed_properties{
+      "Recovered Scenario", "Scenario metadata round-trip probe."};
+  ScenarioProperties current_properties{};
+  if (!document.set_scenario_properties(changed_properties) ||
+      !document.modified() ||
+      !document.scenario_properties(current_properties) ||
+      current_properties.name != changed_properties.name ||
+      current_properties.description != changed_properties.description ||
+      !document.undo() || document.modified() ||
+      !document.scenario_properties(current_properties) ||
+      current_properties.name != original_properties.name ||
+      current_properties.description != original_properties.description) {
+    return 9;
+  }
+  ScenarioForces original_forces{};
+  if (!document.scenario_forces(original_forces)) {
+    return 10;
+  }
+  ScenarioForces changed_forces = original_forces;
+  changed_forces.player_force[0] =
+      static_cast<std::uint8_t>((changed_forces.player_force[0] + 1U) % 4U);
+  changed_forces.names[0] = "Alpha Team";
+  if (changed_forces.supports_flags) {
+    changed_forces.flags[0] ^= formats::force_flag_allies;
+  }
+  ScenarioForces current_forces{};
+  if (!document.set_scenario_forces(changed_forces) || !document.modified() ||
+      !document.scenario_forces(current_forces) ||
+      current_forces.player_force != changed_forces.player_force ||
+      current_forces.names != changed_forces.names ||
+      (changed_forces.supports_flags &&
+       current_forces.flags != changed_forces.flags) ||
+      !document.undo() || document.modified() ||
+      !document.scenario_forces(current_forces) ||
+      current_forces.player_force != original_forces.player_force ||
+      current_forces.names != original_forces.names) {
+    return 11;
+  }
   return 0;
+}
+
+int run_retail_save_probe(const std::filesystem::path& data_root) noexcept {
+  EditorDocument document{};
+  std::wstring error{};
+  if (!document.create_blank(data_root / L"maps" / L"96x96_wasteland4.scm",
+                             data_root, 96U, 96U, 4U, "Dirt", error) ||
+      document.format() != ScenarioFormat::retail_chk) {
+    return 2;
+  }
+  const ScenarioProperties properties{"Retail Save Probe",
+                                      "Retail STR/SPRP archive validation."};
+  constexpr std::uint16_t unit_type = 106U;
+  constexpr std::uint16_t unit_x = 512U;
+  constexpr std::uint16_t unit_y = 640U;
+  if (!document.set_scenario_properties(properties) ||
+      !document.place_object(EditorLayer::units, unit_type, unit_x, unit_y)) {
+    return 3;
+  }
+
+  std::array<wchar_t, MAX_PATH> temporary_directory{};
+  std::array<wchar_t, MAX_PATH> seed_path{};
+  const DWORD directory_length = GetTempPathW(
+      static_cast<DWORD>(temporary_directory.size()), temporary_directory.data());
+  if (directory_length == 0U ||
+      directory_length >= temporary_directory.size() ||
+      GetTempFileNameW(temporary_directory.data(), L"ser", 0U,
+                       seed_path.data()) == 0U) {
+    return 4;
+  }
+  const std::filesystem::path seed{seed_path.data()};
+  std::filesystem::path archive_path = seed;
+  archive_path += L".scx";
+  (void)DeleteFileW(seed.c_str());
+
+  int result = 5;
+  if (document.save_retail_archive(archive_path, error)) {
+    result = 6;
+    if (!document.modified() && document.source_is_archive() &&
+        document.format() == ScenarioFormat::retail_chk) {
+      result = 7;
+      EditorDocument reopened{};
+      ScenarioProperties reopened_properties{};
+      if (reopened.load(archive_path, data_root, error)) {
+        result = 8;
+        if (reopened.format() == ScenarioFormat::retail_chk &&
+            reopened.unit_count() == 1U &&
+            reopened.scenario_properties(reopened_properties) &&
+            reopened_properties.name == properties.name &&
+            reopened_properties.description == properties.description) {
+          result = 9;
+          starcraft::runtime::StormModule storm{data_root / L"storm.dll"};
+          void* archive{};
+          std::vector<std::uint8_t> chk_bytes{};
+          const bool loaded =
+              storm.loaded() &&
+              storm.open_archive(archive_path, &archive, 4000U) &&
+              storm.load_file_from_archive(
+                  archive, R"(staredit\scenario.chk)", chk_bytes);
+          const bool closed =
+              archive == nullptr || storm.close_archive(archive);
+          const starcraft::data::ChkView chk{chk_bytes.data(),
+                                             chk_bytes.size()};
+          starcraft::data::UnitPlacement unit{};
+          starcraft::game::MultiplayerScenario scenario{};
+          if (loaded && closed && chk.valid() && chk.unit_count() == 1U &&
+              chk.unit(0U, unit) && unit.unit_type == unit_type &&
+              unit.x == unit_x && unit.y == unit_y && scenario.load(chk)) {
+            result = 0;
+          }
+        }
+      }
+    }
+  } else if (error.find(L"could not be opened by Storm") !=
+             std::wstring::npos) {
+    result = 12;
+  } else if (error.find(L"could not read staredit") != std::wstring::npos) {
+    result = 13;
+  } else if (error.find(L"different scenario.chk") != std::wstring::npos) {
+    result = 14;
+  } else if (error.find(L"invalid CHK") != std::wstring::npos) {
+    result = 15;
+  } else if (error.find(L"did not contain a retail") != std::wstring::npos) {
+    result = 16;
+  }
+  (void)DeleteFileW(archive_path.c_str());
+  return result;
 }
 
 int run_new_map_dialog_resource_probe(const HINSTANCE instance) noexcept {
@@ -1185,6 +1317,8 @@ int run_editor(const HINSTANCE instance, const int show_command) noexcept {
       L"--probe-new-map-dialog-resource";
   constexpr std::wstring_view editor_layers_probe_argument =
       L"--probe-editor-layers";
+  constexpr std::wstring_view retail_save_probe_argument =
+      L"--probe-retail-save";
   std::filesystem::path ui_probe_map{};
   std::filesystem::path ui_edit_probe_map{};
   std::filesystem::path palette_probe_map{};
@@ -1205,6 +1339,9 @@ int run_editor(const HINSTANCE instance, const int show_command) noexcept {
     }
     if (argument == editor_layers_probe_argument) {
       return run_editor_layers_probe(data_root);
+    }
+    if (argument == retail_save_probe_argument) {
+      return run_retail_save_probe(data_root);
     }
     if (argument.rfind(probe_prefix, 0U) == 0U) {
       return run_probe(std::filesystem::path{argument.substr(probe_prefix.size())},

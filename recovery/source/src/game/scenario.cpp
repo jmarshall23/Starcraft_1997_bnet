@@ -69,7 +69,7 @@ bool MultiplayerScenario::load(const data::ChkView& chk) noexcept {
     std::array<ScenarioStartLocation, data::chk_player_slot_count> start_locations{};
     units.reserve(chk.unit_count());
     for (std::size_t index = 0; index < chk.unit_count(); ++index) {
-      data::BetaUnitPlacement placement{};
+      data::UnitPlacement placement{};
       if (!chk.unit(index, placement) || placement.owner >= players.size() ||
           (placement.owner != 11 && players[placement.owner].ownership == 0) ||
           placement.x >= width * 32U ||

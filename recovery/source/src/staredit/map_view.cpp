@@ -1426,9 +1426,8 @@ LRESULT CALLBACK map_view_proc(const HWND window,
       if (state != nullptr && state->document->modified()) {
         const int choice = MessageBoxW(
             window,
-            L"This map has edits that have not been written to an "
-            L"SCM/SCX archive. Use File > Export scenario.chk if you need "
-            L"to keep them.\n\nDiscard these edits and close the map?",
+            L"This map has unsaved edits. Use File > Save to write a retail "
+            L"SCX archive.\n\nDiscard these edits and close the map?",
             L"Unsaved map edits", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
         if (choice != IDYES) {
           return 0;

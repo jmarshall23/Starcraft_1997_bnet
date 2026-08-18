@@ -1,5 +1,7 @@
 #include "../platform/bootstrap_runtime.hpp"
 
+#include "starcraft/runtime/asset_archives.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -455,16 +457,8 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
     glue.failure = "The supplied storm.dll could not be loaded.";
     return false;
   }
-  void *base{};
-  void *patch{};
-  if (!storm.open_archive(root / L"StarDat.mpq", &base, 1000U) ||
-      !storm.open_archive(root / L"patch_rt.mpq", &patch, 2000U)) {
-    if (patch != nullptr) {
-      (void)storm.close_archive(patch);
-    }
-    if (base != nullptr) {
-      (void)storm.close_archive(base);
-    }
+  starcraft::runtime::AssetArchives archives{};
+  if (!archives.open(storm, root)) {
     glue.failure = "The StarCraft data archives could not be opened.";
     return false;
   }
@@ -538,9 +532,8 @@ bool initialize_glue_assets(GlueRuntime &glue) noexcept {
       control.bottom = static_cast<std::int16_t>(control.bottom + popup_top);
     }
   }
-  const bool patch_closed = storm.close_archive(patch);
-  const bool base_closed = storm.close_archive(base);
-  glue.assets_ready = loaded && patch_closed && base_closed;
+  const bool archives_closed = archives.close(storm);
+  glue.assets_ready = loaded && archives_closed;
   if (!glue.assets_ready) {
     glue.failure = "A title, StarCraft font, glue dialog, Battle.net artwork, "
                    "control image, or multiplayer map failed to decode.";

@@ -3,6 +3,7 @@
 #include "formats/chk_document.hpp"
 #include "formats/isom_section.hpp"
 #include "formats/object_sections.hpp"
+#include "formats/scenario_sections.hpp"
 #include "editor_layer.hpp"
 #include "object_art.hpp"
 #include "starcraft/data/chk.hpp"
@@ -19,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace staredit {
@@ -73,6 +75,18 @@ struct LocationMarker {
   std::uint16_t string_id{};
   std::uint16_t flags{};
   std::uint16_t slot{};
+};
+
+struct ScenarioProperties {
+  std::string name{};
+  std::string description{};
+};
+
+struct ScenarioForces {
+  std::array<std::uint8_t, formats::force_player_count> player_force{};
+  std::array<std::string, formats::force_count> names{};
+  std::array<std::uint8_t, formats::force_count> flags{};
+  bool supports_flags{};
 };
 
 class EditorDocument final {
@@ -132,6 +146,8 @@ class EditorDocument final {
   [[nodiscard]] bool redo() noexcept;
   [[nodiscard]] bool export_raw_chk(const std::filesystem::path& path,
                                     std::wstring& error) const noexcept;
+  [[nodiscard]] bool save_retail_archive(const std::filesystem::path& path,
+                                         std::wstring& error) noexcept;
   [[nodiscard]] const std::vector<UnitMarker>& unit_markers() const noexcept;
   [[nodiscard]] bool unit_attributes(std::size_t index,
                                      UnitAttributes& attributes) const noexcept;
@@ -169,6 +185,13 @@ class EditorDocument final {
   [[nodiscard]] bool set_player_settings(
       const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>& ownership,
       const std::array<std::uint8_t, starcraft::data::chk_player_slot_count>& races) noexcept;
+  [[nodiscard]] bool scenario_properties(
+      ScenarioProperties& properties) const noexcept;
+  [[nodiscard]] bool set_scenario_properties(
+      const ScenarioProperties& properties) noexcept;
+  [[nodiscard]] bool scenario_forces(ScenarioForces& forces) const noexcept;
+  [[nodiscard]] bool set_scenario_forces(
+      const ScenarioForces& forces) noexcept;
   [[nodiscard]] const std::vector<std::uint16_t>& object_brushes(
       EditorLayer layer) const noexcept;
   [[nodiscard]] bool place_object(EditorLayer layer,
@@ -219,6 +242,7 @@ class EditorDocument final {
   [[nodiscard]] bool build_object_art_cache(
       starcraft::runtime::StormModule& storm) noexcept;
   [[nodiscard]] bool build_doodad_art_cache() noexcept;
+  [[nodiscard]] bool normalize_object_prototypes() noexcept;
   [[nodiscard]] bool commit_object_edit(
       EditorLayer layer,
       std::vector<formats::PlacementRecord> records,
@@ -226,6 +250,9 @@ class EditorDocument final {
   [[nodiscard]] bool commit_section_edit(
       std::uint32_t tag,
       std::vector<std::uint8_t> after) noexcept;
+  [[nodiscard]] bool commit_section_edits(
+      std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>
+          replacements) noexcept;
   [[nodiscard]] bool build_terrain_brush_inventory(std::wstring& error) noexcept;
   [[nodiscard]] bool build_active_command() noexcept;
   [[nodiscard]] bool update_chk_terrain_layers() noexcept;
@@ -234,6 +261,7 @@ class EditorDocument final {
       std::vector<std::uint8_t>& payload) noexcept;
 
   std::filesystem::path path_{};
+  std::filesystem::path data_root_{};
   std::wstring title_{};
   formats::ChkDocument chk_{};
   formats::IsomSection isom_{};

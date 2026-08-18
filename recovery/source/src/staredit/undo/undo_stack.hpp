@@ -61,6 +61,7 @@ class UndoStack final {
   [[nodiscard]] bool can_undo() const noexcept;
   [[nodiscard]] bool can_redo() const noexcept;
   [[nodiscard]] bool at_origin() const noexcept;
+  void mark_origin() noexcept;
   [[nodiscard]] std::size_t undo_count() const noexcept;
   [[nodiscard]] std::size_t redo_count() const noexcept;
 
@@ -83,6 +84,7 @@ class UndoStack final {
 
   std::vector<TileEditCommand> history_{};
   std::size_t cursor_{};
+  std::size_t origin_cursor_{};
   std::size_t maximum_commands_{};
   bool origin_reachable_{true};
   bool initialized_{};

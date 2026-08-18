@@ -19,6 +19,11 @@ constexpr std::array<std::string_view, 5> kBetaTilesetNames{{
     "Jungle",
 }};
 
+constexpr std::array<std::string_view, 8> kRetailTilesetNames{{
+    "badlands", "platform", "install", "AshWorld",
+    "Jungle", "Desert", "Ice", "Twilight",
+}};
+
 constexpr std::size_t kCv5GroupBytes = 52;
 constexpr std::size_t kCv5MegaTileOffset = 20;
 constexpr std::size_t kMegaTilesPerGroup = 16;
@@ -45,6 +50,12 @@ bool load_asset(
 std::string_view beta_tileset_name(const std::uint16_t tileset_id) noexcept {
   return tileset_id < kBetaTilesetNames.size() ? kBetaTilesetNames[tileset_id]
                                                : std::string_view{};
+}
+
+std::string_view tileset_name(const std::uint16_t tileset_id) noexcept {
+  return tileset_id < kRetailTilesetNames.size()
+             ? kRetailTilesetNames[tileset_id]
+             : std::string_view{};
 }
 
 bool TilesetData::load(

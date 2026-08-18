@@ -11,4 +11,13 @@ class EditorDocument;
     HINSTANCE instance,
     EditorDocument& document) noexcept;
 
+[[nodiscard]] bool show_scenario_properties_dialog(
+    HWND parent,
+    HINSTANCE instance,
+    EditorDocument& document) noexcept;
+
+[[nodiscard]] bool show_forces_dialog(HWND parent,
+                                      HINSTANCE instance,
+                                      EditorDocument& document) noexcept;
+
 }  // namespace staredit

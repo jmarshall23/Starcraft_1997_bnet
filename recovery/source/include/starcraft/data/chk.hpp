@@ -24,6 +24,17 @@ constexpr std::uint32_t chk_section_editor_tiles = chk_fourcc('T', 'I', 'L', 'E'
 constexpr std::uint32_t chk_section_isom = chk_fourcc('I', 'S', 'O', 'M');
 constexpr std::uint32_t chk_section_ownership = chk_fourcc('O', 'W', 'N', 'R');
 constexpr std::uint32_t chk_section_races = chk_fourcc('S', 'I', 'D', 'E');
+// Scenario metadata is indirect: SPRP and FORC store one-based ids into STR.
+// Later retail maps may use the 32-bit-offset STRx variant instead.
+constexpr std::uint32_t chk_section_strings = chk_fourcc('S', 'T', 'R', ' ');
+constexpr std::uint32_t chk_section_extended_strings =
+    chk_fourcc('S', 'T', 'R', 'x');
+constexpr std::uint32_t chk_section_scenario_properties =
+    chk_fourcc('S', 'P', 'R', 'P');
+constexpr std::uint32_t chk_section_forces = chk_fourcc('F', 'O', 'R', 'C');
+constexpr std::uint32_t chk_section_sounds = chk_fourcc('W', 'A', 'V', ' ');
+constexpr std::uint32_t chk_section_triggers = chk_fourcc('T', 'R', 'I', 'G');
+constexpr std::uint32_t chk_section_briefing = chk_fourcc('M', 'B', 'R', 'F');
 constexpr std::uint32_t chk_section_units = chk_fourcc('U', 'N', 'I', 'T');
 constexpr std::uint32_t chk_section_doodads = chk_fourcc('D', 'O', 'O', 'D');
 constexpr std::uint32_t chk_section_doodads_retail =
@@ -36,9 +47,11 @@ constexpr std::uint32_t chk_section_fog_mask = chk_fourcc('M', 'A', 'S', 'K');
 constexpr std::uint32_t chk_section_locations = chk_fourcc('M', 'R', 'G', 'N');
 constexpr std::size_t chk_location_slot_count = 64;
 constexpr std::size_t chk_location_record_bytes = 20;
-// StarCraft.exe's beta CHK dispatch table names this section THGY. The later
-// starshare.exe variant uses THG2 instead and is not the recovery target.
+// StarCraft.exe's beta CHK dispatch table names this section THGY. Retail
+// StarCraft/StarEdit uses the wider THG2 records.
 constexpr std::uint32_t chk_section_sprites = chk_fourcc('T', 'H', 'G', 'Y');
+constexpr std::uint32_t chk_section_sprites_retail =
+    chk_fourcc('T', 'H', 'G', '2');
 constexpr std::size_t chk_player_slot_count = 12;
 
 #pragma pack(push, 1)
@@ -63,6 +76,13 @@ struct BetaDoodadPlacement {
   std::uint16_t y;
 };
 #pragma pack(pop)
+
+struct UnitPlacement {
+  std::uint16_t x{};
+  std::uint16_t y{};
+  std::uint16_t unit_type{};
+  std::uint8_t owner{};
+};
 
 static_assert(std::is_standard_layout_v<BetaUnitPlacement>);
 static_assert(sizeof(BetaUnitPlacement) == 14);
@@ -97,6 +117,7 @@ class ChkView final {
   [[nodiscard]] bool player_race(std::size_t player, std::uint8_t& race) const noexcept;
   [[nodiscard]] std::size_t unit_count() const noexcept;
   [[nodiscard]] bool unit(std::size_t index, BetaUnitPlacement& output) const noexcept;
+  [[nodiscard]] bool unit(std::size_t index, UnitPlacement& output) const noexcept;
   [[nodiscard]] std::size_t sprite_count() const noexcept;
   [[nodiscard]] bool sprite(std::size_t index, BetaSpritePlacement& output) const noexcept;
   [[nodiscard]] bool tile(
@@ -107,6 +128,7 @@ class ChkView final {
  private:
   [[nodiscard]] bool read_u16(std::size_t offset, std::uint16_t& output) const noexcept;
   [[nodiscard]] bool read_u32(std::size_t offset, std::uint32_t& output) const noexcept;
+  [[nodiscard]] std::size_t unit_record_bytes() const noexcept;
 
   const std::uint8_t* bytes_{};
   std::size_t size_{};

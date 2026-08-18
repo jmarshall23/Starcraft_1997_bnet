@@ -176,6 +176,7 @@ class CoreDataSet final {
   [[nodiscard]] const std::vector<std::uint8_t>& image_strings() const noexcept;
   [[nodiscard]] const std::vector<std::uint8_t>& iscript() const noexcept;
   [[nodiscard]] const std::vector<std::uint8_t>& map_strings() const noexcept;
+  [[nodiscard]] bool retail_assets() const noexcept;
   [[nodiscard]] std::size_t total_payload_bytes() const noexcept;
   [[nodiscard]] const std::string& failed_asset() const noexcept;
 
@@ -272,6 +273,7 @@ class CoreDataSet final {
   std::vector<std::uint8_t> iscript_{};
   std::vector<std::uint8_t> map_strings_{};
   std::vector<std::uint8_t> portrait_strings_{};
+  bool retail_assets_{};
   std::size_t total_payload_bytes_{};
   std::string failed_asset_{};
 };
