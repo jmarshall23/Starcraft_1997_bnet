@@ -10,7 +10,7 @@ internal static class Program
         if (args.Contains("--help", StringComparer.OrdinalIgnoreCase) ||
             args.Contains("-h", StringComparer.OrdinalIgnoreCase))
         {
-            Console.WriteLine("StarCraftRecoveryServer [--bind=ADDRESS] " +
+            Console.WriteLine("BattleNetServer [--bind=ADDRESS] " +
                               "[--port=PORT] [--accounts=PATH]");
             Console.WriteLine("Defaults: --bind=127.0.0.1 --port=6112 and an " +
                               "account file beside the executable.");
@@ -29,8 +29,7 @@ internal static class Program
             return 2;
         }
         string accountPath = Argument(args, "--accounts=") ??
-                             Path.Combine(AppContext.BaseDirectory,
-                                          "StarCraftRecoveryServer.accounts.json");
+                             DefaultAccountPath();
         var accounts = new AccountStore(accountPath);
         var server = new BattleServer(bind, port, accounts);
         using var shutdown = new CancellationTokenSource();
@@ -56,6 +55,15 @@ internal static class Program
                                                        StringComparison.OrdinalIgnoreCase))
             ?[prefix.Length..];
 
+    private static string DefaultAccountPath()
+    {
+        string current = Path.Combine(AppContext.BaseDirectory,
+                                      "BattleNetServer.accounts.json");
+        string legacy = Path.Combine(AppContext.BaseDirectory,
+                                     "StarCraftRecoveryServer.accounts.json");
+        return File.Exists(current) || !File.Exists(legacy) ? current : legacy;
+    }
+
     private static int RunSelfTest()
     {
         string sample = "A|B% test";
@@ -65,7 +73,7 @@ internal static class Program
             return 10;
         }
         string directory = Path.Combine(Path.GetTempPath(),
-                                        "StarCraftRecoveryServerSelfTest-" +
+                                        "BattleNetServerSelfTest-" +
                                         Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try

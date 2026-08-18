@@ -4,7 +4,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>StarCraftRecoveryServer</AssemblyName>
+    <AssemblyName>BattleNetServer</AssemblyName>
     <RootNamespace>StarCraftRecovery.Server</RootNamespace>
     <StartupObject>StarCraftRecovery.Server.Program</StartupObject>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

@@ -163,7 +163,10 @@ LRESULT CALLBACK recovery_window_proc(const HWND window, const UINT message,
     const auto *const create = reinterpret_cast<const CREATESTRUCTA *>(lparam);
     SetWindowLongPtrA(window, GWLP_USERDATA,
                       reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-    return TRUE;
+    // Let USER32 perform its normal non-client initialization, including
+    // storing the CreateWindowEx caption. Returning TRUE directly left the
+    // recovered top-level window with an empty title.
+    return DefWindowProcA(window, message, wparam, lparam);
   }
   case WM_CREATE: {
     auto *const state = reinterpret_cast<RecoveryWindowState *>(

@@ -84,7 +84,7 @@ internal sealed class BattleServer(string bindAddress, int port,
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         listener.Start();
-        Console.WriteLine($"StarCraft recovery service listening on {bindAddress}:{port}");
+        Console.WriteLine($"Battle.net relay service listening on {bindAddress}:{port}");
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -163,7 +163,7 @@ internal sealed class BattleServer(string bindAddress, int port,
                 return;
             }
             await session.SendAsync("WELCOME", Protocol.Version,
-                                    "StarCraft Recovery Service");
+                                    "Starcraft Battle.Net Beta");
             return;
         }
         if (command == "CREATE_ACCOUNT")

@@ -1,4 +1,5 @@
 #include "bootstrap_runtime.hpp"
+#include "resource.h"
 
 #include <charconv>
 #include <cctype>
@@ -8,8 +9,8 @@
 
 namespace starcraft::recovery {
 
-constexpr char kWindowClass[] = "StarcraftBetaRecovered";
-constexpr char kWindowTitle[] = "Starcraft Beta - Source Recovery Bootstrap";
+constexpr char kWindowClass[] = "StarcraftBattleNetBeta";
+constexpr char kWindowTitle[] = "Starcraft - Battle.Net Beta";
 
 std::string command_line_option(const char *const command_line,
                                 const std::string_view option) {
@@ -66,39 +67,38 @@ int WINAPI WinMain(const HINSTANCE instance, HINSTANCE, LPSTR command_line,
   }
 
   RecoveryWindowState window_state{&status};
-  const bool glue_ready = initialize_glue_assets(window_state.glue);
+  (void)initialize_glue_assets(window_state.glue);
   configure_battle_server(window_state.glue, command_line);
-  const bool game_dialogs_ready =
-      initialize_game_dialog_assets(window_state.game_dialog, status);
-  WNDCLASSA window_class{};
+  (void)initialize_game_dialog_assets(window_state.game_dialog, status);
+  WNDCLASSEXA window_class{};
+  window_class.cbSize = sizeof(window_class);
   window_class.style = CS_DBLCLKS | CS_OWNDC;
   window_class.lpfnWndProc = recovery_window_proc;
   window_class.hInstance = instance;
-  window_class.hIcon = LoadIconA(nullptr, IDI_APPLICATION);
+  window_class.hIcon = static_cast<HICON>(LoadImageA(
+      instance, MAKEINTRESOURCEA(IDI_STARCRAFT_ICON), IMAGE_ICON,
+      GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+  window_class.hIconSm = static_cast<HICON>(LoadImageA(
+      instance, MAKEINTRESOURCEA(IDI_STARCRAFT_ICON), IMAGE_ICON,
+      GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+  if (window_class.hIcon == nullptr) {
+    window_class.hIcon = LoadIconA(nullptr, IDI_APPLICATION);
+  }
+  if (window_class.hIconSm == nullptr) {
+    window_class.hIconSm = window_class.hIcon;
+  }
   window_class.hCursor = LoadCursorA(nullptr, IDC_ARROW);
   window_class.hbrBackground = nullptr;
   window_class.lpszClassName = kWindowClass;
 
-  if (RegisterClassA(&window_class) == 0) {
+  if (RegisterClassExA(&window_class) == 0) {
     return 1;
   }
 
-  std::string window_title = kWindowTitle;
-  if (!status.detail.empty()) {
-    window_title += " | ";
-    window_title += status.detail;
-  }
-  if (!glue_ready && !window_state.glue.failure.empty()) {
-    window_title += " | ";
-    window_title += window_state.glue.failure;
-  }
-  if (!game_dialogs_ready) {
-    window_title += " | In-game dialog assets failed to decode.";
-  }
   RECT requested_window{0, 0, 960, 600};
   AdjustWindowRect(&requested_window, WS_OVERLAPPEDWINDOW, FALSE);
   const HWND window = CreateWindowExA(
-      0, kWindowClass, window_title.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+      0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
       CW_USEDEFAULT, requested_window.right - requested_window.left,
       requested_window.bottom - requested_window.top, nullptr, nullptr,
       instance, &window_state);

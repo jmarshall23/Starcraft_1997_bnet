@@ -53,12 +53,28 @@ if(Python3_Interpreter_FOUND)
   )
 endif()
 
+set(STARCRAFT_GENERATED_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(STARCRAFT_ICON_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/starcraft.ico")
+if(NOT EXISTS "${STARCRAFT_ICON_FILE}")
+  message(FATAL_ERROR "The StarCraft icon is missing at ${STARCRAFT_ICON_FILE}.")
+endif()
+file(MAKE_DIRECTORY "${STARCRAFT_GENERATED_DIRECTORY}")
+set(STARCRAFT_ICON_RESOURCE_PATH "${STARCRAFT_ICON_FILE}")
+configure_file(src/platform/starcraft.rc.in
+               "${STARCRAFT_GENERATED_DIRECTORY}/starcraft.rc" @ONLY)
+set_source_files_properties(
+  "${STARCRAFT_GENERATED_DIRECTORY}/starcraft.rc"
+  PROPERTIES OBJECT_DEPENDS "${STARCRAFT_ICON_FILE}"
+)
+
 find_program(DOTNET_EXECUTABLE dotnet)
 if(DOTNET_EXECUTABLE)
   set(STARCRAFT_RECOVERY_SERVER_PROJECT
       "${CMAKE_CURRENT_SOURCE_DIR}/src/server/StarCraftRecoveryServer.csproj")
   set(STARCRAFT_RECOVERY_SERVER_EXE
-      "${STARCRAFT_RECOVERY_ROOT}/StarCraftRecoveryServer.exe")
+      "${STARCRAFT_RECOVERY_ROOT}/BattleNetServer.exe")
   set(STARCRAFT_RECOVERY_SERVER_PUBLISH_DIR
       "${CMAKE_CURRENT_BINARY_DIR}/server-publish")
   file(GLOB STARCRAFT_RECOVERY_SERVER_SOURCES CONFIGURE_DEPENDS
@@ -73,14 +89,17 @@ if(DOTNET_EXECUTABLE)
             --self-contained false
             --output "${STARCRAFT_RECOVERY_SERVER_PUBLISH_DIR}"
             -p:PublishSingleFile=true
+            "-p:ApplicationIcon=${STARCRAFT_ICON_FILE}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${STARCRAFT_RECOVERY_SERVER_PUBLISH_DIR}/StarCraftRecoveryServer.exe"
+            "${STARCRAFT_RECOVERY_SERVER_PUBLISH_DIR}/BattleNetServer.exe"
             "${STARCRAFT_RECOVERY_SERVER_EXE}"
-    DEPENDS ${STARCRAFT_RECOVERY_SERVER_SOURCES}
-    COMMENT "Publishing the recovery Battle.net server"
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "${STARCRAFT_RECOVERY_ROOT}/StarCraftRecoveryServer.exe"
+    DEPENDS ${STARCRAFT_RECOVERY_SERVER_SOURCES} "${STARCRAFT_ICON_FILE}"
+    COMMENT "Publishing BattleNetServer.exe with the original StarCraft icon"
     VERBATIM
   )
-  add_custom_target(StarCraftRecoveryServer ALL
+  add_custom_target(BattleNetServer ALL
                     DEPENDS "${STARCRAFT_RECOVERY_SERVER_EXE}")
 endif()
 
@@ -174,6 +193,7 @@ if(MSVC)
 endif()
 
 add_executable(StarCraftRecovery WIN32
+  "${STARCRAFT_GENERATED_DIRECTORY}/starcraft.rc"
   "${IMGUI_ROOT}/imgui.cpp"
   "${IMGUI_ROOT}/imgui_draw.cpp"
   "${IMGUI_ROOT}/imgui_tables.cpp"
@@ -252,12 +272,16 @@ add_executable(StarCraftRecovery WIN32
 target_include_directories(
   StarCraftRecovery
   PRIVATE "${IMGUI_ROOT}" "${IMGUI_ROOT}/backends"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
 )
 target_link_libraries(
   StarCraftRecovery
   PRIVATE starcraft_core vendored_libsmacker vendored_lua OpenAL::OpenAL user32 kernel32 gdi32 opengl32 ws2_32
 )
 set_target_properties(StarCraftRecovery PROPERTIES
+  OUTPUT_NAME "StarCraft"
+  PDB_NAME "StarCraft"
+  COMPILE_PDB_NAME "StarCraft"
   RUNTIME_OUTPUT_DIRECTORY "${STARCRAFT_RECOVERY_ROOT}"
   RUNTIME_OUTPUT_DIRECTORY_DEBUG "${STARCRAFT_RECOVERY_ROOT}"
   RUNTIME_OUTPUT_DIRECTORY_RELEASE "${STARCRAFT_RECOVERY_ROOT}"
@@ -269,6 +293,10 @@ add_custom_command(
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
           "$<TARGET_FILE:OpenAL>"
           "${STARCRAFT_RECOVERY_ROOT}/$<TARGET_FILE_NAME:OpenAL>"
+  COMMAND "${CMAKE_COMMAND}" -E rm -f
+          "${STARCRAFT_RECOVERY_ROOT}/StarCraftRecovery.exe"
+  COMMAND "${CMAKE_COMMAND}" -E rm -f
+          "${STARCRAFT_RECOVERY_ROOT}/StarCraftRecovery.pdb"
   COMMENT "Copying the dynamically linked vendored OpenAL Soft runtime"
   VERBATIM
 )
@@ -326,6 +354,7 @@ if(BUILD_TESTING)
                          DEPENDS battle_server_self_test TIMEOUT 15)
   endif()
   set(STARCRAFT_INPUT_ROOT "${STARCRAFT_RECOVERY_ROOT}")
+  set(STARCRAFT_ORIGINAL_ROOT "${STARCRAFT_RECOVERY_ROOT}/recovery")
 
   add_executable(damage_tests tests/damage_tests.cpp)
   target_link_libraries(damage_tests PRIVATE starcraft_core)
@@ -384,7 +413,7 @@ if(BUILD_TESTING)
   endif()
   add_test(
     NAME original_damage_oracle_tests
-    COMMAND original_damage_oracle_tests "${STARCRAFT_INPUT_ROOT}"
+    COMMAND original_damage_oracle_tests "${STARCRAFT_ORIGINAL_ROOT}"
   )
 
   add_executable(original_count_oracle_tests
@@ -404,7 +433,7 @@ if(BUILD_TESTING)
   endif()
   add_test(
     NAME original_count_oracle_tests
-    COMMAND original_count_oracle_tests "${STARCRAFT_INPUT_ROOT}"
+    COMMAND original_count_oracle_tests "${STARCRAFT_ORIGINAL_ROOT}"
   )
 
   add_executable(count_tests tests/count_tests.cpp)
@@ -462,7 +491,7 @@ if(BUILD_TESTING)
   endif()
   add_test(
     NAME original_sync_oracle_tests
-    COMMAND original_sync_oracle_tests "${STARCRAFT_INPUT_ROOT}"
+    COMMAND original_sync_oracle_tests "${STARCRAFT_ORIGINAL_ROOT}"
   )
 
   add_executable(iscript_tests tests/iscript_tests.cpp)
@@ -486,7 +515,7 @@ if(BUILD_TESTING)
   endif()
   add_test(
     NAME original_flingy_oracle_tests
-    COMMAND original_flingy_oracle_tests "${STARCRAFT_INPUT_ROOT}"
+    COMMAND original_flingy_oracle_tests "${STARCRAFT_ORIGINAL_ROOT}"
   )
 
   add_executable(core_data_tests tests/core_data_tests.cpp)
@@ -708,7 +737,7 @@ if(BUILD_TESTING)
   endif()
   add_test(
     NAME original_grp_oracle_tests
-    COMMAND original_grp_oracle_tests "${STARCRAFT_INPUT_ROOT}"
+    COMMAND original_grp_oracle_tests "${STARCRAFT_ORIGINAL_ROOT}"
   )
 
   add_executable(bitmap_tests tests/bitmap_tests.cpp)
@@ -732,6 +761,6 @@ if(BUILD_TESTING)
   endif()
   add_test(
     NAME original_bitmap_oracle_tests
-    COMMAND original_bitmap_oracle_tests "${STARCRAFT_INPUT_ROOT}"
+    COMMAND original_bitmap_oracle_tests "${STARCRAFT_ORIGINAL_ROOT}"
   )
 endif()

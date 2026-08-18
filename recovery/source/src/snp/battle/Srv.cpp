@@ -501,7 +501,7 @@ bool launch_local_server() noexcept {
   if (separator == std::wstring::npos) return false;
   directory.resize(separator);
   const std::wstring server =
-      directory + L"\\StarCraftRecoveryServer.exe";
+      directory + L"\\BattleNetServer.exe";
   if (GetFileAttributesW(server.c_str()) == INVALID_FILE_ATTRIBUTES) {
     return false;
   }
