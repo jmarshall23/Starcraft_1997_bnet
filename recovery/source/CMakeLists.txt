@@ -68,6 +68,13 @@ set_source_files_properties(
   "${STARCRAFT_GENERATED_DIRECTORY}/starcraft.rc"
   PROPERTIES OBJECT_DEPENDS "${STARCRAFT_ICON_FILE}"
 )
+set(STAREDIT_ICON_RESOURCE_PATH "${STARCRAFT_ICON_FILE}")
+configure_file(src/staredit/staredit.rc.in
+               "${STARCRAFT_GENERATED_DIRECTORY}/staredit.rc" @ONLY)
+set_source_files_properties(
+  "${STARCRAFT_GENERATED_DIRECTORY}/staredit.rc"
+  PROPERTIES OBJECT_DEPENDS "${STARCRAFT_ICON_FILE}"
+)
 
 find_program(DOTNET_EXECUTABLE dotnet)
 if(DOTNET_EXECUTABLE)
@@ -300,6 +307,70 @@ add_custom_command(
   COMMENT "Copying the dynamically linked vendored OpenAL Soft runtime"
   VERBATIM
 )
+
+# StarEdit is kept as a separate Win32 application. It shares the recovered
+# CHK, archive, and tileset primitives with the game while its document and UI
+# layers remain isolated under src/staredit.
+add_library(staredit_formats STATIC
+  src/staredit/formats/chk_dialect.cpp
+  src/staredit/formats/chk_document.cpp
+  src/staredit/formats/isom_section.cpp
+  src/staredit/formats/object_sections.cpp
+  src/staredit/terrain/isom_catalog.cpp
+  src/staredit/terrain/isom_terrain_editor.cpp
+  src/staredit/terrain/isom_topology.cpp
+  src/staredit/terrain/terrain_brush.cpp
+  src/staredit/undo/undo_stack.cpp
+)
+target_include_directories(
+  staredit_formats
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/staredit"
+         "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_compile_features(staredit_formats PUBLIC cxx_std_17)
+if(MSVC)
+  target_compile_options(staredit_formats PRIVATE /W4 /permissive- /Zc:preprocessor)
+endif()
+
+add_executable(StarEdit WIN32
+  "${STARCRAFT_GENERATED_DIRECTORY}/staredit.rc"
+  src/staredit/application.cpp
+  src/staredit/brush_palette.cpp
+  src/staredit/document.cpp
+  src/staredit/main_frame.cpp
+  src/staredit/map_view.cpp
+  src/staredit/minimap.cpp
+  src/staredit/new_map_dialog.cpp
+  src/staredit/object_art.cpp
+  src/staredit/scenario_dialogs.cpp
+  src/staredit/unit_properties_dialog.cpp
+)
+target_include_directories(
+  StarEdit
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/staredit"
+)
+target_compile_features(StarEdit PRIVATE cxx_std_17)
+target_compile_definitions(
+  StarEdit PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+)
+target_link_libraries(
+  StarEdit
+  PRIVATE staredit_formats starcraft_core user32 kernel32 gdi32 comctl32
+          comdlg32 shell32
+)
+set_target_properties(StarEdit PROPERTIES
+  OUTPUT_NAME "StarEdit"
+  PDB_NAME "StarEdit"
+  COMPILE_PDB_NAME "StarEdit"
+  RUNTIME_OUTPUT_DIRECTORY "${STARCRAFT_RECOVERY_ROOT}"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG "${STARCRAFT_RECOVERY_ROOT}"
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${STARCRAFT_RECOVERY_ROOT}"
+  RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${STARCRAFT_RECOVERY_ROOT}"
+  RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${STARCRAFT_RECOVERY_ROOT}"
+)
+if(MSVC)
+  target_compile_options(StarEdit PRIVATE /W4 /permissive- /Zc:preprocessor)
+endif()
 
 add_executable(archive_inventory tools/archive_inventory.cpp)
 target_link_libraries(archive_inventory PRIVATE starcraft_core)
@@ -703,6 +774,159 @@ if(BUILD_TESTING)
   add_test(
     NAME bootstrap_melee_start_probe
     COMMAND StarCraftRecovery --probe-melee-start
+  )
+
+  if(EXISTS "${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm")
+    add_test(
+      NAME staredit_map_probe
+      COMMAND StarEdit
+              "--probe-map=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_ui_probe
+      COMMAND StarEdit
+              "--probe-ui=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_round_trip_probe
+      COMMAND StarEdit
+              "--probe-roundtrip=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_isom_probe
+      COMMAND StarEdit
+              "--probe-isom=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_isom_topology_probe
+      COMMAND StarEdit
+              "--probe-isom-topology=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_isom_edit_probe
+      COMMAND StarEdit
+              "--probe-isom-edit=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_terrain_edit_probe
+      COMMAND StarEdit
+              "--probe-terrain-edit=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_raw_export_probe
+      COMMAND StarEdit
+              "--probe-raw-export=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_ui_edit_probe
+      COMMAND StarEdit
+              "--probe-ui-edit=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_palette_probe
+      COMMAND StarEdit
+              "--probe-palette=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_brush_footprint_probe
+      COMMAND StarEdit
+              "--probe-brush-footprint=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_layout_probe
+      COMMAND StarEdit
+              "--probe-layout=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_object_edit_probe
+      COMMAND StarEdit
+              "--probe-object-edit=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_object_art_probe
+      COMMAND StarEdit
+              "--probe-object-art=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+    add_test(
+      NAME staredit_object_ui_probe
+      COMMAND StarEdit
+              "--probe-object-ui=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_space4.scm"
+    )
+  endif()
+
+  if(EXISTS "${STARCRAFT_RECOVERY_ROOT}/maps/96x96_ash4.scm")
+    add_test(
+      NAME staredit_ash_object_art_probe
+      COMMAND StarEdit
+              "--probe-object-art=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_ash4.scm"
+    )
+    add_test(
+      NAME staredit_ash_object_ui_probe
+      COMMAND StarEdit
+              "--probe-object-ui=${STARCRAFT_RECOVERY_ROOT}/maps/96x96_ash4.scm"
+    )
+  endif()
+
+  if(EXISTS "${STARCRAFT_RECOVERY_ROOT}/maps/96x96_wasteland4.scm")
+    add_test(
+      NAME staredit_new_map_zoom_probe
+      COMMAND StarEdit "--probe-new-map"
+    )
+    add_test(
+      NAME staredit_new_map_variants_probe
+      COMMAND StarEdit "--probe-new-map-variants"
+    )
+    add_test(
+      NAME staredit_new_map_dialog_resource_probe
+      COMMAND StarEdit "--probe-new-map-dialog-resource"
+    )
+    add_test(
+      NAME staredit_editor_layers_probe
+      COMMAND StarEdit "--probe-editor-layers"
+    )
+  endif()
+
+  add_executable(staredit_chk_document_tests
+    tests/staredit_chk_document_tests.cpp
+  )
+  target_link_libraries(staredit_chk_document_tests PRIVATE staredit_formats)
+  add_test(NAME staredit_chk_document_tests COMMAND staredit_chk_document_tests)
+
+  add_executable(staredit_object_sections_tests
+    tests/staredit_object_sections_tests.cpp
+  )
+  target_link_libraries(staredit_object_sections_tests PRIVATE staredit_formats)
+  add_test(NAME staredit_object_sections_tests COMMAND staredit_object_sections_tests)
+
+  add_executable(staredit_terrain_brush_tests
+    tests/staredit_terrain_brush_tests.cpp
+  )
+  target_link_libraries(staredit_terrain_brush_tests PRIVATE staredit_formats)
+  add_test(NAME staredit_terrain_brush_tests COMMAND staredit_terrain_brush_tests)
+
+  add_executable(staredit_isom_section_tests
+    tests/staredit_isom_section_tests.cpp
+  )
+  target_link_libraries(staredit_isom_section_tests PRIVATE staredit_formats)
+  add_test(NAME staredit_isom_section_tests COMMAND staredit_isom_section_tests)
+
+  add_executable(staredit_isom_topology_tests
+    tests/staredit_isom_topology_tests.cpp
+  )
+  target_link_libraries(staredit_isom_topology_tests
+    PRIVATE staredit_formats starcraft_core
+  )
+  add_test(NAME staredit_isom_topology_tests COMMAND staredit_isom_topology_tests)
+
+  add_executable(staredit_isom_catalog_archive_tests
+    tests/staredit_isom_catalog_archive_tests.cpp
+  )
+  target_link_libraries(staredit_isom_catalog_archive_tests
+    PRIVATE staredit_formats starcraft_core
+  )
+  add_test(
+    NAME staredit_isom_catalog_archive_tests
+    COMMAND staredit_isom_catalog_archive_tests "${STARCRAFT_RECOVERY_ROOT}"
   )
 
   add_executable(grp_tests tests/grp_tests.cpp)

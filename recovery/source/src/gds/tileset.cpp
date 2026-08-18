@@ -22,6 +22,7 @@ constexpr std::array<std::string_view, 5> kBetaTilesetNames{{
 constexpr std::size_t kCv5GroupBytes = 52;
 constexpr std::size_t kCv5MegaTileOffset = 20;
 constexpr std::size_t kMegaTilesPerGroup = 16;
+constexpr std::size_t kMaximumTerrainGroups = 1024;
 constexpr std::size_t kVx4MegaTileBytes = 32;
 constexpr std::size_t kVr4MiniTileBytes = 64;
 constexpr std::size_t kVf4MegaTileBytes = 32;
@@ -127,6 +128,104 @@ std::size_t TilesetData::minitile_count() const noexcept {
 const std::vector<std::uint8_t>& TilesetData::palette() const noexcept { return wpe_; }
 
 const std::string& TilesetData::failed_asset() const noexcept { return failed_asset_; }
+
+bool TilesetData::tile_group(const std::size_t group_id,
+                             Cv5TileGroup& output) const noexcept {
+  output = {};
+  if (!valid_ || group_id >= group_count()) {
+    return false;
+  }
+  const std::size_t offset = group_id * kCv5GroupBytes;
+  output.terrain_type = read_u16(cv5_, offset);
+  output.buildability = cv5_[offset + 2U];
+  output.ground_height = cv5_[offset + 3U];
+  for (std::size_t side = 0U; side < output.directional_links.size(); ++side) {
+    output.directional_links[side] =
+        read_u16(cv5_, offset + 4U + 2U * side);
+    output.stack_connections[side] =
+        read_u16(cv5_, offset + 12U + 2U * side);
+  }
+  output.doodad = group_id >= kMaximumTerrainGroups;
+  return true;
+}
+
+bool TilesetData::terrain_tile_valid(
+    const std::uint16_t map_tile_id) const noexcept {
+  const std::size_t group = (map_tile_id >> 4U) & 0x7FFU;
+  std::uint16_t megatile{};
+  return group < kMaximumTerrainGroups && megatile_id(map_tile_id, megatile);
+}
+
+bool TilesetData::terrain_group_id(const std::uint16_t map_tile_id,
+                                   std::uint16_t& group_id) const noexcept {
+  if (!terrain_tile_valid(map_tile_id)) {
+    return false;
+  }
+  group_id = static_cast<std::uint16_t>(
+      (map_tile_id >> 4U) & static_cast<std::uint16_t>(0x7FFU));
+  return true;
+}
+
+std::size_t TilesetData::terrain_group_members(
+    const std::uint16_t group_id,
+    std::array<std::uint16_t, 16>& map_tile_ids) const noexcept {
+  TerrainGroupVariants variants{};
+  if (!terrain_group_variants(group_id, variants)) {
+    map_tile_ids.fill(0U);
+    return 0U;
+  }
+  std::size_t count{};
+  map_tile_ids.fill(0U);
+  for (std::size_t index = 0U; index < variants.common_count; ++index) {
+    map_tile_ids[count++] = variants.common[index];
+  }
+  for (std::size_t index = 0U; index < variants.rare_count; ++index) {
+    map_tile_ids[count++] = variants.rare[index];
+  }
+  return count;
+}
+
+bool TilesetData::terrain_group_variants(
+    const std::uint16_t group_id,
+    TerrainGroupVariants& variants) const noexcept {
+  variants = {};
+  if (!valid_ || group_id >= kMaximumTerrainGroups ||
+      group_id >= group_count()) {
+    return false;
+  }
+  std::size_t member{};
+  for (; member < kMegaTilesPerGroup; ++member) {
+    const std::uint16_t map_tile_id = static_cast<std::uint16_t>(
+        (group_id << 4U) | static_cast<std::uint16_t>(member));
+    std::uint16_t megatile{};
+    if (!megatile_id(map_tile_id, megatile) || megatile == 0U) {
+      break;
+    }
+    variants.common[variants.common_count++] = map_tile_id;
+  }
+  if (member < kMegaTilesPerGroup) {
+    ++member;  // A zero megatile separates the common and rare sequences.
+  }
+  for (; member < kMegaTilesPerGroup; ++member) {
+    const std::uint16_t map_tile_id = static_cast<std::uint16_t>(
+        (group_id << 4U) | static_cast<std::uint16_t>(member));
+    std::uint16_t megatile{};
+    if (!megatile_id(map_tile_id, megatile) || megatile == 0U) {
+      break;
+    }
+    variants.rare[variants.rare_count++] = map_tile_id;
+  }
+  if (variants.common_count == 0U && variants.rare_count == 0U) {
+    const std::uint16_t first =
+        static_cast<std::uint16_t>(group_id << 4U);
+    std::uint16_t megatile{};
+    if (!megatile_id(first, megatile)) {
+      return false;
+    }
+    variants.common[variants.common_count++] = first;
+  }
+  return true;
+}
 
 bool TilesetData::megatile_id(
     const std::uint16_t map_tile_id,

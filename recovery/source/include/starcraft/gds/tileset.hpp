@@ -25,6 +25,22 @@ struct IndexedMapTile {
   std::array<std::uint8_t, width * height> pixels{};
 };
 
+struct Cv5TileGroup {
+  std::uint16_t terrain_type{};
+  std::uint8_t buildability{};
+  std::uint8_t ground_height{};
+  std::array<std::uint16_t, 4> directional_links{};
+  std::array<std::uint16_t, 4> stack_connections{};
+  bool doodad{};
+};
+
+struct TerrainGroupVariants {
+  std::array<std::uint16_t, 16> common{};
+  std::array<std::uint16_t, 16> rare{};
+  std::size_t common_count{};
+  std::size_t rare_count{};
+};
+
 class TilesetData final {
  public:
   [[nodiscard]] bool load(
@@ -44,6 +60,18 @@ class TilesetData final {
   [[nodiscard]] std::size_t minitile_count() const noexcept;
   [[nodiscard]] const std::vector<std::uint8_t>& palette() const noexcept;
   [[nodiscard]] const std::string& failed_asset() const noexcept;
+
+  [[nodiscard]] bool tile_group(std::size_t group_id,
+                                Cv5TileGroup& output) const noexcept;
+  [[nodiscard]] bool terrain_tile_valid(std::uint16_t map_tile_id) const noexcept;
+  [[nodiscard]] bool terrain_group_id(std::uint16_t map_tile_id,
+                                      std::uint16_t& group_id) const noexcept;
+  [[nodiscard]] std::size_t terrain_group_members(
+      std::uint16_t group_id,
+      std::array<std::uint16_t, 16>& map_tile_ids) const noexcept;
+  [[nodiscard]] bool terrain_group_variants(
+      std::uint16_t group_id,
+      TerrainGroupVariants& variants) const noexcept;
 
   [[nodiscard]] bool megatile_id(
       std::uint16_t map_tile_id,

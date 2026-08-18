@@ -20,12 +20,22 @@ constexpr std::uint32_t chk_fourcc(
 constexpr std::uint32_t chk_section_era = chk_fourcc('E', 'R', 'A', ' ');
 constexpr std::uint32_t chk_section_dimensions = chk_fourcc('D', 'I', 'M', ' ');
 constexpr std::uint32_t chk_section_tiles = chk_fourcc('M', 'T', 'X', 'M');
+constexpr std::uint32_t chk_section_editor_tiles = chk_fourcc('T', 'I', 'L', 'E');
+constexpr std::uint32_t chk_section_isom = chk_fourcc('I', 'S', 'O', 'M');
 constexpr std::uint32_t chk_section_ownership = chk_fourcc('O', 'W', 'N', 'R');
 constexpr std::uint32_t chk_section_races = chk_fourcc('S', 'I', 'D', 'E');
 constexpr std::uint32_t chk_section_units = chk_fourcc('U', 'N', 'I', 'T');
+constexpr std::uint32_t chk_section_doodads = chk_fourcc('D', 'O', 'O', 'D');
+constexpr std::uint32_t chk_section_doodads_retail =
+    chk_fourcc('D', 'D', '2', ' ');
 // maphdr.cpp::sub_46C070 copies one MASK byte per MTXM tile into both the
 // current-mask and black-mask bytes of the live map word.
 constexpr std::uint32_t chk_section_fog_mask = chk_fourcc('M', 'A', 'S', 'K');
+// MRGN contains the 64 editor location slots. Each slot is a 20-byte record:
+// left/top/right/bottom pixel bounds followed by a string id and flags.
+constexpr std::uint32_t chk_section_locations = chk_fourcc('M', 'R', 'G', 'N');
+constexpr std::size_t chk_location_slot_count = 64;
+constexpr std::size_t chk_location_record_bytes = 20;
 // StarCraft.exe's beta CHK dispatch table names this section THGY. The later
 // starshare.exe variant uses THG2 instead and is not the recovery target.
 constexpr std::uint32_t chk_section_sprites = chk_fourcc('T', 'H', 'G', 'Y');
@@ -46,12 +56,19 @@ struct BetaSpritePlacement {
   std::uint16_t x;
   std::uint16_t y;
 };
+
+struct BetaDoodadPlacement {
+  std::uint16_t doodad_type;
+  std::uint16_t x;
+  std::uint16_t y;
+};
 #pragma pack(pop)
 
 static_assert(std::is_standard_layout_v<BetaUnitPlacement>);
 static_assert(sizeof(BetaUnitPlacement) == 14);
 static_assert(offsetof(BetaUnitPlacement, owner) == 12);
 static_assert(sizeof(BetaSpritePlacement) == 6);
+static_assert(sizeof(BetaDoodadPlacement) == 6);
 
 struct ChkSection {
   std::uint32_t tag{};
